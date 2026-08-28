@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -42,6 +43,7 @@ func main() {
 	runner := &codex.Runner{
 		Command:               cfg.CodexCommand,
 		Model:                 cfg.CodexModel,
+		ConfigPath:            filepath.Join(cfg.EBIIIHome, ".codex", "config.toml"),
 		DeniedReadPaths:       []string{cfg.MemoryDir},
 		DeveloperInstructions: policy.Instructions(),
 	}

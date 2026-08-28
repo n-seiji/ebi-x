@@ -28,8 +28,6 @@ mise run build   # または: go build -o ebiii ./cmd/ebiii
 
 Go のバージョンは [mise](https://mise.jdx.dev/) で管理しています(`mise install` で揃います)。テストは `mise run test`、lint は `mise run lint` で実行できます。mise なしでも `go build` / `go test -race ./...` / `go vet ./...` で同等です。メモリの読み取り分離には permission profile と `--ignore-user-config` を使うため、Codex CLI 0.149.0 以上が必要です。
 
-このリポジトリ用の Salesforce Hosted MCP は `.codex/config.toml` で設定しています。接続方式、OAuth、読み取り専用の権限範囲は [docs/salesforce-hosted-mcp.md](docs/salesforce-hosted-mcp.md) を参照してください。
-
 ebiii は単一プロセスでの運用を前提としており、多重起動には対応していません。
 
 ## メモリ

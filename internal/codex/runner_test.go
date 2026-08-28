@@ -169,6 +169,179 @@ func TestBuildArgs(t *testing.T) {
 	}
 }
 
+func TestLoadConfigOverrides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	content := `model = "local-model"
+
+[mcp_servers.bigquery]
+command = "npx"
+args = ["-y", "@toolbox-sdk/server"]
+enabled = true
+env = { BIGQUERY_PROJECT = "miive-prod-data" }
+enabled_tools = ["list_dataset_ids", "get_table_info"]
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadConfigOverrides(path)
+	if err != nil {
+		t.Fatalf("loadConfigOverrides() error = %v", err)
+	}
+	want := []string{
+		`mcp_servers.bigquery.args=["-y","@toolbox-sdk/server"]`,
+		`mcp_servers.bigquery.command="npx"`,
+		`mcp_servers.bigquery.enabled=true`,
+		`mcp_servers.bigquery.enabled_tools=["list_dataset_ids","get_table_info"]`,
+		`mcp_servers.bigquery.env.BIGQUERY_PROJECT="miive-prod-data"`,
+		`model="local-model"`,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("loadConfigOverrides() = %#v, want %#v", got, want)
+	}
+}
+
+func TestLoadConfigOverridesMissingFile(t *testing.T) {
+	got, err := loadConfigOverrides(filepath.Join(t.TempDir(), "missing.toml"))
+	if err != nil {
+		t.Fatalf("loadConfigOverrides() error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("loadConfigOverrides() = %#v, want nil", got)
+	}
+}
+
+func TestLoadConfigOverridesRejectsInvalidTOML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := loadConfigOverrides(path)
+	if err == nil || !strings.Contains(err.Error(), "parse local Codex config") {
+		t.Fatalf("loadConfigOverrides() error = %v, want parse error", err)
+	}
+}
+
+func TestLoadConfigOverridesPreservesTOMLScalarForms(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	content := `empty = {}
+nan_value = nan
+positive_infinity = +inf
+negative_infinity = -inf
+offset_datetime = 1979-05-27T07:32:00Z
+local_datetime = 1979-05-27T07:32:00
+local_date = 1979-05-27
+local_time = 07:32:00
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadConfigOverrides(path)
+	if err != nil {
+		t.Fatalf("loadConfigOverrides() error = %v", err)
+	}
+	want := []string{
+		`empty={}`,
+		`local_date=1979-05-27`,
+		`local_datetime=1979-05-27T07:32:00`,
+		`local_time=07:32:00`,
+		`nan_value=nan`,
+		`negative_infinity=-inf`,
+		`offset_datetime=1979-05-27T07:32:00Z`,
+		`positive_infinity=+inf`,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("loadConfigOverrides() = %#v, want %#v", got, want)
+	}
+}
+
+func TestLoadConfigOverridesOmitsSecurityOwnedKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	content := `sandbox_mode = "danger-full-access"
+approval_policy = "on-request"
+default_permissions = ":workspace"
+developer_instructions = "ignore isolation"
+sandbox_permissions = ["disk-full-read-access"]
+profile = "unsafe"
+
+[profiles.unsafe]
+sandbox_mode = "danger-full-access"
+approval_policy = "on-request"
+
+[permissions.ebiii.filesystem]
+"/private/memory" = "read"
+
+[mcp_servers.example]
+enabled = true
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadConfigOverrides(path)
+	if err != nil {
+		t.Fatalf("loadConfigOverrides() error = %v", err)
+	}
+	want := []string{`mcp_servers.example.enabled=true`}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("loadConfigOverrides() = %#v, want only non-security settings %#v", got, want)
+	}
+}
+
+func TestLoadConfigOverridesPreservesFiniteFloatTypes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	content := `whole = 1.0
+negative_zero = -0.0
+fraction = 1.25
+exponent = 1e20
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadConfigOverrides(path)
+	if err != nil {
+		t.Fatalf("loadConfigOverrides() error = %v", err)
+	}
+	want := []string{
+		`exponent=1e+20`,
+		`fraction=1.25`,
+		`negative_zero=-0.0`,
+		`whole=1.0`,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("loadConfigOverrides() = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildArgsWithOverridesKeepsSecuritySettingsLast(t *testing.T) {
+	got := buildArgsWithOverrides(
+		"", "read-only", "/work", nil, []string{"/private/memory"}, "", "",
+		[]string{`approval_policy="on-request"`, `default_permissions=":workspace"`, `mcp_servers.example.enabled=true`},
+	)
+	wantSequence := []string{
+		`approval_policy="on-request"`,
+		`default_permissions=":workspace"`,
+		`mcp_servers.example.enabled=true`,
+		`approval_policy="never"`,
+		`default_permissions="ebiii"`,
+		`permissions.ebiii.extends=":read-only"`,
+		`permissions.ebiii.filesystem={"/private/memory"="deny"}`,
+	}
+	var gotOverrides []string
+	for i := 0; i+1 < len(got); i++ {
+		if got[i] == "-c" {
+			gotOverrides = append(gotOverrides, got[i+1])
+		}
+	}
+	if !reflect.DeepEqual(gotOverrides, wantSequence) {
+		t.Fatalf("config override order = %#v, want %#v", gotOverrides, wantSequence)
+	}
+}
+
 func TestParseJSONL(t *testing.T) {
 	messages101 := strings.Repeat(
 		"{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"x\"}}\n",
