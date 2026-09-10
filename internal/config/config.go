@@ -1,4 +1,4 @@
-// Package config loads ebiii's runtime configuration.
+// Package config loads ebi-x's runtime configuration.
 package config
 
 import (
@@ -20,7 +20,7 @@ const (
 	defaultThreadSubscriptionTTL      = 336 * time.Hour
 )
 
-// Config contains ebiii's runtime configuration and resolved data paths.
+// Config contains ebi-x's runtime configuration and resolved data paths.
 type Config struct {
 	SlackBotToken              string
 	SlackAppToken              string
@@ -33,7 +33,7 @@ type Config struct {
 	CodexTimeout               time.Duration
 	ThreadSubscriptionReaction string
 	ThreadSubscriptionTTL      time.Duration
-	EBIIIHome                  string
+	EBIXHome                  string
 	WorkspaceDir               string
 	MemoryDir                  string
 	PlaybooksDir               string
@@ -111,19 +111,19 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("SLACK_THREAD_SUBSCRIPTION_TTL %q: %w", os.Getenv("SLACK_THREAD_SUBSCRIPTION_TTL"), errors.New("must be positive when subscriptions are enabled"))
 	}
 
-	home := strings.TrimSpace(os.Getenv("EBIII_HOME"))
+	home := strings.TrimSpace(os.Getenv("EBIX_HOME"))
 	if home == "" {
 		home = "."
 	}
 	absoluteHome, err := filepath.Abs(home)
 	if err != nil {
-		return nil, fmt.Errorf("EBIII_HOME %q: %w", home, err)
+		return nil, fmt.Errorf("EBIX_HOME %q: %w", home, err)
 	}
 	home = absoluteHome
 
-	writableRoots, err := resolveWritableRoots(os.Getenv("EBIII_WRITABLE_ROOTS"))
+	writableRoots, err := resolveWritableRoots(os.Getenv("EBIX_WRITABLE_ROOTS"))
 	if err != nil {
-		return nil, fmt.Errorf("EBIII_WRITABLE_ROOTS: %w", err)
+		return nil, fmt.Errorf("EBIX_WRITABLE_ROOTS: %w", err)
 	}
 	workspaceDir := filepath.Join(home, "data", "workspace")
 	memoryDir := filepath.Join(home, "data", "memory")
@@ -148,7 +148,7 @@ func Load() (*Config, error) {
 		CodexTimeout:               codexTimeout,
 		ThreadSubscriptionReaction: threadSubscriptionReaction,
 		ThreadSubscriptionTTL:      threadSubscriptionTTL,
-		EBIIIHome:                  home,
+		EBIXHome:                  home,
 		WorkspaceDir:               workspaceDir,
 		MemoryDir:                  memoryDir,
 		PlaybooksDir:               playbooksDir,
@@ -175,7 +175,7 @@ func validateMemoryIsolation(workspaceDir, memoryDir string, writableRoots []str
 	}
 	for _, root := range writableRoots {
 		if pathsOverlap(root, memory) {
-			return fmt.Errorf("EBIII_WRITABLE_ROOTS: %q overlaps protected memory directory", root)
+			return fmt.Errorf("EBIX_WRITABLE_ROOTS: %q overlaps protected memory directory", root)
 		}
 	}
 	return nil

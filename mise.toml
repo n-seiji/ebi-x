@@ -6,13 +6,13 @@ node = "latest"
 CGO_ENABLED = "0"
 
 [tasks.build]
-description = "Build ebiii binary"
-run = "go build -o ebiii ./cmd/ebiii"
+description = "Build ebi-x binary"
+run = "go build -o ebi-x ./cmd/ebi-x"
 
 [tasks.run]
-description = "Build and run ebiii"
+description = "Build and run ebi-x"
 depends = ["build"]
-run = "./ebiii"
+run = "./ebi-x"
 
 [tasks.test]
 description = "Run tests with race detector"

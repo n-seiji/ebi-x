@@ -129,24 +129,24 @@ func buildArgsWithOverrides(threadID, sandbox, cwd string, writableRoots, denied
 	}
 	// Security invariants come after local values so local configuration can
 	// never weaken them.
-	args = append(args, "-c", `approval_policy="never"`, "-c", `default_permissions="ebiii"`)
+	args = append(args, "-c", `approval_policy="never"`, "-c", `default_permissions="ebi-x"`)
 	parentProfile := ":read-only"
 	if sandbox == "workspace-write" {
 		parentProfile = ":workspace"
 	}
-	args = append(args, "-c", "permissions.ebiii.extends="+strconv.Quote(parentProfile))
+	args = append(args, "-c", "permissions.ebi-x.extends="+strconv.Quote(parentProfile))
 	if len(deniedReadPaths) > 0 {
 		entries := make([]string, 0, len(deniedReadPaths))
 		for _, path := range deniedReadPaths {
 			entries = append(entries, strconv.Quote(path)+`="deny"`)
 		}
-		args = append(args, "-c", "permissions.ebiii.filesystem={"+strings.Join(entries, ",")+"}")
+		args = append(args, "-c", "permissions.ebi-x.filesystem={"+strings.Join(entries, ",")+"}")
 	}
 	if developerInstructions != "" {
 		args = append(args, "-c", "developer_instructions="+strconv.Quote(developerInstructions))
 	}
 	if sandbox == "workspace-write" || sandbox == "read-only-network" {
-		args = append(args, "-c", "permissions.ebiii.network.enabled=true")
+		args = append(args, "-c", "permissions.ebi-x.network.enabled=true")
 	}
 	if sandbox == "workspace-write" {
 		for _, root := range writableRoots {

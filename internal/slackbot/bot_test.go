@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/n-seiji/ebiii/internal/codex"
-	"github.com/n-seiji/ebiii/internal/memory"
-	"github.com/n-seiji/ebiii/internal/state"
+	"github.com/n-seiji/ebi-x/internal/codex"
+	"github.com/n-seiji/ebi-x/internal/memory"
+	"github.com/n-seiji/ebi-x/internal/state"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 )

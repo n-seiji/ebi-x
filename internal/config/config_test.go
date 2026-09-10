@@ -30,7 +30,7 @@ func TestLoad(t *testing.T) {
 				"CODEX_TIMEOUT":                      "45s",
 				"SLACK_THREAD_SUBSCRIPTION_REACTION": "follow-up",
 				"SLACK_THREAD_SUBSCRIPTION_TTL":      "48h",
-				"EBIII_HOME":                         "data",
+				"EBIX_HOME":                         "data",
 			},
 			check: func(t *testing.T, cfg *Config, workingDir string) {
 				t.Helper()
@@ -62,8 +62,8 @@ func TestLoad(t *testing.T) {
 				if cfg.ThreadSubscriptionTTL != 48*time.Hour {
 					t.Errorf("ThreadSubscriptionTTL = %v, want %v", cfg.ThreadSubscriptionTTL, 48*time.Hour)
 				}
-				if cfg.EBIIIHome != wantHome {
-					t.Errorf("EBIIIHome = %q, want %q", cfg.EBIIIHome, wantHome)
+				if cfg.EBIXHome != wantHome {
+					t.Errorf("EBIXHome = %q, want %q", cfg.EBIXHome, wantHome)
 				}
 				assertPaths(t, cfg, wantHome)
 			},
@@ -143,8 +143,8 @@ func TestLoad(t *testing.T) {
 			},
 			check: func(t *testing.T, cfg *Config, workingDir string) {
 				t.Helper()
-				if cfg.EBIIIHome != workingDir {
-					t.Errorf("EBIIIHome = %q, want %q", cfg.EBIIIHome, workingDir)
+				if cfg.EBIXHome != workingDir {
+					t.Errorf("EBIXHome = %q, want %q", cfg.EBIXHome, workingDir)
 				}
 				if cfg.CodexCommand != "codex" {
 					t.Errorf("CodexCommand = %q, want %q", cfg.CodexCommand, "codex")
@@ -323,7 +323,7 @@ func TestLoadWritableRoots(t *testing.T) {
 	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
 	t.Setenv("SLACK_APP_TOKEN", "xapp-test")
 	t.Setenv("SLACK_ALLOWED_USER_IDS", "U123")
-	t.Setenv("EBIII_WRITABLE_ROOTS", root)
+	t.Setenv("EBIX_WRITABLE_ROOTS", root)
 
 	cfg, err := Load()
 	if err != nil {
@@ -333,9 +333,9 @@ func TestLoadWritableRoots(t *testing.T) {
 		t.Errorf("WritableRoots = %v, want %v", cfg.WritableRoots, []string{root})
 	}
 
-	t.Setenv("EBIII_WRITABLE_ROOTS", filepath.Join(root, "missing"))
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "EBIII_WRITABLE_ROOTS") {
-		t.Fatalf("Load() error = %v, want EBIII_WRITABLE_ROOTS failure", err)
+	t.Setenv("EBIX_WRITABLE_ROOTS", filepath.Join(root, "missing"))
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "EBIX_WRITABLE_ROOTS") {
+		t.Fatalf("Load() error = %v, want EBIX_WRITABLE_ROOTS failure", err)
 	}
 }
 
@@ -372,8 +372,8 @@ func TestLoadRejectsMemoryOverlappingWritableRoots(t *testing.T) {
 			t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
 			t.Setenv("SLACK_APP_TOKEN", "xapp-test")
 			t.Setenv("SLACK_ALLOWED_USER_IDS", "U123")
-			t.Setenv("EBIII_HOME", home)
-			t.Setenv("EBIII_WRITABLE_ROOTS", tt.rootPath(home))
+			t.Setenv("EBIX_HOME", home)
+			t.Setenv("EBIX_WRITABLE_ROOTS", tt.rootPath(home))
 
 			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected memory directory") {
 				t.Fatalf("Load() error = %v, want protected memory overlap", err)
@@ -398,8 +398,8 @@ func TestLoadRejectsSymlinkedMemoryWritableRoot(t *testing.T) {
 	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
 	t.Setenv("SLACK_APP_TOKEN", "xapp-test")
 	t.Setenv("SLACK_ALLOWED_USER_IDS", "U123")
-	t.Setenv("EBIII_HOME", home)
-	t.Setenv("EBIII_WRITABLE_ROOTS", link)
+	t.Setenv("EBIX_HOME", home)
+	t.Setenv("EBIX_WRITABLE_ROOTS", link)
 
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected memory directory") {
 		t.Fatalf("Load() error = %v, want protected memory overlap", err)
@@ -464,8 +464,8 @@ func clearConfigEnv(t *testing.T) {
 		"CODEX_COMMAND",
 		"CODEX_MODEL",
 		"CODEX_TIMEOUT",
-		"EBIII_HOME",
-		"EBIII_WRITABLE_ROOTS",
+		"EBIX_HOME",
+		"EBIX_WRITABLE_ROOTS",
 	} {
 		value, exists := os.LookupEnv(key)
 		if err := os.Unsetenv(key); err != nil {

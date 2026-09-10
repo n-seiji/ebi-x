@@ -33,9 +33,9 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
-				"-c", `default_permissions="ebiii"`,
-				"-c", `permissions.ebiii.extends=":read-only"`,
-				"-c", `permissions.ebiii.filesystem={"/Users/example/github.com/repo/memory"="deny"}`,
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":read-only"`,
+				"-c", `permissions.ebi-x.filesystem={"/Users/example/github.com/repo/memory"="deny"}`,
 				"-C", "/work", "-",
 			},
 		},
@@ -48,9 +48,9 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
-				"-c", `default_permissions="ebiii"`,
-				"-c", `permissions.ebiii.extends=":read-only"`,
-				"-c", `permissions.ebiii.filesystem={"/private/memory"="deny"}`,
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":read-only"`,
+				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
 				"-c", `developer_instructions="絶対ルール\n\"quoted\""`,
 				"-C", "/work", "-",
 			},
@@ -65,10 +65,10 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
-				"-c", `default_permissions="ebiii"`,
-				"-c", `permissions.ebiii.extends=":workspace"`,
-				"-c", `permissions.ebiii.filesystem={"/private/memory"="deny"}`,
-				"-c", "permissions.ebiii.network.enabled=true",
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":workspace"`,
+				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
+				"-c", "permissions.ebi-x.network.enabled=true",
 				"--add-dir", "/extra",
 				"--add-dir", `/a"b`,
 				"-m", "gpt-test", "-C", "/work", "-",
@@ -83,10 +83,10 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
-				"-c", `default_permissions="ebiii"`,
-				"-c", `permissions.ebiii.extends=":workspace"`,
-				"-c", `permissions.ebiii.filesystem={"/private/memory"="deny"}`,
-				"-c", "permissions.ebiii.network.enabled=true",
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":workspace"`,
+				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
+				"-c", "permissions.ebi-x.network.enabled=true",
 				"--add-dir", "/a dir",
 				"--add-dir", "/b/c",
 				"--add-dir", "/d e/f",
@@ -101,10 +101,10 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
-				"-c", `default_permissions="ebiii"`,
-				"-c", `permissions.ebiii.extends=":workspace"`,
-				"-c", `permissions.ebiii.filesystem={"/private/memory"="deny"}`,
-				"-c", "permissions.ebiii.network.enabled=true",
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":workspace"`,
+				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
+				"-c", "permissions.ebi-x.network.enabled=true",
 				"-C", "/work", "-",
 			},
 		},
@@ -116,10 +116,10 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
-				"-c", `default_permissions="ebiii"`,
-				"-c", `permissions.ebiii.extends=":read-only"`,
-				"-c", `permissions.ebiii.filesystem={"/private/memory"="deny"}`,
-				"-c", "permissions.ebiii.network.enabled=true",
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":read-only"`,
+				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
+				"-c", "permissions.ebi-x.network.enabled=true",
 				"-C", "/work", "-",
 			},
 		},
@@ -132,9 +132,9 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
-				"-c", `default_permissions="ebiii"`,
-				"-c", `permissions.ebiii.extends=":read-only"`,
-				"-c", `permissions.ebiii.filesystem={"/private/memory"="deny"}`,
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":read-only"`,
+				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
 				"-C", "/work", "-",
 			},
 		},
@@ -149,10 +149,10 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"exec", "resume", "thread-1", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
-				"-c", `default_permissions="ebiii"`,
-				"-c", `permissions.ebiii.extends=":workspace"`,
-				"-c", `permissions.ebiii.filesystem={"/private/memory"="deny"}`,
-				"-c", "permissions.ebiii.network.enabled=true",
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":workspace"`,
+				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
+				"-c", "permissions.ebi-x.network.enabled=true",
 				"--add-dir", "/extra",
 				"-m", "gpt-test", "-",
 			},
@@ -271,7 +271,7 @@ profile = "unsafe"
 sandbox_mode = "danger-full-access"
 approval_policy = "on-request"
 
-[permissions.ebiii.filesystem]
+[permissions.ebi-x.filesystem]
 "/private/memory" = "read"
 
 [mcp_servers.example]
@@ -327,9 +327,9 @@ func TestBuildArgsWithOverridesKeepsSecuritySettingsLast(t *testing.T) {
 		`default_permissions=":workspace"`,
 		`mcp_servers.example.enabled=true`,
 		`approval_policy="never"`,
-		`default_permissions="ebiii"`,
-		`permissions.ebiii.extends=":read-only"`,
-		`permissions.ebiii.filesystem={"/private/memory"="deny"}`,
+		`default_permissions="ebi-x"`,
+		`permissions.ebi-x.extends=":read-only"`,
+		`permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
 	}
 	var gotOverrides []string
 	for i := 0; i+1 < len(got); i++ {

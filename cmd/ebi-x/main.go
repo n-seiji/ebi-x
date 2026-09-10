@@ -1,4 +1,4 @@
-// Command ebiii is the entry point for the ebiii Slack bot.
+// Command ebi-x is the entry point for the ebi-x Slack bot.
 package main
 
 import (
@@ -11,12 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/n-seiji/ebiii/internal/codex"
-	"github.com/n-seiji/ebiii/internal/config"
-	"github.com/n-seiji/ebiii/internal/playbook"
-	"github.com/n-seiji/ebiii/internal/policy"
-	"github.com/n-seiji/ebiii/internal/slackbot"
-	"github.com/n-seiji/ebiii/internal/state"
+	"github.com/n-seiji/ebi-x/internal/codex"
+	"github.com/n-seiji/ebi-x/internal/config"
+	"github.com/n-seiji/ebi-x/internal/playbook"
+	"github.com/n-seiji/ebi-x/internal/policy"
+	"github.com/n-seiji/ebi-x/internal/slackbot"
+	"github.com/n-seiji/ebi-x/internal/state"
 )
 
 func main() {
@@ -43,7 +43,7 @@ func main() {
 	runner := &codex.Runner{
 		Command:               cfg.CodexCommand,
 		Model:                 cfg.CodexModel,
-		ConfigPath:            filepath.Join(cfg.EBIIIHome, ".codex", "config.toml"),
+		ConfigPath:            filepath.Join(cfg.EBIXHome, ".codex", "config.toml"),
 		DeniedReadPaths:       []string{cfg.MemoryDir},
 		DeveloperInstructions: policy.Instructions(),
 	}

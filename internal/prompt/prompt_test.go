@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/n-seiji/ebiii/internal/memory"
-	"github.com/n-seiji/ebiii/internal/playbook"
+	"github.com/n-seiji/ebi-x/internal/memory"
+	"github.com/n-seiji/ebi-x/internal/playbook"
 )
 
 func TestBuildPlanPrompt(t *testing.T) {
