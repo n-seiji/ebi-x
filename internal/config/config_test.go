@@ -494,3 +494,22 @@ func withWorkingDir(t *testing.T, dir string) {
 		_ = os.Chdir(previous)
 	})
 }
+
+func TestLoadRejectsPlaybooksSymlinkToMemory(t *testing.T) {
+	workingDir := t.TempDir()
+	withWorkingDir(t, workingDir)
+	clearConfigEnv(t)
+	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
+	t.Setenv("SLACK_APP_TOKEN", "xapp-test")
+	t.Setenv("SLACK_ALLOWED_USER_IDS", "U123")
+	memoryDir := filepath.Join(workingDir, "data", "memory")
+	if err := os.MkdirAll(memoryDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(memoryDir, filepath.Join(workingDir, "data", "playbooks")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected memory") {
+		t.Fatalf("Load() error = %v, want memory isolation error", err)
+	}
+}

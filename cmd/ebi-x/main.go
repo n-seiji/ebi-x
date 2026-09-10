@@ -54,6 +54,7 @@ func main() {
 		AdminUserID:                cfg.AdminUserID,
 		WorkspaceDir:               cfg.WorkspaceDir,
 		MemoryDir:                  cfg.MemoryDir,
+		PlaybooksDir:               cfg.PlaybooksDir,
 		CodexTimeout:               cfg.CodexTimeout,
 		ThreadSubscriptionReaction: cfg.ThreadSubscriptionReaction,
 		ThreadSubscriptionTTL:      cfg.ThreadSubscriptionTTL,
