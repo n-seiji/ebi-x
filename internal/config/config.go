@@ -127,7 +127,12 @@ func Load() (*Config, error) {
 	}
 	workspaceDir := filepath.Join(home, "data", "workspace")
 	memoryDir := filepath.Join(home, "data", "memory")
-	if err := validateMemoryIsolation(workspaceDir, memoryDir, writableRoots); err != nil {
+	playbooksDir, err := canonicalPath(filepath.Join(home, "data", "playbooks"))
+	if err != nil {
+		return nil, fmt.Errorf("resolve playbooks directory: %w", err)
+	}
+	isolationRoots := append(append([]string(nil), writableRoots...), playbooksDir)
+	if err := validateMemoryIsolation(workspaceDir, memoryDir, isolationRoots); err != nil {
 		return nil, err
 	}
 
@@ -146,7 +151,7 @@ func Load() (*Config, error) {
 		EBIIIHome:                  home,
 		WorkspaceDir:               workspaceDir,
 		MemoryDir:                  memoryDir,
-		PlaybooksDir:               filepath.Join(home, "data", "playbooks"),
+		PlaybooksDir:               playbooksDir,
 		StateDir:                   filepath.Join(home, "data", "state"),
 		WritableRoots:              writableRoots,
 	}, nil

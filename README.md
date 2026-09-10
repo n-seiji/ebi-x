@@ -30,6 +30,16 @@ Go のバージョンは [mise](https://mise.jdx.dev/) で管理しています(
 
 ebiii は単一プロセスでの運用を前提としており、多重起動には対応していません。
 
+## Slackからplaybookを作成・更新する
+
+`examples/playbooks/playbook-from-thread.md` を `data/playbooks/` にコピーすると、Slackで `@ebi この対応をplaybookにして` や `@ebi このplaybookを修正して。質問は1問ずつにして` と依頼できます。作成用playbookでは、既知情報を聞き直さず、必要な質問を1問ずつ行い、新規・更新とも完成案を提示して「この内容でいいですか？」と確認し、依頼者の承認後に保存・反映するよう定めます。修正が入れば最新版を再提示して承認を待ちます。「案だけ」の場合はworkspaceに下書きを保存します。
+
+改善要望のヒアリング用には `examples/playbooks/request-discovery.md` も配置できます。既存ファイルがある場合は差分を確認して反映してください。
+
+作業ターンは `data/playbooks` に書き込めます。一覧は依頼のたびに読み直すため、保存したplaybookは次の依頼から再起動なしで使われます。方針検討ターンは引き続き読み取り専用です。playbook変更にも既存のSlack利用権限が適用されます。
+
+playbookは直下のMarkdownファイルに `name` と `description` のfrontmatterを付け、64KB以内にします。書き込み途中の読み込みを避けるため、一時ファイルを完成させてからrenameで置き換えてください。`data/` はGit管理外なので、実際のplaybookは運用環境で保持してください。この機能を含むバイナリへの更新時のみ再起動が必要です。
+
 ## メモリ
 
 ebiii は作業で得た長期的に有用な情報を、次の2スコープに分けて保存します。

@@ -76,6 +76,7 @@ type Config struct {
 	AdminUserID                string
 	WorkspaceDir               string
 	MemoryDir                  string
+	PlaybooksDir               string
 	CodexTimeout               time.Duration
 	ThreadSubscriptionReaction string
 	ThreadSubscriptionTTL      time.Duration
@@ -122,6 +123,9 @@ type processingTrigger struct {
 // New constructs a Bot.
 func New(api SlackAPI, store Store, runner Runner, config Config, playbooks []playbook.Playbook) *Bot {
 	config.WritableRoots = append([]string(nil), config.WritableRoots...)
+	if config.PlaybooksDir != "" {
+		config.WritableRoots = append(config.WritableRoots, config.PlaybooksDir)
+	}
 	b := &Bot{
 		api:             api,
 		store:           store,
@@ -288,11 +292,21 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	if memErr != nil {
 		log.Printf("slackbot: read memory: %v", memErr)
 	}
+	// Read a fresh, local snapshot so concurrent turns never mutate the catalog.
+	currentPlaybooks := b.playbooks
+	if b.config.PlaybooksDir != "" {
+		var err error
+		currentPlaybooks, err = playbook.List(b.config.PlaybooksDir)
+		if err != nil {
+			log.Printf("slackbot: reload playbooks: %v", err)
+			currentPlaybooks = nil
+		}
+	}
 	var planPrompt string
 	if trigger.source == messageTrigger {
-		planPrompt = prompt.BuildMessagePlanPrompt(memoryContext, b.playbooks, slackThread, trigger.authorID, trigger.message)
+		planPrompt = prompt.BuildMessagePlanPrompt(memoryContext, currentPlaybooks, slackThread, trigger.authorID, trigger.message)
 	} else {
-		planPrompt = prompt.BuildPlanPrompt(memoryContext, b.playbooks, slackThread, trigger.message)
+		planPrompt = prompt.BuildPlanPrompt(memoryContext, currentPlaybooks, slackThread, trigger.message)
 	}
 	planResult, runErr := b.runTurn(ctx, threadID, "read-only-network", b.config.WorkspaceDir, nil, planPrompt, func(id string) error {
 		if err := b.store.SetThread(threadKey, id); err != nil {

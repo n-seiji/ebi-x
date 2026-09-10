@@ -1425,6 +1425,7 @@ func TestWorkTurnReceivesWritableRootsAndPlanTurnDoesNot(t *testing.T) {
 		{result: &codex.TurnResult{Completed: true, Messages: []string{"Work completed."}}},
 	}}
 	roots := []string{"/extra/one", "/extra/two"}
+	playbooksDir := t.TempDir()
 	bot := New(api, store, runner, Config{
 		AllowedUserIDs: []string{"U1"},
 		WorkspaceDir:   "/repo/workspace",
@@ -1432,6 +1433,7 @@ func TestWorkTurnReceivesWritableRootsAndPlanTurnDoesNot(t *testing.T) {
 		CodexTimeout:   time.Minute,
 		BotUserID:      "UBOT",
 		WritableRoots:  roots,
+		PlaybooksDir:   playbooksDir,
 	}, nil)
 	// New must copy the slice, so later mutation by the caller is not observed.
 	roots[0] = "/mutated"
@@ -1449,7 +1451,7 @@ func TestWorkTurnReceivesWritableRootsAndPlanTurnDoesNot(t *testing.T) {
 	if got := runner.sandboxes[0]; got != "read-only-network" {
 		t.Errorf("plan turn sandbox = %q, want read-only-network", got)
 	}
-	want := []string{"/extra/one", "/extra/two"}
+	want := []string{"/extra/one", "/extra/two", playbooksDir}
 	if !reflect.DeepEqual(runner.roots[1], want) {
 		t.Errorf("work turn writable roots = %v, want %v", runner.roots[1], want)
 	}
@@ -1808,5 +1810,38 @@ func receiveDuration(t *testing.T, calls <-chan time.Duration) time.Duration {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for status refresh")
 		return 0
+	}
+}
+
+func TestPlaybooksReloadBetweenRequests(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	runner := &fakeRunner{}
+	bot := newTestBot(t, store, api, runner)
+	bot.config.PlaybooksDir = t.TempDir()
+	path := filepath.Join(bot.config.PlaybooksDir, "example.md")
+	for _, description := range []string{"first-version", "updated-version", ""} {
+		if description == "" {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.WriteFile(path, []byte("---\nname: example\ndescription: "+description+"\n---\nBody"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		runner.responses = append(runner.responses, runnerResponse{result: &codex.TurnResult{
+			Completed: true, Messages: []string{"## 方針\nDone.\n## 作業指示\nNONE"},
+		}})
+		bot.HandleMention(context.Background(), mention())
+		got := runner.prompts[len(runner.prompts)-1]
+		if description == "" {
+			if strings.Contains(got, "name: example") {
+				t.Fatal("removed playbook remains in prompt")
+			}
+		} else if !strings.Contains(got, description) {
+			t.Fatalf("prompt missing current description %q", description)
+		}
+		if description != "first-version" && strings.Contains(got, "first-version") {
+			t.Fatal("stale playbook remains in prompt")
+		}
 	}
 }
