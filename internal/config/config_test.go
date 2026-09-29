@@ -30,7 +30,7 @@ func TestLoad(t *testing.T) {
 				"CODEX_TIMEOUT":                      "45s",
 				"SLACK_THREAD_SUBSCRIPTION_REACTION": "follow-up",
 				"SLACK_THREAD_SUBSCRIPTION_TTL":      "48h",
-				"EBIX_HOME":                         "data",
+				"EBIX_HOME":                          "data",
 			},
 			check: func(t *testing.T, cfg *Config, workingDir string) {
 				t.Helper()

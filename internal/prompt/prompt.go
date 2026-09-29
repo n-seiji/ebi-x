@@ -9,6 +9,19 @@ import (
 	"github.com/n-seiji/ebi-x/internal/playbook"
 )
 
+// slackFormatRules are the conventions for text the bot posts to Slack. The
+// bot sends it as a Block Kit markdown block, so standard Markdown renders as
+// written and Slack's own mrkdwn syntax would show up as literal characters.
+// The length and shape rules matter as much as the syntax: a correctly
+// rendered wall of text is still unreadable in a thread.
+const slackFormatRules = `- Markdown記法（見出し・太字・箇条書き・表・コードブロック・リンク）はそのまま描画されます。Slack独自のmrkdwn記法（<URL|ラベル> など）は使わないでください。
+- 冒頭に結論を3行以内で書き、その後に詳細を続けてください。
+- 全体を1800字以内に収めてください。収まらない場合は要点だけを書き、詳細が必要なら追加で質問するよう促してください。
+- 表は3列以内にしてください。それ以上の比較は、見出しを付けた箇条書きにしてください。
+- 箇条書きのネストは2段までにしてください。
+- 根拠のリンクは本文に散らさず、末尾にまとめてください。
+`
+
 // BuildPlanPrompt builds the prompt for a planning turn. The memory content
 // is injected as data rather than as a file the agent reads itself, so its
 // content cannot act as instructions.
@@ -71,7 +84,10 @@ func buildPlanPrompt(memories memory.Context, playbooks []playbook.Playbook, sla
 - 両方の見出しの本文を非空にしてください。
 - 作業が不要な場合は「## 作業指示」の本文に NONE という単独行のみを書いてください。
 - 現在の依頼に、長期的に有用で保存基準を満たす全体・チャンネル情報が含まれる場合、メモリ保存は作業として扱ってください。NONE にせず、次の作業ターンが適切なスコープのメモリ追記を提案できる作業指示を書いてください。
+
+「## 方針」の本文はそのままSlackに投稿されるため、次の書式規約に従ってください。「## 作業指示」の本文は投稿されないので、この規約の対象外です。
 `)
+	builder.WriteString(slackFormatRules)
 	builder.WriteString(requestData)
 	return builder.String()
 }
@@ -88,12 +104,14 @@ func BuildWorkPrompt(instruction string, memories memory.Context) string {
 %s
 </work_instruction>
 
+最終応答は、後述のメモリ追記の見出しを除いてそのままSlackに投稿されるため、次の書式規約に従ってください。
+%s
 メモリファイルを直接編集しないでください。作業中に長期的に有用な学びがあれば、最終応答の末尾に以下の見出しを必要なものだけ置いてください。複数使う場合はこの順序にしてください。
 - 「## 全体メモリ追記」: 他のユーザーやチャンネルでも再利用できる技術的・運用上の知識
 - 「## チャンネルメモリ追記」: 現在のチャンネルの参加者で共有してよい用語・目的・運用ルール
 
 各見出しは最大1回です。認証情報、秘密、一時的な依頼内容、推測したセンシティブ属性は保存しないでください。重要な学びがなければ、これらの見出しを出力しないでください。
-`, instruction)
+`, instruction, slackFormatRules)
 	return builder.String()
 }
 
