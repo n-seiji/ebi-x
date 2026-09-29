@@ -71,7 +71,7 @@ type Runner interface {
 	Run(ctx context.Context, threadID, sandbox, cwd string, writableRoots []string, text string, onThreadStarted func(string) error) (*codex.TurnResult, error)
 }
 
-// Workspaces provides per-thread working directories and git worktrees.
+// Workspaces provides per-thread working directories and git checkouts.
 type Workspaces interface {
 	ThreadDir(threadID string) (string, error)
 	Acquire(ctx context.Context, threadID string) (*workspace.Lease, error)
@@ -96,7 +96,7 @@ type Config struct {
 	// run at once. Values below 1 mean 1.
 	MaxParallelWork int
 	// Workspaces, when set, gives each Slack thread its own cwd and git
-	// worktrees in place of WorkspaceDir and the shared repositories.
+	// checkouts in place of WorkspaceDir and the shared repositories.
 	Workspaces Workspaces
 }
 
@@ -423,14 +423,14 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 	defer release()
 
 	cwd, roots := b.config.WorkspaceDir, b.config.WritableRoots
-	var worktrees []workspace.Worktree
+	var checkouts []workspace.Checkout
 	if b.config.Workspaces != nil {
 		lease, err := b.config.Workspaces.Acquire(ctx, workspaceID)
 		if err != nil {
 			return "", nil, false, fmt.Errorf("prepare workspace: %w", err)
 		}
 		defer lease.Release()
-		cwd, worktrees = lease.Dir, lease.Worktrees
+		cwd, checkouts = lease.Dir, lease.Checkouts
 		roots = append([]string(nil), lease.WritableRoots...)
 		if b.config.PlaybooksDir != "" {
 			roots = append(roots, b.config.PlaybooksDir)
@@ -455,7 +455,7 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 	if memErr != nil {
 		log.Printf("slackbot: refresh memory before work: %v", memErr)
 	}
-	workPrompt := prompt.BuildWorkPrompt(instruction, workMemoryContext, worktrees)
+	workPrompt := prompt.BuildWorkPrompt(instruction, workMemoryContext, checkouts)
 	workResult, workErr := b.runTurn(ctx, "", "workspace-write", cwd, roots, workPrompt, nil)
 	if workErr != nil {
 		return "", nil, true, workErr

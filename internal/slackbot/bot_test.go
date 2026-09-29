@@ -2062,11 +2062,11 @@ func (w *fakeWorkspaces) Acquire(_ context.Context, threadID string) (*workspace
 		return nil, w.err
 	}
 	w.acquired = append(w.acquired, threadID)
-	worktreePath := "/home/worktrees/" + threadID + "/app"
+	checkoutPath := "/home/checkouts/" + threadID + "/app"
 	lease := workspace.NewLease(
 		"/home/workspace/"+threadID,
-		[]string{"/shared/plain", worktreePath, "/src/app/.git"},
-		[]workspace.Worktree{{Repo: "/src/app", Path: worktreePath, Branch: "ebi-x/" + threadID}},
+		[]string{"/shared/plain", checkoutPath, checkoutPath + ".gitdir"},
+		[]workspace.Checkout{{Repo: "/src/app", Path: checkoutPath, Branch: "ebi-x/" + threadID}},
 		func() {
 			w.mu.Lock()
 			defer w.mu.Unlock()
@@ -2076,7 +2076,7 @@ func (w *fakeWorkspaces) Acquire(_ context.Context, threadID string) (*workspace
 	return lease, nil
 }
 
-func TestWorkUsesThreadWorkspaceAndWorktrees(t *testing.T) {
+func TestWorkUsesThreadWorkspaceAndCheckouts(t *testing.T) {
 	runner := newParallelRunner()
 	close(runner.release)
 	workspaces := &fakeWorkspaces{}
@@ -2100,12 +2100,12 @@ func TestWorkUsesThreadWorkspaceAndWorktrees(t *testing.T) {
 	if want := []string{"/home/workspace/C1-100.1"}; !reflect.DeepEqual(runner.workCwds, want) {
 		t.Errorf("work cwd = %v, want %v", runner.workCwds, want)
 	}
-	wantRoots := []string{"/shared/plain", "/home/worktrees/C1-100.1/app", "/src/app/.git", playbooksDir}
+	wantRoots := []string{"/shared/plain", "/home/checkouts/C1-100.1/app", "/home/checkouts/C1-100.1/app.gitdir", playbooksDir}
 	if len(runner.workRoots) != 1 || !reflect.DeepEqual(runner.workRoots[0], wantRoots) {
 		t.Errorf("work roots = %v, want %v", runner.workRoots, wantRoots)
 	}
-	if !strings.Contains(runner.workPrompts[0], "/src/app → /home/worktrees/C1-100.1/app") {
-		t.Errorf("work prompt does not list the thread worktree:\n%s", runner.workPrompts[0])
+	if !strings.Contains(runner.workPrompts[0], "/src/app → /home/checkouts/C1-100.1/app") {
+		t.Errorf("work prompt does not list the thread checkout:\n%s", runner.workPrompts[0])
 	}
 	if workspaces.released != 1 {
 		t.Errorf("lease released %d times, want 1", workspaces.released)
@@ -2122,7 +2122,7 @@ func TestWorkspacePreparationFailureDoesNotStartWork(t *testing.T) {
 		MemoryDir:      filepath.Join(t.TempDir(), "memory"),
 		CodexTimeout:   time.Minute,
 		BotUserID:      "UBOT",
-		Workspaces:     &fakeWorkspaces{err: errors.New("git worktree add failed")},
+		Workspaces:     &fakeWorkspaces{err: errors.New("git clone failed")},
 	}, nil)
 
 	bot.HandleMention(context.Background(), mention())

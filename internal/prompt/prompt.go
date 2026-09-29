@@ -79,15 +79,15 @@ func buildPlanPrompt(memories memory.Context, playbooks []playbook.Playbook, sla
 
 // BuildWorkPrompt builds the prompt for a work turn. Memory updates are
 // proposed through the output contract and written by the bot, not by the
-// agent. Worktrees are the thread's own checkouts of the configured git
+// agent. Checkouts are the thread's own clones of the configured git
 // repositories, which replace the original paths as writable locations.
-func BuildWorkPrompt(instruction string, memories memory.Context, worktrees []workspace.Worktree) string {
+func BuildWorkPrompt(instruction string, memories memory.Context, checkouts []workspace.Checkout) string {
 	var builder strings.Builder
 	writeMemoryContext(&builder, memories)
-	if len(worktrees) > 0 {
-		builder.WriteString("以下のGitリポジトリは、このSlackスレッド専用のworktreeで作業してください。元のパスは書き込みできません。変更はworktree上で行い、コミットする場合は作業用ブランチに対して行ってください。\n")
-		for _, worktree := range worktrees {
-			fmt.Fprintf(&builder, "- %s → %s（ブランチ: %s）\n", worktree.Repo, worktree.Path, worktree.Branch)
+	if len(checkouts) > 0 {
+		builder.WriteString("以下のGitリポジトリは、このSlackスレッド専用のクローンで作業してください。元のパスは書き込みできません。変更はクローン上で行い、コミットする場合は作業用ブランチに対して行ってください。\n")
+		for _, checkout := range checkouts {
+			fmt.Fprintf(&builder, "- %s → %s（ブランチ: %s）\n", checkout.Repo, checkout.Path, checkout.Branch)
 		}
 		builder.WriteString("\n")
 	}

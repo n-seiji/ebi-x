@@ -20,8 +20,8 @@ import (
 	"github.com/n-seiji/ebi-x/internal/workspace"
 )
 
-// worktreeGCInterval is how often idle thread worktrees are looked for.
-const worktreeGCInterval = time.Hour
+// checkoutGCInterval is how often idle thread checkouts are looked for.
+const checkoutGCInterval = time.Hour
 
 func main() {
 	cfg, err := config.Load()
@@ -44,12 +44,12 @@ func main() {
 		playbooks = nil
 	}
 
-	workspaces, err := workspace.New(context.Background(), cfg.WorkspaceDir, cfg.WorktreesDir, cfg.WritableRoots)
+	workspaces, err := workspace.New(context.Background(), cfg.WorkspaceDir, cfg.CheckoutsDir, cfg.WritableRoots)
 	if err != nil {
 		log.Fatalf("prepare workspaces: %v", err)
 	}
 	for _, repo := range workspaces.Repositories() {
-		log.Printf("work turns use per-thread worktrees of %s", repo)
+		log.Printf("work turns use per-thread checkouts of %s", repo)
 	}
 
 	runner := &codex.Runner{
@@ -86,7 +86,7 @@ func main() {
 	gcDone := make(chan struct{})
 	go func() {
 		defer close(gcDone)
-		collectIdleWorktrees(acceptCtx, workspaces, cfg.WorktreeIdleTTL)
+		collectIdleCheckouts(acceptCtx, workspaces, cfg.CheckoutIdleTTL)
 	}()
 
 	socketDone := make(chan error, 1)
@@ -126,18 +126,18 @@ func main() {
 	}
 }
 
-// collectIdleWorktrees removes thread worktrees that have not been used for
-// idle, at startup and then every worktreeGCInterval until ctx is done.
-func collectIdleWorktrees(ctx context.Context, workspaces *workspace.Manager, idle time.Duration) {
-	ticker := time.NewTicker(worktreeGCInterval)
+// collectIdleCheckouts removes thread checkouts that have not been used for
+// idle, at startup and then every checkoutGCInterval until ctx is done.
+func collectIdleCheckouts(ctx context.Context, workspaces *workspace.Manager, idle time.Duration) {
+	ticker := time.NewTicker(checkoutGCInterval)
 	defer ticker.Stop()
 	for {
-		removed, err := workspaces.GC(ctx, time.Now(), idle)
+		removed, err := workspaces.GC(time.Now(), idle)
 		if err != nil && ctx.Err() == nil {
-			log.Printf("remove idle worktrees: %v", err)
+			log.Printf("remove idle checkouts: %v", err)
 		}
 		for _, threadID := range removed {
-			log.Printf("removed idle worktrees of thread %s", threadID)
+			log.Printf("removed idle checkouts of thread %s", threadID)
 		}
 		select {
 		case <-ctx.Done():

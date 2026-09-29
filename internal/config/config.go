@@ -19,7 +19,7 @@ const (
 	defaultThreadSubscriptionReaction = "thread-subete"
 	defaultThreadSubscriptionTTL      = 336 * time.Hour
 	defaultMaxParallelWork            = 3
-	defaultWorktreeIdleTTL            = 120 * time.Hour
+	defaultCheckoutIdleTTL            = 120 * time.Hour
 )
 
 // Config contains ebi-x's runtime configuration and resolved data paths.
@@ -38,14 +38,14 @@ type Config struct {
 	// MaxParallelWork is how many work turns for different Slack threads may
 	// run at once.
 	MaxParallelWork int
-	// WorktreeIdleTTL is how long a thread's git worktrees are kept after its
+	// CheckoutIdleTTL is how long a thread's git checkouts are kept after its
 	// last work turn.
-	WorktreeIdleTTL            time.Duration
+	CheckoutIdleTTL            time.Duration
 	ThreadSubscriptionReaction string
 	ThreadSubscriptionTTL      time.Duration
 	EBIXHome                   string
 	WorkspaceDir               string
-	WorktreesDir               string
+	CheckoutsDir               string
 	MemoryDir                  string
 	PlaybooksDir               string
 	StateDir                   string
@@ -117,14 +117,14 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("CODEX_MAX_PARALLEL_WORK %q: %w", value, errors.New("must be at least 1"))
 		}
 	}
-	worktreeIdleTTL := defaultWorktreeIdleTTL
-	if value := strings.TrimSpace(os.Getenv("EBIX_WORKTREE_IDLE_TTL")); value != "" {
-		worktreeIdleTTL, err = time.ParseDuration(value)
+	checkoutIdleTTL := defaultCheckoutIdleTTL
+	if value := strings.TrimSpace(os.Getenv("EBIX_CHECKOUT_IDLE_TTL")); value != "" {
+		checkoutIdleTTL, err = time.ParseDuration(value)
 		if err != nil {
-			return nil, fmt.Errorf("EBIX_WORKTREE_IDLE_TTL %q: %w", value, err)
+			return nil, fmt.Errorf("EBIX_CHECKOUT_IDLE_TTL %q: %w", value, err)
 		}
-		if worktreeIdleTTL <= 0 {
-			return nil, fmt.Errorf("EBIX_WORKTREE_IDLE_TTL %q: %w", value, errors.New("must be positive"))
+		if checkoutIdleTTL <= 0 {
+			return nil, fmt.Errorf("EBIX_CHECKOUT_IDLE_TTL %q: %w", value, errors.New("must be positive"))
 		}
 	}
 	threadSubscriptionReaction := defaultThreadSubscriptionReaction
@@ -157,13 +157,13 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("EBIX_WRITABLE_ROOTS: %w", err)
 	}
 	workspaceDir := filepath.Join(home, "data", "workspace")
-	worktreesDir := filepath.Join(home, "data", "worktrees")
+	checkoutsDir := filepath.Join(home, "data", "checkouts")
 	memoryDir := filepath.Join(home, "data", "memory")
 	playbooksDir, err := canonicalPath(filepath.Join(home, "data", "playbooks"))
 	if err != nil {
 		return nil, fmt.Errorf("resolve playbooks directory: %w", err)
 	}
-	isolationRoots := append(append([]string(nil), writableRoots...), playbooksDir, worktreesDir)
+	isolationRoots := append(append([]string(nil), writableRoots...), playbooksDir, checkoutsDir)
 	if err := validateMemoryIsolation(workspaceDir, memoryDir, isolationRoots); err != nil {
 		return nil, err
 	}
@@ -180,12 +180,12 @@ func Load() (*Config, error) {
 		CodexWorkModel:             strings.TrimSpace(os.Getenv("CODEX_WORK_MODEL")),
 		CodexTimeout:               codexTimeout,
 		MaxParallelWork:            maxParallelWork,
-		WorktreeIdleTTL:            worktreeIdleTTL,
+		CheckoutIdleTTL:            checkoutIdleTTL,
 		ThreadSubscriptionReaction: threadSubscriptionReaction,
 		ThreadSubscriptionTTL:      threadSubscriptionTTL,
 		EBIXHome:                   home,
 		WorkspaceDir:               workspaceDir,
-		WorktreesDir:               worktreesDir,
+		CheckoutsDir:               checkoutsDir,
 		MemoryDir:                  memoryDir,
 		PlaybooksDir:               playbooksDir,
 		StateDir:                   filepath.Join(home, "data", "state"),

@@ -1,5 +1,5 @@
 // Package workspace prepares per-thread working directories and git
-// worktrees so work turns for different Slack threads can run in parallel
+// checkouts so work turns for different Slack threads can run in parallel
 // without touching each other's files.
 package workspace
 
@@ -19,32 +19,37 @@ import (
 )
 
 const (
-	// BranchPrefix names the branches created for thread worktrees.
+	// BranchPrefix names the branches created in thread checkouts.
 	BranchPrefix = "ebi-x/"
 	// lastUsedFile records, by its modification time, when a thread's
-	// worktrees were last used by a work turn.
+	// checkouts were last used by a work turn.
 	lastUsedFile = ".last-used"
+	// gitDirSuffix names a checkout's git directory. Codex keeps every
+	// directory named .git read-only even when it is a writable root, which
+	// would make commits impossible, so the git directory lives beside the
+	// checkout under another name.
+	gitDirSuffix = ".gitdir"
 )
 
-// Worktree is a git worktree dedicated to one Slack thread.
-type Worktree struct {
+// Checkout is a clone of a git repository dedicated to one Slack thread.
+type Checkout struct {
 	// Repo is the original repository configured as a writable root.
 	Repo string
-	// Path is the thread's worktree of Repo.
+	// Path is the thread's checkout of Repo.
 	Path   string
 	Branch string
 }
 
 // Lease holds a thread's workspace for the duration of one work turn. The
-// garbage collector never removes a leased thread's worktrees.
+// garbage collector never removes a leased thread's checkouts.
 type Lease struct {
 	// Dir is the thread's workspace directory, used as the turn's cwd.
 	Dir string
 	// WritableRoots replaces each git repository among the configured
-	// writable roots with its thread worktree and the repository's git
-	// directory, which commits in the worktree write to.
+	// writable roots with its thread checkout and that checkout's git
+	// directory. The original repository is not writable.
 	WritableRoots []string
-	Worktrees     []Worktree
+	Checkouts     []Checkout
 
 	once    sync.Once
 	release func()
@@ -52,8 +57,8 @@ type Lease struct {
 
 // NewLease returns a lease that calls release once when it is released. It
 // lets other implementations of a workspace provider hand out leases.
-func NewLease(dir string, writableRoots []string, worktrees []Worktree, release func()) *Lease {
-	return &Lease{Dir: dir, WritableRoots: writableRoots, Worktrees: worktrees, release: release}
+func NewLease(dir string, writableRoots []string, checkouts []Checkout, release func()) *Lease {
+	return &Lease{Dir: dir, WritableRoots: writableRoots, Checkouts: checkouts, release: release}
 }
 
 // Release returns the lease. It is safe to call more than once.
@@ -63,18 +68,17 @@ func (l *Lease) Release() {
 
 type root struct {
 	path string
-	// gitDir is the repository's common git directory; empty when the root
-	// is not the top level of a git repository.
-	gitDir string
-	// name is the root's directory name inside a thread's worktree directory.
+	// name is the root's directory name inside a thread's checkout
+	// directory; empty when the root is not the top level of a git
+	// repository.
 	name string
 }
 
-// Manager creates per-thread workspace directories and git worktrees and
-// removes worktrees that have not been used for a while.
+// Manager creates per-thread workspace directories and git checkouts and
+// removes checkouts that have not been used for a while.
 type Manager struct {
 	workspaceDir string
-	worktreesDir string
+	checkoutsDir string
 	roots        []root
 
 	mu      sync.Mutex
@@ -83,23 +87,22 @@ type Manager struct {
 }
 
 // New returns a Manager. Every writable root that is the top level of a git
-// repository is worked on through per-thread worktrees; other roots stay
+// repository is worked on through per-thread checkouts; other roots stay
 // shared by all threads.
-func New(ctx context.Context, workspaceDir, worktreesDir string, writableRoots []string) (*Manager, error) {
+func New(ctx context.Context, workspaceDir, checkoutsDir string, writableRoots []string) (*Manager, error) {
 	m := &Manager{
 		workspaceDir: workspaceDir,
-		worktreesDir: worktreesDir,
+		checkoutsDir: checkoutsDir,
 		active:       make(map[string]int),
 		idLocks:      make(map[string]*sync.Mutex),
 	}
 	for _, path := range writableRoots {
 		r := root{path: path}
-		gitDir, err := repositoryGitDir(ctx, path)
+		repo, err := isRepositoryTopLevel(ctx, path)
 		if err != nil {
 			return nil, err
 		}
-		if gitDir != "" {
-			r.gitDir = gitDir
+		if repo {
 			sum := sha256.Sum256([]byte(path))
 			r.name = filepath.Base(path) + "-" + hex.EncodeToString(sum[:4])
 		}
@@ -109,11 +112,11 @@ func New(ctx context.Context, workspaceDir, worktreesDir string, writableRoots [
 }
 
 // Repositories returns the writable roots that are worked on through
-// worktrees.
+// per-thread checkouts.
 func (m *Manager) Repositories() []string {
 	var repos []string
 	for _, r := range m.roots {
-		if r.gitDir != "" {
+		if r.name != "" {
 			repos = append(repos, r.path)
 		}
 	}
@@ -140,15 +143,15 @@ func (m *Manager) ThreadDir(threadID string) (string, error) {
 	return dir, nil
 }
 
-// Acquire prepares the thread's workspace and worktrees for a work turn.
-// Existing worktrees are reused, and an existing thread branch is checked
-// out again instead of being recreated.
+// Acquire prepares the thread's workspace and checkouts for a work turn.
+// Existing checkouts are reused, so later work in the thread continues on the
+// same branch.
 func (m *Manager) Acquire(ctx context.Context, threadID string) (*Lease, error) {
 	dir, err := m.ThreadDir(threadID)
 	if err != nil {
 		return nil, err
 	}
-	threadWorktrees, err := m.threadPath(m.worktreesDir, threadID)
+	threadCheckouts, err := m.threadPath(m.checkoutsDir, threadID)
 	if err != nil {
 		return nil, err
 	}
@@ -158,29 +161,24 @@ func (m *Manager) Acquire(ctx context.Context, threadID string) (*Lease, error) 
 	defer idLock.Unlock()
 
 	lease := &Lease{Dir: dir}
-	seenGitDirs := make(map[string]struct{})
 	for _, r := range m.roots {
-		if r.gitDir == "" {
+		if r.name == "" {
 			lease.WritableRoots = append(lease.WritableRoots, r.path)
 			continue
 		}
-		worktree := Worktree{
+		checkout := Checkout{
 			Repo:   r.path,
-			Path:   filepath.Join(threadWorktrees, r.name),
+			Path:   filepath.Join(threadCheckouts, r.name),
 			Branch: BranchPrefix + threadID,
 		}
-		if err := ensureWorktree(ctx, worktree); err != nil {
+		if err := ensureCheckout(ctx, checkout); err != nil {
 			return nil, err
 		}
-		lease.Worktrees = append(lease.Worktrees, worktree)
-		lease.WritableRoots = append(lease.WritableRoots, worktree.Path)
-		if _, seen := seenGitDirs[r.gitDir]; !seen {
-			seenGitDirs[r.gitDir] = struct{}{}
-			lease.WritableRoots = append(lease.WritableRoots, r.gitDir)
-		}
+		lease.Checkouts = append(lease.Checkouts, checkout)
+		lease.WritableRoots = append(lease.WritableRoots, checkout.Path, checkout.Path+gitDirSuffix)
 	}
-	if len(lease.Worktrees) > 0 {
-		if err := touch(filepath.Join(threadWorktrees, lastUsedFile), time.Now()); err != nil {
+	if len(lease.Checkouts) > 0 {
+		if err := touch(filepath.Join(threadCheckouts, lastUsedFile), time.Now()); err != nil {
 			return nil, err
 		}
 	}
@@ -189,9 +187,9 @@ func (m *Manager) Acquire(ctx context.Context, threadID string) (*Lease, error) 
 	m.active[threadID]++
 	m.mu.Unlock()
 	lease.release = func() {
-		if len(lease.Worktrees) > 0 {
+		if len(lease.Checkouts) > 0 {
 			// Idle time counts from the end of the work turn.
-			_ = touch(filepath.Join(threadWorktrees, lastUsedFile), time.Now())
+			_ = touch(filepath.Join(threadCheckouts, lastUsedFile), time.Now())
 		}
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -202,17 +200,18 @@ func (m *Manager) Acquire(ctx context.Context, threadID string) (*Lease, error) 
 	return lease, nil
 }
 
-// GC removes the worktrees of every thread whose last work turn ended at or
-// before now minus idle, together with their branches: an idle thread's work
-// is considered finished, and anything worth keeping should have been pushed
-// or merged by then. It returns the thread IDs whose worktrees were removed.
-func (m *Manager) GC(ctx context.Context, now time.Time, idle time.Duration) ([]string, error) {
-	entries, err := os.ReadDir(m.worktreesDir)
+// GC removes the checkouts, and with them the thread branches, of every
+// thread whose last work turn ended at or before now minus idle: an idle
+// thread's work is considered finished, and anything worth keeping should
+// have been pushed or merged by then. Original repositories are never
+// touched. It returns the thread IDs whose checkouts were removed.
+func (m *Manager) GC(now time.Time, idle time.Duration) ([]string, error) {
+	entries, err := os.ReadDir(m.checkoutsDir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("list worktrees: %w", err)
+		return nil, fmt.Errorf("list checkouts: %w", err)
 	}
 	var removed []string
 	var errs []error
@@ -221,7 +220,7 @@ func (m *Manager) GC(ctx context.Context, now time.Time, idle time.Duration) ([]
 		if !entry.IsDir() || !validThreadID(threadID) {
 			continue
 		}
-		ok, err := m.removeIfIdle(ctx, threadID, now, idle)
+		ok, err := m.removeIfIdle(threadID, now, idle)
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -232,7 +231,7 @@ func (m *Manager) GC(ctx context.Context, now time.Time, idle time.Duration) ([]
 	return removed, errors.Join(errs...)
 }
 
-func (m *Manager) removeIfIdle(ctx context.Context, threadID string, now time.Time, idle time.Duration) (bool, error) {
+func (m *Manager) removeIfIdle(threadID string, now time.Time, idle time.Duration) (bool, error) {
 	idLock := m.idLock(threadID)
 	if !idLock.TryLock() {
 		return false, nil
@@ -245,7 +244,7 @@ func (m *Manager) removeIfIdle(ctx context.Context, threadID string, now time.Ti
 		return false, nil
 	}
 
-	dir := filepath.Join(m.worktreesDir, threadID)
+	dir := filepath.Join(m.checkoutsDir, threadID)
 	lastUsed := time.Time{}
 	if info, err := os.Stat(filepath.Join(dir, lastUsedFile)); err == nil {
 		lastUsed = info.ModTime()
@@ -255,44 +254,10 @@ func (m *Manager) removeIfIdle(ctx context.Context, threadID string, now time.Ti
 	if lastUsed.After(now.Add(-idle)) {
 		return false, nil
 	}
-
-	var errs []error
-	for _, r := range m.roots {
-		if r.gitDir == "" {
-			continue
-		}
-		path := filepath.Join(dir, r.name)
-		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err := git(ctx, r.path, "worktree", "remove", "--force", path); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	// Anything git did not remove, including worktrees of roots that are no
-	// longer configured, is deleted, and prune drops its registration so the
-	// branch is no longer checked out anywhere.
 	if err := os.RemoveAll(dir); err != nil {
-		errs = append(errs, fmt.Errorf("remove worktrees of %q: %w", threadID, err))
-		return false, errors.Join(errs...)
+		return false, fmt.Errorf("remove checkouts of %q: %w", threadID, err)
 	}
-	branch := BranchPrefix + threadID
-	for _, r := range m.roots {
-		if r.gitDir == "" {
-			continue
-		}
-		if err := git(ctx, r.path, "worktree", "prune"); err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if git(ctx, r.path, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch) != nil {
-			continue
-		}
-		if err := git(ctx, r.path, "branch", "-D", branch); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return true, errors.Join(errs...)
+	return true, nil
 }
 
 func (m *Manager) idLock(threadID string) *sync.Mutex {
@@ -313,55 +278,58 @@ func (m *Manager) threadPath(base, threadID string) (string, error) {
 	return filepath.Join(base, threadID), nil
 }
 
-func ensureWorktree(ctx context.Context, worktree Worktree) error {
-	if _, err := os.Stat(filepath.Join(worktree.Path, ".git")); err == nil {
-		return nil
+// ensureCheckout clones the repository's current HEAD into a thread branch.
+// A local clone hardlinks the repository's objects, so it is cheap and does
+// not depend on the original afterwards. When the repository has an origin
+// remote, the checkout's origin points there too so the branch can be pushed.
+func ensureCheckout(ctx context.Context, checkout Checkout) error {
+	gitDir := checkout.Path + gitDirSuffix
+	if _, err := os.Stat(filepath.Join(checkout.Path, ".git")); err == nil {
+		if _, err := os.Stat(gitDir); err == nil {
+			return nil
+		}
 	}
-	// A partially created directory or a stale registration would make
-	// "worktree add" fail.
-	if err := os.RemoveAll(worktree.Path); err != nil {
-		return fmt.Errorf("clean worktree %q: %w", worktree.Path, err)
+	// Clear anything a failed or interrupted clone left behind.
+	for _, path := range []string{checkout.Path, gitDir} {
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("clean checkout %q: %w", path, err)
+		}
 	}
-	if err := git(ctx, worktree.Repo, "worktree", "prune"); err != nil {
+	if err := os.MkdirAll(filepath.Dir(checkout.Path), 0o700); err != nil {
+		return fmt.Errorf("create checkout directory: %w", err)
+	}
+	if err := git(ctx, filepath.Dir(checkout.Path), "clone", "--quiet", "--separate-git-dir="+gitDir, checkout.Repo, checkout.Path); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(worktree.Path), 0o700); err != nil {
-		return fmt.Errorf("create worktree directory: %w", err)
+	if err := git(ctx, checkout.Path, "checkout", "--quiet", "-b", checkout.Branch); err != nil {
+		return err
 	}
-	if git(ctx, worktree.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+worktree.Branch) == nil {
-		return git(ctx, worktree.Repo, "worktree", "add", worktree.Path, worktree.Branch)
+	originURL, err := gitOutput(ctx, checkout.Repo, "config", "--get", "remote.origin.url")
+	if originURL = strings.TrimSpace(originURL); err == nil && originURL != "" {
+		if err := git(ctx, checkout.Path, "remote", "set-url", "origin", originURL); err != nil {
+			return err
+		}
 	}
-	return git(ctx, worktree.Repo, "worktree", "add", "-b", worktree.Branch, worktree.Path, "HEAD")
+	return nil
 }
 
-// repositoryGitDir returns the common git directory when path is the top
-// level of a git repository, and "" otherwise.
-func repositoryGitDir(ctx context.Context, path string) (string, error) {
+// isRepositoryTopLevel reports whether path is the top level of a git
+// repository.
+func isRepositoryTopLevel(ctx context.Context, path string) (bool, error) {
 	if _, err := os.Lstat(filepath.Join(path, ".git")); errors.Is(err, os.ErrNotExist) {
-		return "", nil
+		return false, nil
 	} else if err != nil {
-		return "", fmt.Errorf("inspect %q: %w", path, err)
+		return false, fmt.Errorf("inspect %q: %w", path, err)
 	}
-	out, err := gitOutput(ctx, path, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir")
+	out, err := gitOutput(ctx, path, "rev-parse", "--path-format=absolute", "--show-toplevel")
 	if err != nil {
-		return "", err
+		return false, err
 	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 2 {
-		return "", fmt.Errorf("inspect git repository %q: unexpected output %q", path, out)
-	}
-	topLevel, err := filepath.EvalSymlinks(lines[0])
+	topLevel, err := filepath.EvalSymlinks(strings.TrimSpace(out))
 	if err != nil {
-		return "", fmt.Errorf("resolve git top level of %q: %w", path, err)
+		return false, fmt.Errorf("resolve git top level of %q: %w", path, err)
 	}
-	if topLevel != path {
-		return "", nil
-	}
-	gitDir, err := filepath.EvalSymlinks(lines[1])
-	if err != nil {
-		return "", fmt.Errorf("resolve git directory of %q: %w", path, err)
-	}
-	return gitDir, nil
+	return topLevel == path, nil
 }
 
 func git(ctx context.Context, dir string, args ...string) error {
@@ -386,10 +354,10 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 
 func touch(path string, at time.Time) error {
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		return fmt.Errorf("record worktree use: %w", err)
+		return fmt.Errorf("record checkout use: %w", err)
 	}
 	if err := os.Chtimes(path, at, at); err != nil {
-		return fmt.Errorf("record worktree use: %w", err)
+		return fmt.Errorf("record checkout use: %w", err)
 	}
 	return nil
 }

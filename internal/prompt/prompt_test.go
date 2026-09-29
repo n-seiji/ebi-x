@@ -151,16 +151,16 @@ func TestBuildWorkPrompt(t *testing.T) {
 	if strings.Contains(got, "ユーザーメモリ追記") {
 		t.Error("BuildWorkPrompt() must not request user memory appends")
 	}
-	if strings.Contains(got, "worktree") {
-		t.Error("BuildWorkPrompt() mentions worktrees when there are none")
+	if strings.Contains(got, "クローン") {
+		t.Error("BuildWorkPrompt() mentions checkouts when there are none")
 	}
 }
 
-func TestBuildWorkPromptListsThreadWorktrees(t *testing.T) {
-	got := BuildWorkPrompt("直す", memory.Context{}, []workspace.Worktree{{
-		Repo: "/src/app", Path: "/home/data/worktrees/C1-1.2/app-abcd", Branch: "ebi-x/C1-1.2",
+func TestBuildWorkPromptListsThreadCheckouts(t *testing.T) {
+	got := BuildWorkPrompt("直す", memory.Context{}, []workspace.Checkout{{
+		Repo: "/src/app", Path: "/home/data/checkouts/C1-1.2/app-abcd", Branch: "ebi-x/C1-1.2",
 	}})
-	for _, want := range []string{"/src/app → /home/data/worktrees/C1-1.2/app-abcd", "ebi-x/C1-1.2", "元のパスは書き込みできません"} {
+	for _, want := range []string{"/src/app → /home/data/checkouts/C1-1.2/app-abcd", "ebi-x/C1-1.2", "元のパスは書き込みできません"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("BuildWorkPrompt() does not contain %q", want)
 		}
