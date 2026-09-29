@@ -15,6 +15,7 @@ import (
 	"github.com/n-seiji/ebi-x/internal/memory"
 	"github.com/n-seiji/ebi-x/internal/playbook"
 	"github.com/n-seiji/ebi-x/internal/prompt"
+	"github.com/n-seiji/ebi-x/internal/slackfmt"
 	"github.com/n-seiji/ebi-x/internal/state"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -22,7 +23,10 @@ import (
 )
 
 const (
-	maxSlackMessageRunes  = 3900
+	// Slack renders at most 12,000 characters in one markdown block. The
+	// margin covers characters that count as more than one and the fence
+	// lines Split repeats across a cut, and keeps one reply readable.
+	maxSlackMessageRunes  = 8000
 	maxThreadContextRunes = 12000
 	claimFailureMessage   = "受付に失敗しました。お手数ですが、もう一度 mention してください。"
 	failClosedMessage     = "作業指示を確定できなかったため、作業は開始していません。指示を明確にして、もう一度 mention してください。"
@@ -597,7 +601,7 @@ func (b *Bot) clearStatus(ctx context.Context, channel, threadTS string) {
 }
 
 func (b *Bot) post(ctx context.Context, channel, threadTS, text string) error {
-	for _, chunk := range splitMessage(text, maxSlackMessageRunes) {
+	for _, chunk := range slackfmt.Split(text, maxSlackMessageRunes) {
 		if err := b.retrySlack(ctx, func() error {
 			_, err := b.api.PostMessage(ctx, channel, threadTS, chunk)
 			return err
@@ -630,20 +634,6 @@ func (b *Bot) threadLock(key string) *sync.Mutex {
 		b.threadLocks[key] = lock
 	}
 	return lock
-}
-
-func splitMessage(text string, limit int) []string {
-	runes := []rune(text)
-	if len(runes) == 0 {
-		return []string{""}
-	}
-	chunks := make([]string, 0, (len(runes)+limit-1)/limit)
-	for len(runes) > 0 {
-		n := min(len(runes), limit)
-		chunks = append(chunks, string(runes[:n]))
-		runes = runes[n:]
-	}
-	return chunks
 }
 
 func formatThreadContext(messages []ThreadMessage, currentTimestamp string) string {
@@ -711,9 +701,38 @@ type webAPI struct {
 	client *slack.Client
 }
 
+// PostMessage sends the text as a Block Kit markdown block so Slack renders
+// headings, tables, and links rather than printing their syntax. The text
+// option is not a second copy of the body: Slack shows it in notification
+// previews and in clients that cannot render blocks.
 func (w *webAPI) PostMessage(ctx context.Context, channel, threadTS, text string) (string, error) {
-	_, timestamp, err := w.client.PostMessageContext(ctx, channel, slack.MsgOptionText(text, false), slack.MsgOptionTS(threadTS))
+	fallback := slackfmt.PlainText(text)
+	_, timestamp, err := w.client.PostMessageContext(ctx, channel,
+		slack.MsgOptionBlocks(slack.NewMarkdownBlock("", text)),
+		slack.MsgOptionText(fallback, false),
+		slack.MsgOptionTS(threadTS))
+	if err == nil || !rejectedBlocks(err) {
+		return timestamp, err
+	}
+	// A formatting fault must not swallow the answer itself.
+	log.Printf("slackbot: post markdown block: %v; retrying as plain text", err)
+	_, timestamp, err = w.client.PostMessageContext(ctx, channel,
+		slack.MsgOptionText(fallback, false), slack.MsgOptionTS(threadTS))
 	return timestamp, err
+}
+
+// rejectedBlocks reports whether Slack refused the block payload itself, which
+// a retry without blocks can still deliver.
+func rejectedBlocks(err error) bool {
+	response, ok := errors.AsType[slack.SlackErrorResponse](err)
+	if !ok {
+		return false
+	}
+	switch response.Err {
+	case "invalid_blocks", "invalid_blocks_format", "msg_too_long":
+		return true
+	}
+	return false
 }
 
 func (w *webAPI) GetThreadMessages(ctx context.Context, channel, threadTS, latest string) ([]ThreadMessage, error) {

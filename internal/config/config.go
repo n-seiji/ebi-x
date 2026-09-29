@@ -33,7 +33,7 @@ type Config struct {
 	CodexTimeout               time.Duration
 	ThreadSubscriptionReaction string
 	ThreadSubscriptionTTL      time.Duration
-	EBIXHome                  string
+	EBIXHome                   string
 	WorkspaceDir               string
 	MemoryDir                  string
 	PlaybooksDir               string
@@ -148,7 +148,7 @@ func Load() (*Config, error) {
 		CodexTimeout:               codexTimeout,
 		ThreadSubscriptionReaction: threadSubscriptionReaction,
 		ThreadSubscriptionTTL:      threadSubscriptionTTL,
-		EBIXHome:                  home,
+		EBIXHome:                   home,
 		WorkspaceDir:               workspaceDir,
 		MemoryDir:                  memoryDir,
 		PlaybooksDir:               playbooksDir,
