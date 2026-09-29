@@ -18,23 +18,34 @@ const (
 	defaultCodexTimeout               = 30 * time.Minute
 	defaultThreadSubscriptionReaction = "thread-subete"
 	defaultThreadSubscriptionTTL      = 336 * time.Hour
+	defaultMaxParallelWork            = 3
+	defaultCheckoutIdleTTL            = 120 * time.Hour
 )
 
 // Config contains ebi-x's runtime configuration and resolved data paths.
 type Config struct {
-	SlackBotToken              string
-	SlackAppToken              string
-	AllowedUserIDs             []string
-	AllowedChannelIDs          []string
-	AllowWorkflows             bool
-	AdminUserID                string
-	CodexCommand               string
-	CodexModel                 string
-	CodexTimeout               time.Duration
+	SlackBotToken     string
+	SlackAppToken     string
+	AllowedUserIDs    []string
+	AllowedChannelIDs []string
+	AllowWorkflows    bool
+	AdminUserID       string
+	CodexCommand      string
+	CodexModel        string
+	// CodexWorkModel overrides CodexModel for work turns; empty uses CodexModel.
+	CodexWorkModel string
+	CodexTimeout   time.Duration
+	// MaxParallelWork is how many work turns for different Slack threads may
+	// run at once.
+	MaxParallelWork int
+	// CheckoutIdleTTL is how long a thread's git checkouts are kept after its
+	// last work turn.
+	CheckoutIdleTTL            time.Duration
 	ThreadSubscriptionReaction string
 	ThreadSubscriptionTTL      time.Duration
 	EBIXHome                   string
 	WorkspaceDir               string
+	CheckoutsDir               string
 	MemoryDir                  string
 	PlaybooksDir               string
 	StateDir                   string
@@ -96,6 +107,26 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("CODEX_TIMEOUT %q: %w", value, err)
 		}
 	}
+	maxParallelWork := defaultMaxParallelWork
+	if value := strings.TrimSpace(os.Getenv("CODEX_MAX_PARALLEL_WORK")); value != "" {
+		maxParallelWork, err = strconv.Atoi(value)
+		if err != nil {
+			return nil, fmt.Errorf("CODEX_MAX_PARALLEL_WORK %q: %w", value, err)
+		}
+		if maxParallelWork < 1 {
+			return nil, fmt.Errorf("CODEX_MAX_PARALLEL_WORK %q: %w", value, errors.New("must be at least 1"))
+		}
+	}
+	checkoutIdleTTL := defaultCheckoutIdleTTL
+	if value := strings.TrimSpace(os.Getenv("EBIX_CHECKOUT_IDLE_TTL")); value != "" {
+		checkoutIdleTTL, err = time.ParseDuration(value)
+		if err != nil {
+			return nil, fmt.Errorf("EBIX_CHECKOUT_IDLE_TTL %q: %w", value, err)
+		}
+		if checkoutIdleTTL <= 0 {
+			return nil, fmt.Errorf("EBIX_CHECKOUT_IDLE_TTL %q: %w", value, errors.New("must be positive"))
+		}
+	}
 	threadSubscriptionReaction := defaultThreadSubscriptionReaction
 	if value, exists := os.LookupEnv("SLACK_THREAD_SUBSCRIPTION_REACTION"); exists {
 		threadSubscriptionReaction = strings.TrimSpace(value)
@@ -126,12 +157,13 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("EBIX_WRITABLE_ROOTS: %w", err)
 	}
 	workspaceDir := filepath.Join(home, "data", "workspace")
+	checkoutsDir := filepath.Join(home, "data", "checkouts")
 	memoryDir := filepath.Join(home, "data", "memory")
 	playbooksDir, err := canonicalPath(filepath.Join(home, "data", "playbooks"))
 	if err != nil {
 		return nil, fmt.Errorf("resolve playbooks directory: %w", err)
 	}
-	isolationRoots := append(append([]string(nil), writableRoots...), playbooksDir)
+	isolationRoots := append(append([]string(nil), writableRoots...), playbooksDir, checkoutsDir)
 	if err := validateMemoryIsolation(workspaceDir, memoryDir, isolationRoots); err != nil {
 		return nil, err
 	}
@@ -145,11 +177,15 @@ func Load() (*Config, error) {
 		AdminUserID:                adminUserID,
 		CodexCommand:               codexCommand,
 		CodexModel:                 strings.TrimSpace(os.Getenv("CODEX_MODEL")),
+		CodexWorkModel:             strings.TrimSpace(os.Getenv("CODEX_WORK_MODEL")),
 		CodexTimeout:               codexTimeout,
+		MaxParallelWork:            maxParallelWork,
+		CheckoutIdleTTL:            checkoutIdleTTL,
 		ThreadSubscriptionReaction: threadSubscriptionReaction,
 		ThreadSubscriptionTTL:      threadSubscriptionTTL,
 		EBIXHome:                   home,
 		WorkspaceDir:               workspaceDir,
+		CheckoutsDir:               checkoutsDir,
 		MemoryDir:                  memoryDir,
 		PlaybooksDir:               playbooksDir,
 		StateDir:                   filepath.Join(home, "data", "state"),

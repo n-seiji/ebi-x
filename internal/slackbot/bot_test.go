@@ -19,6 +19,7 @@ import (
 	"github.com/n-seiji/ebi-x/internal/memory"
 	"github.com/n-seiji/ebi-x/internal/slackfmt"
 	"github.com/n-seiji/ebi-x/internal/state"
+	"github.com/n-seiji/ebi-x/internal/workspace"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 )
@@ -879,7 +880,7 @@ func TestAllowedActiveMessageReplyRunsPlanningInSharedThreadSession(t *testing.T
 	if runner.calls != 1 {
 		t.Fatalf("runner calls = %d, want 1", runner.calls)
 	}
-	if got := store.threadKeys; !reflect.DeepEqual(got, []string{"v3:C1:100.1"}) {
+	if got := store.threadKeys; !reflect.DeepEqual(got, []string{"v4:C1:100.1"}) {
 		t.Fatalf("thread keys = %v, want v3 channel/thread session", got)
 	}
 	if len(runner.prompts) != 1 {
@@ -939,7 +940,7 @@ func TestMessageRepliesFromMultipleAuthorsShareOneSession(t *testing.T) {
 	bot.HandleMessage(context.Background(), messageReply("U2", "200.2", "first reply"))
 	bot.HandleMessage(context.Background(), messageReply("U3", "300.3", "second reply"))
 
-	if got := store.threadKeys; !reflect.DeepEqual(got, []string{"v3:C1:100.1", "v3:C1:100.1"}) {
+	if got := store.threadKeys; !reflect.DeepEqual(got, []string{"v4:C1:100.1", "v4:C1:100.1"}) {
 		t.Fatalf("thread keys = %v, want one shared Slack thread key", got)
 	}
 	if got := runner.threadIDs; !reflect.DeepEqual(got, []string{"", "plan-thread"}) {
@@ -1377,7 +1378,7 @@ func TestPlanSessionsAreSharedBySlackThread(t *testing.T) {
 		User: "U2", Channel: "C1", TimeStamp: "200.2", ThreadTimeStamp: "100.1", Text: "<@UBOT> do it",
 	})
 
-	want := []string{"v3:C1:100.1", "v3:C1:100.1"}
+	want := []string{"v4:C1:100.1", "v4:C1:100.1"}
 	if !reflect.DeepEqual(store.threadKeys, want) {
 		t.Fatalf("thread keys = %v, want %v", store.threadKeys, want)
 	}
@@ -1427,7 +1428,7 @@ func TestFirstThreadMentionReceivesEarlierSlackMessages(t *testing.T) {
 func TestExistingPlanSessionSkipsSlackThreadFetch(t *testing.T) {
 	store := &fakeStore{
 		claim:     true,
-		threadIDs: map[string]string{"v3:C1:100.1": "existing-thread"},
+		threadIDs: map[string]string{"v4:C1:100.1": "existing-thread"},
 	}
 	api := &fakeSlack{threadErr: errors.New("must not be called")}
 	runner := &fakeRunner{responses: []runnerResponse{{result: &codex.TurnResult{
@@ -1955,4 +1956,294 @@ func TestPlaybooksReloadBetweenRequests(t *testing.T) {
 			t.Fatal("stale playbook remains in prompt")
 		}
 	}
+}
+
+// parallelRunner answers every plan with a work instruction and holds every
+// work turn open until release is closed, recording how many run at once.
+type parallelRunner struct {
+	mu          sync.Mutex
+	running     int
+	maxRunning  int
+	workCwds    []string
+	workRoots   [][]string
+	workPrompts []string
+	planCwds    []string
+	started     chan struct{}
+	release     chan struct{}
+}
+
+func newParallelRunner() *parallelRunner {
+	return &parallelRunner{started: make(chan struct{}, 16), release: make(chan struct{})}
+}
+
+func (r *parallelRunner) Run(ctx context.Context, _, sandbox, cwd string, roots []string, prompt string, callback func(string) error) (*codex.TurnResult, error) {
+	if sandbox != "workspace-write" {
+		r.mu.Lock()
+		r.planCwds = append(r.planCwds, cwd)
+		r.mu.Unlock()
+		if callback != nil {
+			if err := callback("plan-thread"); err != nil {
+				return nil, err
+			}
+		}
+		return &codex.TurnResult{
+			Completed: true,
+			Messages:  []string{"## 方針\nWork on it.\n## 作業指示\nDo the work."},
+		}, nil
+	}
+	r.mu.Lock()
+	r.running++
+	r.maxRunning = max(r.maxRunning, r.running)
+	r.workCwds = append(r.workCwds, cwd)
+	r.workRoots = append(r.workRoots, roots)
+	r.workPrompts = append(r.workPrompts, prompt)
+	r.mu.Unlock()
+	r.started <- struct{}{}
+	defer func() {
+		r.mu.Lock()
+		r.running--
+		r.mu.Unlock()
+	}()
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return &codex.TurnResult{Completed: true, Messages: []string{"Work completed."}}, nil
+}
+
+func (r *parallelRunner) waitStarted(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("work turn did not start")
+	}
+}
+
+func (r *parallelRunner) assertNotStarted(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.started:
+		t.Fatal("work turn started while it should be waiting")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func newParallelBot(t *testing.T, api *fakeSlack, runner Runner, maxParallel int) *Bot {
+	t.Helper()
+	return New(api, &looseStore{threads: map[string]string{}}, runner, Config{
+		AllowedUserIDs:  []string{"U1"},
+		WorkspaceDir:    "/repo/workspace",
+		MemoryDir:       filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:    time.Minute,
+		BotUserID:       "UBOT",
+		MaxParallelWork: maxParallel,
+	}, nil)
+}
+
+func mentionAt(timestamp, threadTS string) *slackevents.AppMentionEvent {
+	return &slackevents.AppMentionEvent{
+		User: "U1", Channel: "C1", TimeStamp: timestamp, ThreadTimeStamp: threadTS, Text: "<@UBOT> do it",
+	}
+}
+
+func handleAsync(bot *Bot, ctx context.Context, events ...*slackevents.AppMentionEvent) *sync.WaitGroup {
+	var wg sync.WaitGroup
+	for _, event := range events {
+		wg.Go(func() { bot.HandleMention(ctx, event) })
+	}
+	return &wg
+}
+
+func TestWorkTurnsForDifferentThreadsRunInParallel(t *testing.T) {
+	runner := newParallelRunner()
+	bot := newParallelBot(t, &fakeSlack{}, runner, 2)
+	wg := handleAsync(bot, context.Background(), mentionAt("100.1", ""), mentionAt("200.2", ""))
+	defer wg.Wait()
+	defer close(runner.release)
+
+	runner.waitStarted(t)
+	runner.waitStarted(t)
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if runner.maxRunning != 2 {
+		t.Fatalf("max concurrent work turns = %d, want 2", runner.maxRunning)
+	}
+}
+
+func TestWorkTurnsBeyondLimitWaitWithQueuedStatus(t *testing.T) {
+	runner := newParallelRunner()
+	api := &fakeSlack{}
+	bot := newParallelBot(t, api, runner, 1)
+	ctx := context.Background()
+	first := handleAsync(bot, ctx, mentionAt("100.1", ""))
+	runner.waitStarted(t)
+
+	second := handleAsync(bot, ctx, mentionAt("200.2", ""))
+	runner.assertNotStarted(t)
+	api.mu.Lock()
+	queued := false
+	for _, call := range api.calls {
+		queued = queued || (call.kind == "status" && call.text == queuedStatus)
+	}
+	api.mu.Unlock()
+	if !queued {
+		t.Error("waiting work turn did not show the queued status")
+	}
+
+	close(runner.release)
+	runner.waitStarted(t)
+	first.Wait()
+	second.Wait()
+	if runner.maxRunning != 1 {
+		t.Fatalf("max concurrent work turns = %d, want 1", runner.maxRunning)
+	}
+}
+
+func TestWorkTurnsInOneThreadRunInOrder(t *testing.T) {
+	runner := newParallelRunner()
+	bot := newParallelBot(t, &fakeSlack{}, runner, 2)
+	ctx := context.Background()
+	first := handleAsync(bot, ctx, mentionAt("100.1", ""))
+	runner.waitStarted(t)
+
+	second := handleAsync(bot, ctx, mentionAt("100.2", "100.1"))
+	runner.assertNotStarted(t)
+	close(runner.release)
+	runner.waitStarted(t)
+	first.Wait()
+	second.Wait()
+	if runner.maxRunning != 1 {
+		t.Fatalf("max concurrent work turns in one thread = %d, want 1", runner.maxRunning)
+	}
+}
+
+func TestCancelledWaitForWorkFailsWithoutRunningWork(t *testing.T) {
+	runner := newParallelRunner()
+	api := &fakeSlack{}
+	store := &fakeStore{claim: true}
+	bot := New(api, store, runner, Config{
+		AllowedUserIDs:  []string{"U1"},
+		WorkspaceDir:    "/repo/workspace",
+		MemoryDir:       filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:    time.Minute,
+		BotUserID:       "UBOT",
+		MaxParallelWork: 1,
+	}, nil)
+	// Occupy the only work slot.
+	bot.workSlots <- struct{}{}
+	defer func() { <-bot.workSlots }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := handleAsync(bot, ctx, mention())
+	runner.assertNotStarted(t)
+	cancel()
+	done.Wait()
+
+	assertTransitions(t, store.transitions, [][2]state.State{
+		{state.Received, state.Planning},
+		{state.Planning, state.PlanPosted},
+		{state.PlanPosted, state.Failed},
+	})
+	if len(api.postTexts) == 0 || api.postTexts[len(api.postTexts)-1] != workStartFailureMessage {
+		t.Fatalf("posts = %q, want work start failure", api.postTexts)
+	}
+}
+
+type fakeWorkspaces struct {
+	mu        sync.Mutex
+	threadIDs []string
+	acquired  []string
+	released  int
+	err       error
+}
+
+func (w *fakeWorkspaces) ThreadDir(threadID string) (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.threadIDs = append(w.threadIDs, threadID)
+	return "/home/workspace/" + threadID, nil
+}
+
+func (w *fakeWorkspaces) Acquire(_ context.Context, threadID string) (*workspace.Lease, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.err != nil {
+		return nil, w.err
+	}
+	w.acquired = append(w.acquired, threadID)
+	checkoutPath := "/home/checkouts/" + threadID + "/app"
+	lease := workspace.NewLease(
+		"/home/workspace/"+threadID,
+		[]string{"/shared/plain", checkoutPath, checkoutPath + ".gitdir"},
+		[]workspace.Checkout{{Repo: "/src/app", Path: checkoutPath, Branch: "ebi-x/" + threadID}},
+		func() {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			w.released++
+		},
+	)
+	return lease, nil
+}
+
+func TestWorkUsesThreadWorkspaceAndCheckouts(t *testing.T) {
+	runner := newParallelRunner()
+	close(runner.release)
+	workspaces := &fakeWorkspaces{}
+	playbooksDir := t.TempDir()
+	bot := New(&fakeSlack{}, &fakeStore{claim: true}, runner, Config{
+		AllowedUserIDs: []string{"U1"},
+		WorkspaceDir:   "/repo/workspace",
+		MemoryDir:      filepath.Join(t.TempDir(), "memory"),
+		PlaybooksDir:   playbooksDir,
+		CodexTimeout:   time.Minute,
+		BotUserID:      "UBOT",
+		WritableRoots:  []string{"/src/app", "/shared/plain"},
+		Workspaces:     workspaces,
+	}, nil)
+
+	bot.HandleMention(context.Background(), mention())
+
+	if want := []string{"/home/workspace/C1-100.1"}; !reflect.DeepEqual(runner.planCwds, want) {
+		t.Errorf("plan cwd = %v, want %v", runner.planCwds, want)
+	}
+	if want := []string{"/home/workspace/C1-100.1"}; !reflect.DeepEqual(runner.workCwds, want) {
+		t.Errorf("work cwd = %v, want %v", runner.workCwds, want)
+	}
+	wantRoots := []string{"/shared/plain", "/home/checkouts/C1-100.1/app", "/home/checkouts/C1-100.1/app.gitdir", playbooksDir}
+	if len(runner.workRoots) != 1 || !reflect.DeepEqual(runner.workRoots[0], wantRoots) {
+		t.Errorf("work roots = %v, want %v", runner.workRoots, wantRoots)
+	}
+	if !strings.Contains(runner.workPrompts[0], "/src/app → /home/checkouts/C1-100.1/app") {
+		t.Errorf("work prompt does not list the thread checkout:\n%s", runner.workPrompts[0])
+	}
+	if workspaces.released != 1 {
+		t.Errorf("lease released %d times, want 1", workspaces.released)
+	}
+}
+
+func TestWorkspacePreparationFailureDoesNotStartWork(t *testing.T) {
+	runner := newParallelRunner()
+	api := &fakeSlack{}
+	store := &fakeStore{claim: true}
+	bot := New(api, store, runner, Config{
+		AllowedUserIDs: []string{"U1"},
+		WorkspaceDir:   "/repo/workspace",
+		MemoryDir:      filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:   time.Minute,
+		BotUserID:      "UBOT",
+		Workspaces:     &fakeWorkspaces{err: errors.New("git clone failed")},
+	}, nil)
+
+	bot.HandleMention(context.Background(), mention())
+
+	if len(runner.workCwds) != 0 {
+		t.Fatal("work turn ran without a prepared workspace")
+	}
+	assertTransitions(t, store.transitions, [][2]state.State{
+		{state.Received, state.Planning},
+		{state.Planning, state.PlanPosted},
+		{state.PlanPosted, state.Failed},
+	})
 }

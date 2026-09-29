@@ -6,6 +6,7 @@ import (
 
 	"github.com/n-seiji/ebi-x/internal/memory"
 	"github.com/n-seiji/ebi-x/internal/playbook"
+	"github.com/n-seiji/ebi-x/internal/workspace"
 )
 
 func TestBuildPlanPrompt(t *testing.T) {
@@ -138,7 +139,7 @@ func TestBuildMessagePlanPromptIsolatesAuthenticatedAuthorAndText(t *testing.T) 
 
 func TestBuildWorkPrompt(t *testing.T) {
 	const instruction = "対象ファイルを更新し、テストを実行する"
-	got := BuildWorkPrompt(instruction, memory.Context{Channel: "検証用チャンネル"})
+	got := BuildWorkPrompt(instruction, memory.Context{Channel: "検証用チャンネル"}, nil)
 	for _, want := range []string{
 		instruction, "## 全体メモリ追記", "## チャンネルメモリ追記",
 		"直接編集しないでください", "長期的に有用", "検証用チャンネル", "センシティブ属性",
@@ -150,6 +151,20 @@ func TestBuildWorkPrompt(t *testing.T) {
 	if strings.Contains(got, "ユーザーメモリ追記") {
 		t.Error("BuildWorkPrompt() must not request user memory appends")
 	}
+	if strings.Contains(got, "クローン") {
+		t.Error("BuildWorkPrompt() mentions checkouts when there are none")
+	}
+}
+
+func TestBuildWorkPromptListsThreadCheckouts(t *testing.T) {
+	got := BuildWorkPrompt("直す", memory.Context{}, []workspace.Checkout{{
+		Repo: "/src/app", Path: "/home/data/checkouts/C1-1.2/app-abcd", Branch: "ebi-x/C1-1.2",
+	}})
+	for _, want := range []string{"/src/app → /home/data/checkouts/C1-1.2/app-abcd", "ebi-x/C1-1.2", "元のパスは書き込みできません"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("BuildWorkPrompt() does not contain %q", want)
+		}
+	}
 }
 
 func TestPromptsCarrySlackFormatRules(t *testing.T) {
@@ -157,7 +172,7 @@ func TestPromptsCarrySlackFormatRules(t *testing.T) {
 	prompts := map[string]string{
 		"plan":    BuildPlanPrompt(memories, nil, "", "依頼"),
 		"message": BuildMessagePlanPrompt(memories, nil, "", "U1", "依頼"),
-		"work":    BuildWorkPrompt("作業指示", memories),
+		"work":    BuildWorkPrompt("作業指示", memories, nil),
 	}
 	for name, got := range prompts {
 		t.Run(name, func(t *testing.T) {
