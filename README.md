@@ -28,7 +28,6 @@ mise run build   # または: go build -o ebi-x ./cmd/ebi-x
 
 Go のバージョンは [mise](https://mise.jdx.dev/) で管理しています(`mise install` で揃います)。テストは `mise run test`、lint は `mise run lint` で実行できます。mise なしでも `go build` / `go test -race ./...` / `go vet ./...` で同等です。メモリの読み取り分離には permission profile と `--ignore-user-config` を使うため、Codex CLI 0.149.0 以上が必要です。
 
-<<<<<<< HEAD
 ebi-x は単一プロセスでの運用を前提としており、多重起動には対応していません。
 
 ## 並列作業とスレッドごとのクローン
@@ -71,9 +70,6 @@ Codexの応答はMarkdownのまま、Block Kit の markdown ブロックとし�
 作業ターンは `data/playbooks` に書き込めます。一覧は依頼のたびに読み直すため、保存したplaybookは次の依頼から再起動なしで使われます。方針検討ターンは引き続き読み取り専用です。playbook変更にも既存のSlack利用権限が適用されます。
 
 playbookは直下のMarkdownファイルに `name` と `description` のfrontmatterを付け、64KB以内にします。書き込み途中の読み込みを避けるため、一時ファイルを完成させてからrenameで置き換えてください。`data/` はGit管理外なので、実際のplaybookは運用環境で保持してください。この機能を含むバイナリへの更新時のみ再起動が必要です。
-=======
-ebiii は単一プロセスでの運用を前提としており、多重起動には対応していません。
->>>>>>> ccd8849 (feat: forward local Codex MCP configuration)
 
 ## メモリ
 

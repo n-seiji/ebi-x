@@ -27,12 +27,9 @@ const (
 type Runner struct {
 	Command string
 	Model   string
-<<<<<<< HEAD
 	// WorkModel, when set, replaces Model for workspace-write turns so work
 	// can run on a cheaper model than planning.
 	WorkModel string
-=======
->>>>>>> ccd8849 (feat: forward local Codex MCP configuration)
 	// ConfigPath is a local project config whose values are forwarded as CLI
 	// overrides while the global user config remains disabled.
 	ConfigPath string
@@ -67,11 +64,7 @@ func (r *Runner) Run(
 	if err != nil {
 		return nil, err
 	}
-<<<<<<< HEAD
 	args := buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, r.DeniedReadPaths, r.modelFor(sandbox), r.DeveloperInstructions, configOverrides)
-=======
-	args := buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, r.DeniedReadPaths, r.Model, r.DeveloperInstructions, configOverrides)
->>>>>>> ccd8849 (feat: forward local Codex MCP configuration)
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -146,11 +139,7 @@ func buildArgsWithOverrides(threadID, sandbox, cwd string, writableRoots, denied
 	}
 	// Security invariants come after local values so local configuration can
 	// never weaken them.
-<<<<<<< HEAD
 	args = append(args, "-c", `approval_policy="never"`, "-c", `default_permissions="ebi-x"`)
-=======
-	args = append(args, "-c", `approval_policy="never"`, "-c", `default_permissions="ebiii"`)
->>>>>>> ccd8849 (feat: forward local Codex MCP configuration)
 	parentProfile := ":read-only"
 	if sandbox == "workspace-write" {
 		parentProfile = ":workspace"

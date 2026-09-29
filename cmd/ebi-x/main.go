@@ -55,12 +55,8 @@ func main() {
 	runner := &codex.Runner{
 		Command:               cfg.CodexCommand,
 		Model:                 cfg.CodexModel,
-<<<<<<< HEAD:cmd/ebi-x/main.go
 		WorkModel:             cfg.CodexWorkModel,
 		ConfigPath:            filepath.Join(cfg.EBIXHome, ".codex", "config.toml"),
-=======
-		ConfigPath:            filepath.Join(cfg.EBIIIHome, ".codex", "config.toml"),
->>>>>>> ccd8849 (feat: forward local Codex MCP configuration):cmd/ebiii/main.go
 		DeniedReadPaths:       []string{cfg.MemoryDir},
 		DeveloperInstructions: policy.Instructions(),
 	}
