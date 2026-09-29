@@ -141,8 +141,8 @@ func (m *Manager) ThreadDir(threadID string) (string, error) {
 }
 
 // Acquire prepares the thread's workspace and worktrees for a work turn.
-// Existing worktrees are reused, and a branch left behind by a removed
-// worktree is checked out again so earlier commits are kept.
+// Existing worktrees are reused, and an existing thread branch is checked
+// out again instead of being recreated.
 func (m *Manager) Acquire(ctx context.Context, threadID string) (*Lease, error) {
 	dir, err := m.ThreadDir(threadID)
 	if err != nil {
@@ -203,9 +203,9 @@ func (m *Manager) Acquire(ctx context.Context, threadID string) (*Lease, error) 
 }
 
 // GC removes the worktrees of every thread whose last work turn ended at or
-// before now minus idle. Branches are kept, so committed work survives and
-// is checked out again if the thread asks for more work. It returns the
-// thread IDs whose worktrees were removed.
+// before now minus idle, together with their branches: an idle thread's work
+// is considered finished, and anything worth keeping should have been pushed
+// or merged by then. It returns the thread IDs whose worktrees were removed.
 func (m *Manager) GC(ctx context.Context, now time.Time, idle time.Duration) ([]string, error) {
 	entries, err := os.ReadDir(m.worktreesDir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -227,14 +227,6 @@ func (m *Manager) GC(ctx context.Context, now time.Time, idle time.Duration) ([]
 		}
 		if ok {
 			removed = append(removed, threadID)
-		}
-	}
-	for _, r := range m.roots {
-		if r.gitDir == "" || len(removed) == 0 {
-			continue
-		}
-		if err := git(ctx, r.path, "worktree", "prune"); err != nil {
-			errs = append(errs, err)
 		}
 	}
 	return removed, errors.Join(errs...)
@@ -278,10 +270,27 @@ func (m *Manager) removeIfIdle(ctx context.Context, threadID string, now time.Ti
 		}
 	}
 	// Anything git did not remove, including worktrees of roots that are no
-	// longer configured, is deleted; the next prune drops their registration.
+	// longer configured, is deleted, and prune drops its registration so the
+	// branch is no longer checked out anywhere.
 	if err := os.RemoveAll(dir); err != nil {
 		errs = append(errs, fmt.Errorf("remove worktrees of %q: %w", threadID, err))
 		return false, errors.Join(errs...)
+	}
+	branch := BranchPrefix + threadID
+	for _, r := range m.roots {
+		if r.gitDir == "" {
+			continue
+		}
+		if err := git(ctx, r.path, "worktree", "prune"); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if git(ctx, r.path, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch) != nil {
+			continue
+		}
+		if err := git(ctx, r.path, "branch", "-D", branch); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	return true, errors.Join(errs...)
 }

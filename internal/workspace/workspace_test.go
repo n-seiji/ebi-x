@@ -127,7 +127,7 @@ func TestThreadsGetSeparateWorktrees(t *testing.T) {
 	}
 }
 
-func TestGCRemovesIdleWorktreesAndKeepsBranchCommits(t *testing.T) {
+func TestGCRemovesIdleWorktreesAndBranches(t *testing.T) {
 	repo := newRepo(t)
 	m, workspaceDir, worktreesDir := newManager(t, repo)
 	ctx := context.Background()
@@ -168,14 +168,18 @@ func TestGCRemovesIdleWorktreesAndKeepsBranchCommits(t *testing.T) {
 		t.Fatalf("thread workspace was removed: %v", err)
 	}
 
-	// Asking the thread for more work checks the kept branch out again.
+	if out := runGit(t, repo, "branch", "--list", "ebi-x/*"); out != "" {
+		t.Fatalf("thread branch still exists: %q", out)
+	}
+
+	// Asking the thread for more work starts again from the repository HEAD.
 	lease, err = m.Acquire(ctx, "C1-100.1")
 	if err != nil {
 		t.Fatalf("Acquire() after GC error = %v", err)
 	}
 	defer lease.Release()
-	if data, err := os.ReadFile(filepath.Join(lease.Worktrees[0].Path, "work.txt")); err != nil || string(data) != "done\n" {
-		t.Fatalf("committed work after GC = %q, %v", data, err)
+	if _, err := os.Stat(filepath.Join(lease.Worktrees[0].Path, "work.txt")); !os.IsNotExist(err) {
+		t.Fatalf("work from the removed branch reappeared: %v", err)
 	}
 }
 
