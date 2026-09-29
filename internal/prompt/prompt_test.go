@@ -166,3 +166,34 @@ func TestBuildWorkPromptListsThreadCheckouts(t *testing.T) {
 		}
 	}
 }
+
+func TestPromptsCarrySlackFormatRules(t *testing.T) {
+	memories := memory.Context{Global: "全体の学び", Channel: "チャンネルの慣習"}
+	prompts := map[string]string{
+		"plan":    BuildPlanPrompt(memories, nil, "", "依頼"),
+		"message": BuildMessagePlanPrompt(memories, nil, "", "U1", "依頼"),
+		"work":    BuildWorkPrompt("作業指示", memories, nil),
+	}
+	for name, got := range prompts {
+		t.Run(name, func(t *testing.T) {
+			for _, want := range []string{
+				"Markdown記法",
+				"mrkdwn記法",
+				"1800字以内",
+				"表は3列以内",
+				"根拠のリンクは本文に散らさず",
+			} {
+				if !strings.Contains(got, want) {
+					t.Errorf("%s prompt does not contain %q", name, want)
+				}
+			}
+		})
+	}
+}
+
+func TestPlanPromptScopesSlackRulesToThePostedSection(t *testing.T) {
+	got := BuildPlanPrompt(memory.Context{}, nil, "", "依頼")
+	if !strings.Contains(got, "「## 作業指示」の本文は投稿されないので、この規約の対象外です") {
+		t.Error("plan prompt does not exempt the work instruction from the Slack rules")
+	}
+}

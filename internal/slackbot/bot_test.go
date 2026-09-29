@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/n-seiji/ebi-x/internal/codex"
 	"github.com/n-seiji/ebi-x/internal/memory"
+	"github.com/n-seiji/ebi-x/internal/slackfmt"
 	"github.com/n-seiji/ebi-x/internal/state"
 	"github.com/n-seiji/ebi-x/internal/workspace"
 	"github.com/slack-go/slack"
@@ -759,6 +761,109 @@ func TestWebAPIHasReactionUsesReactionsGet(t *testing.T) {
 	}
 	if marked {
 		t.Fatal("HasReaction() for absent reaction = true, want false")
+	}
+}
+
+func TestWebAPIPostMessageSendsMarkdownBlock(t *testing.T) {
+	const text = "#### 見出し\n\n**太字** と [ラベル](https://example.test/a.ts)"
+	var form url.Values
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/chat.postMessage" {
+			t.Errorf("request path = %q, want /chat.postMessage", r.URL.Path)
+		}
+		if err := r.ParseForm(); err != nil {
+			return nil, err
+		}
+		form = r.Form
+		return postMessageResponse(r, `{"ok":true,"ts":"100.2"}`), nil
+	})}
+
+	api := &webAPI{client: slack.New("token", slack.OptionAPIURL("https://slack.test/"), slack.OptionHTTPClient(httpClient))}
+	timestamp, err := api.PostMessage(context.Background(), "C1", "100.1", text)
+	if err != nil {
+		t.Fatalf("PostMessage() error = %v, want nil", err)
+	}
+	if timestamp != "100.2" {
+		t.Fatalf("PostMessage() timestamp = %q, want 100.2", timestamp)
+	}
+
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(form.Get("blocks")), &blocks); err != nil {
+		t.Fatalf("blocks field %q is not JSON: %v", form.Get("blocks"), err)
+	}
+	if len(blocks) != 1 || blocks[0].Type != "markdown" {
+		t.Fatalf("blocks = %+v, want a single markdown block", blocks)
+	}
+	if blocks[0].Text != text {
+		t.Fatalf("markdown block text = %q, want the Markdown unchanged", blocks[0].Text)
+	}
+	// Slack shows the text field in notification previews only, so it carries
+	// the same answer without the Markdown syntax.
+	if want := slackfmt.PlainText(text); form.Get("text") != want {
+		t.Fatalf("text field = %q, want the plain-text fallback %q", form.Get("text"), want)
+	}
+	if form.Get("thread_ts") != "100.1" {
+		t.Fatalf("thread_ts = %q, want 100.1", form.Get("thread_ts"))
+	}
+}
+
+func TestWebAPIPostMessageRetriesWithoutBlocksWhenSlackRejectsThem(t *testing.T) {
+	var forms []url.Values
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if err := r.ParseForm(); err != nil {
+			return nil, err
+		}
+		forms = append(forms, r.Form)
+		if len(forms) == 1 {
+			return postMessageResponse(r, `{"ok":false,"error":"invalid_blocks"}`), nil
+		}
+		return postMessageResponse(r, `{"ok":true,"ts":"100.2"}`), nil
+	})}
+
+	api := &webAPI{client: slack.New("token", slack.OptionAPIURL("https://slack.test/"), slack.OptionHTTPClient(httpClient))}
+	timestamp, err := api.PostMessage(context.Background(), "C1", "100.1", "# 見出し")
+	if err != nil {
+		t.Fatalf("PostMessage() error = %v, want the retry to succeed", err)
+	}
+	if timestamp != "100.2" {
+		t.Fatalf("PostMessage() timestamp = %q, want 100.2", timestamp)
+	}
+	if len(forms) != 2 {
+		t.Fatalf("requests = %d, want 2", len(forms))
+	}
+	if forms[1].Get("blocks") != "" {
+		t.Fatalf("retry sent blocks = %q, want none", forms[1].Get("blocks"))
+	}
+	if forms[1].Get("text") != "見出し" {
+		t.Fatalf("retry text = %q, want the plain-text fallback", forms[1].Get("text"))
+	}
+}
+
+func TestWebAPIPostMessageKeepsOtherErrors(t *testing.T) {
+	var requests int
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests++
+		return postMessageResponse(r, `{"ok":false,"error":"channel_not_found"}`), nil
+	})}
+
+	api := &webAPI{client: slack.New("token", slack.OptionAPIURL("https://slack.test/"), slack.OptionHTTPClient(httpClient))}
+	if _, err := api.PostMessage(context.Background(), "C1", "100.1", "hello"); err == nil {
+		t.Fatal("PostMessage() error = nil, want channel_not_found")
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1: only a rejected block payload is retried", requests)
+	}
+}
+
+func postMessageResponse(r *http.Request, body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    r,
 	}
 }
 
@@ -1714,32 +1819,38 @@ func TestPlanTurnRunsWhileWorkTurnIsBlocked(t *testing.T) {
 	}
 }
 
-func TestSplitMessageUsesRuneBoundaries(t *testing.T) {
-	text := strings.Repeat("a", 3899) + "日" + "本"
-	chunks := splitMessage(text, maxSlackMessageRunes)
-	if len(chunks) != 2 {
-		t.Fatalf("chunks = %d, want 2", len(chunks))
-	}
-	if len([]rune(chunks[0])) != 3900 || chunks[0][len(chunks[0])-3:] != "日" {
-		t.Fatalf("first chunk has %d runes and suffix %q", len([]rune(chunks[0])), chunks[0][len(chunks[0])-3:])
-	}
-	if chunks[1] != "本" || strings.Join(chunks, "") != text {
-		t.Fatalf("split did not preserve UTF-8 text")
-	}
-}
-
 func TestPostSplitsLongMessage(t *testing.T) {
 	api := &fakeSlack{}
 	bot := newTestBot(t, &fakeStore{}, api, &fakeRunner{})
-	text := strings.Repeat("界", 3901)
+	text := strings.Repeat("界", maxSlackMessageRunes+1)
 	if err := bot.post(context.Background(), "C1", "1", text); err != nil {
 		t.Fatalf("post() error = %v", err)
 	}
 	if len(api.postTexts) != 2 {
 		t.Fatalf("post attempts = %d, want 2", len(api.postTexts))
 	}
-	if len([]rune(api.postTexts[0])) != 3900 || api.postTexts[1] != "界" {
+	if len([]rune(api.postTexts[0])) != maxSlackMessageRunes || api.postTexts[1] != "界" {
 		t.Fatalf("post chunks have rune lengths %d and %d", len([]rune(api.postTexts[0])), len([]rune(api.postTexts[1])))
+	}
+}
+
+func TestPostKeepsMarkdownStructureAcrossChunks(t *testing.T) {
+	api := &fakeSlack{}
+	bot := newTestBot(t, &fakeStore{}, api, &fakeRunner{})
+	heading := "#### " + strings.Repeat("見", 100)
+	text := strings.TrimSuffix(strings.Repeat(heading+"\n", 100), "\n")
+	if err := bot.post(context.Background(), "C1", "1", text); err != nil {
+		t.Fatalf("post() error = %v", err)
+	}
+	if len(api.postTexts) < 2 {
+		t.Fatalf("post attempts = %d, want at least 2", len(api.postTexts))
+	}
+	for i, chunk := range api.postTexts {
+		for _, line := range strings.Split(chunk, "\n") {
+			if line != heading {
+				t.Fatalf("chunk %d cut a heading: %q", i, line)
+			}
+		}
 	}
 }
 
