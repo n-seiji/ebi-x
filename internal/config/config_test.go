@@ -27,10 +27,13 @@ func TestLoad(t *testing.T) {
 				"SLACK_ADMIN_USER_ID":                "UADMIN",
 				"CODEX_COMMAND":                      "/usr/local/bin/codex",
 				"CODEX_MODEL":                        "gpt-test",
+				"CODEX_WORK_MODEL":                   "gpt-work",
 				"CODEX_TIMEOUT":                      "45s",
+				"CODEX_MAX_PARALLEL_WORK":            "5",
+				"EBIX_WORKTREE_IDLE_TTL":             "24h",
 				"SLACK_THREAD_SUBSCRIPTION_REACTION": "follow-up",
 				"SLACK_THREAD_SUBSCRIPTION_TTL":      "48h",
-				"EBIX_HOME":                         "data",
+				"EBIX_HOME":                          "data",
 			},
 			check: func(t *testing.T, cfg *Config, workingDir string) {
 				t.Helper()
@@ -52,6 +55,15 @@ func TestLoad(t *testing.T) {
 				}
 				if cfg.CodexModel != "gpt-test" {
 					t.Errorf("CodexModel = %q, want %q", cfg.CodexModel, "gpt-test")
+				}
+				if cfg.CodexWorkModel != "gpt-work" {
+					t.Errorf("CodexWorkModel = %q, want %q", cfg.CodexWorkModel, "gpt-work")
+				}
+				if cfg.MaxParallelWork != 5 {
+					t.Errorf("MaxParallelWork = %d, want 5", cfg.MaxParallelWork)
+				}
+				if cfg.WorktreeIdleTTL != 24*time.Hour {
+					t.Errorf("WorktreeIdleTTL = %v, want 24h", cfg.WorktreeIdleTTL)
 				}
 				if cfg.CodexTimeout != 45*time.Second {
 					t.Errorf("CodexTimeout = %v, want %v", cfg.CodexTimeout, 45*time.Second)
@@ -149,6 +161,15 @@ func TestLoad(t *testing.T) {
 				if cfg.CodexCommand != "codex" {
 					t.Errorf("CodexCommand = %q, want %q", cfg.CodexCommand, "codex")
 				}
+				if cfg.CodexWorkModel != "" {
+					t.Errorf("CodexWorkModel = %q, want empty", cfg.CodexWorkModel)
+				}
+				if cfg.MaxParallelWork != 3 {
+					t.Errorf("MaxParallelWork = %d, want 3", cfg.MaxParallelWork)
+				}
+				if cfg.WorktreeIdleTTL != 120*time.Hour {
+					t.Errorf("WorktreeIdleTTL = %v, want 120h", cfg.WorktreeIdleTTL)
+				}
 				if cfg.CodexTimeout != 30*time.Minute {
 					t.Errorf("CodexTimeout = %v, want %v", cfg.CodexTimeout, 30*time.Minute)
 				}
@@ -173,6 +194,36 @@ func TestLoad(t *testing.T) {
 				"CODEX_TIMEOUT":          "tomorrow",
 			},
 			wantErr: "CODEX_TIMEOUT",
+		},
+		{
+			name: "zero parallel work",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":         "xoxb-test",
+				"SLACK_APP_TOKEN":         "xapp-test",
+				"SLACK_ALLOWED_USER_IDS":  "U123",
+				"CODEX_MAX_PARALLEL_WORK": "0",
+			},
+			wantErr: "CODEX_MAX_PARALLEL_WORK",
+		},
+		{
+			name: "non-numeric parallel work",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":         "xoxb-test",
+				"SLACK_APP_TOKEN":         "xapp-test",
+				"SLACK_ALLOWED_USER_IDS":  "U123",
+				"CODEX_MAX_PARALLEL_WORK": "many",
+			},
+			wantErr: "CODEX_MAX_PARALLEL_WORK",
+		},
+		{
+			name: "non-positive worktree idle TTL",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":        "xoxb-test",
+				"SLACK_APP_TOKEN":        "xapp-test",
+				"SLACK_ALLOWED_USER_IDS": "U123",
+				"EBIX_WORKTREE_IDLE_TTL": "0s",
+			},
+			wantErr: "EBIX_WORKTREE_IDLE_TTL",
 		},
 		{
 			name: "explicit empty subscription reaction disables subscriptions",
@@ -438,6 +489,7 @@ func assertPaths(t *testing.T, cfg *Config, home string) {
 	t.Helper()
 	paths := map[string]string{
 		"WorkspaceDir": cfg.WorkspaceDir,
+		"WorktreesDir": cfg.WorktreesDir,
 		"MemoryDir":    cfg.MemoryDir,
 		"PlaybooksDir": cfg.PlaybooksDir,
 		"StateDir":     cfg.StateDir,
@@ -463,7 +515,10 @@ func clearConfigEnv(t *testing.T) {
 		"SLACK_THREAD_SUBSCRIPTION_TTL",
 		"CODEX_COMMAND",
 		"CODEX_MODEL",
+		"CODEX_WORK_MODEL",
 		"CODEX_TIMEOUT",
+		"CODEX_MAX_PARALLEL_WORK",
+		"EBIX_WORKTREE_IDLE_TTL",
 		"EBIX_HOME",
 		"EBIX_WRITABLE_ROOTS",
 	} {

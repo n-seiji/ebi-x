@@ -27,6 +27,9 @@ const (
 type Runner struct {
 	Command string
 	Model   string
+	// WorkModel, when set, replaces Model for workspace-write turns so work
+	// can run on a cheaper model than planning.
+	WorkModel string
 	// ConfigPath is a local project config whose values are forwarded as CLI
 	// overrides while the global user config remains disabled.
 	ConfigPath string
@@ -61,7 +64,7 @@ func (r *Runner) Run(
 	if err != nil {
 		return nil, err
 	}
-	args := buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, r.DeniedReadPaths, r.Model, r.DeveloperInstructions, configOverrides)
+	args := buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, r.DeniedReadPaths, r.modelFor(sandbox), r.DeveloperInstructions, configOverrides)
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -105,6 +108,13 @@ func (r *Runner) Run(
 
 	truncateFinalMessage(result)
 	return result, nil
+}
+
+func (r *Runner) modelFor(sandbox string) string {
+	if sandbox == "workspace-write" && r.WorkModel != "" {
+		return r.WorkModel
+	}
+	return r.Model
 }
 
 func buildArgs(threadID, sandbox, cwd string, writableRoots, deniedReadPaths []string, model, developerInstructions string) []string {

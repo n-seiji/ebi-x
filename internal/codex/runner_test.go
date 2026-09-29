@@ -582,3 +582,20 @@ func TestLimitedBufferTruncates(t *testing.T) {
 		t.Fatalf("write = (%d, %q), want (6, %q)", n, buffer.String(), "abcd")
 	}
 }
+
+func TestRunnerUsesWorkModelOnlyForWorkTurns(t *testing.T) {
+	runner := &Runner{Model: "plan-model", WorkModel: "work-model"}
+	for sandbox, want := range map[string]string{
+		"read-only-network": "plan-model",
+		"read-only":         "plan-model",
+		"workspace-write":   "work-model",
+	} {
+		if got := runner.modelFor(sandbox); got != want {
+			t.Errorf("modelFor(%q) = %q, want %q", sandbox, got, want)
+		}
+	}
+	runner.WorkModel = ""
+	if got := runner.modelFor("workspace-write"); got != "plan-model" {
+		t.Errorf("modelFor(workspace-write) without WorkModel = %q, want plan-model", got)
+	}
+}

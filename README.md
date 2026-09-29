@@ -30,6 +30,26 @@ Go のバージョンは [mise](https://mise.jdx.dev/) で管理しています(
 
 ebi-x は単一プロセスでの運用を前提としており、多重起動には対応していません。
 
+## 並列作業とworktree
+
+作業ターンは、Slackスレッドが異なれば `CODEX_MAX_PARALLEL_WORK`（既定 3）件まで並列に実行します。同じスレッド内の作業は依頼順に1件ずつ実行します。上限に達している間、そのスレッドには順番待ちのステータスを表示します。方針検討ターンは従来どおりスレッドごとに直列で、他スレッドの作業を待ちません。
+
+`CODEX_WORK_MODEL` を設定すると、作業ターンだけそのモデルで実行します（未設定時は `CODEX_MODEL`）。
+
+スレッドが並列に動いてもファイルが衝突しないよう、作業場所をスレッドごとに分けます。
+
+```text
+data/workspace/{channel ID}-{thread ts}/            # スレッドごとのcwd（方針・作業とも）
+data/worktrees/{channel ID}-{thread ts}/{repo}-{hash}/  # スレッドごとのgit worktree
+```
+
+- `EBIX_WRITABLE_ROOTS` のうちGitリポジトリの最上位ディレクトリは、スレッドごとのworktree（ブランチ `ebi-x/{channel ID}-{thread ts}`、作成時点の `HEAD` から分岐）で作業します。元のチェックアウトは書き込み不可になり、worktreeと、コミットに必要なリポジトリの `.git` が書き込み可能になります。
+- Gitリポジトリでない（またはリポジトリのサブディレクトリを指す）writable rootと `data/playbooks` は、全スレッドで共有のままです。同時に同じファイルを書き換えると後勝ちになります。
+- 最後の作業から `EBIX_WORKTREE_IDLE_TTL`（既定 `120h` = 5日）経ったworktreeは、起動時と1時間ごとに削除します。未コミットの変更は失われますが、ブランチは残すため、コミット済みの作業はそのスレッドで再度作業を依頼したときに同じブランチから復元されます。不要になったブランチは手動で削除してください。
+- スレッドごとのcwd（`data/workspace/...`）は自動削除しません。
+
+この変更より前のCodexセッションは共有workspaceをcwdにしているため再利用せず、導入後の最初のmentionから新しいセッションになります。
+
 ## Slackからplaybookを作成・更新する
 
 `examples/playbooks/playbook-from-thread.md` を `data/playbooks/` にコピーすると、Slackで `@ebi この対応をplaybookにして` や `@ebi このplaybookを修正して。質問は1問ずつにして` と依頼できます。作成用playbookでは、既知情報を聞き直さず、必要な質問を1問ずつ行い、新規・更新とも完成案を提示して「この内容でいいですか？」と確認し、依頼者の承認後に保存・反映するよう定めます。修正が入れば最新版を再提示して承認を待ちます。「案だけ」の場合はworkspaceに下書きを保存します。

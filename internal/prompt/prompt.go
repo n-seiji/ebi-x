@@ -7,6 +7,7 @@ import (
 
 	"github.com/n-seiji/ebi-x/internal/memory"
 	"github.com/n-seiji/ebi-x/internal/playbook"
+	"github.com/n-seiji/ebi-x/internal/workspace"
 )
 
 // BuildPlanPrompt builds the prompt for a planning turn. The memory content
@@ -78,10 +79,18 @@ func buildPlanPrompt(memories memory.Context, playbooks []playbook.Playbook, sla
 
 // BuildWorkPrompt builds the prompt for a work turn. Memory updates are
 // proposed through the output contract and written by the bot, not by the
-// agent.
-func BuildWorkPrompt(instruction string, memories memory.Context) string {
+// agent. Worktrees are the thread's own checkouts of the configured git
+// repositories, which replace the original paths as writable locations.
+func BuildWorkPrompt(instruction string, memories memory.Context, worktrees []workspace.Worktree) string {
 	var builder strings.Builder
 	writeMemoryContext(&builder, memories)
+	if len(worktrees) > 0 {
+		builder.WriteString("以下のGitリポジトリは、このSlackスレッド専用のworktreeで作業してください。元のパスは書き込みできません。変更はworktree上で行い、コミットする場合は作業用ブランチに対して行ってください。\n")
+		for _, worktree := range worktrees {
+			fmt.Fprintf(&builder, "- %s → %s（ブランチ: %s）\n", worktree.Repo, worktree.Path, worktree.Branch)
+		}
+		builder.WriteString("\n")
+	}
 	fmt.Fprintf(&builder, `以下の作業指示を実行してください。
 
 <work_instruction>

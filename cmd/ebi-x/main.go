@@ -17,7 +17,11 @@ import (
 	"github.com/n-seiji/ebi-x/internal/policy"
 	"github.com/n-seiji/ebi-x/internal/slackbot"
 	"github.com/n-seiji/ebi-x/internal/state"
+	"github.com/n-seiji/ebi-x/internal/workspace"
 )
+
+// worktreeGCInterval is how often idle thread worktrees are looked for.
+const worktreeGCInterval = time.Hour
 
 func main() {
 	cfg, err := config.Load()
@@ -40,9 +44,18 @@ func main() {
 		playbooks = nil
 	}
 
+	workspaces, err := workspace.New(context.Background(), cfg.WorkspaceDir, cfg.WorktreesDir, cfg.WritableRoots)
+	if err != nil {
+		log.Fatalf("prepare workspaces: %v", err)
+	}
+	for _, repo := range workspaces.Repositories() {
+		log.Printf("work turns use per-thread worktrees of %s", repo)
+	}
+
 	runner := &codex.Runner{
 		Command:               cfg.CodexCommand,
 		Model:                 cfg.CodexModel,
+		WorkModel:             cfg.CodexWorkModel,
 		ConfigPath:            filepath.Join(cfg.EBIXHome, ".codex", "config.toml"),
 		DeniedReadPaths:       []string{cfg.MemoryDir},
 		DeveloperInstructions: policy.Instructions(),
@@ -59,6 +72,8 @@ func main() {
 		ThreadSubscriptionReaction: cfg.ThreadSubscriptionReaction,
 		ThreadSubscriptionTTL:      cfg.ThreadSubscriptionTTL,
 		WritableRoots:              cfg.WritableRoots,
+		MaxParallelWork:            cfg.MaxParallelWork,
+		Workspaces:                 workspaces,
 	}, playbooks)
 
 	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -67,6 +82,12 @@ func main() {
 	turnCtx, cancelTurns := context.WithCancel(context.Background())
 	defer cancelTurns()
 	var turns sync.WaitGroup
+
+	gcDone := make(chan struct{})
+	go func() {
+		defer close(gcDone)
+		collectIdleWorktrees(acceptCtx, workspaces, cfg.WorktreeIdleTTL)
+	}()
 
 	socketDone := make(chan error, 1)
 	go func() {
@@ -87,6 +108,8 @@ func main() {
 		stopAccepting()
 	}
 
+	<-gcDone
+
 	drained := make(chan struct{})
 	go func() {
 		turns.Wait()
@@ -100,5 +123,26 @@ func main() {
 		cancelTurns()
 		<-drained
 		log.Printf("shutdown complete after forced cancellation")
+	}
+}
+
+// collectIdleWorktrees removes thread worktrees that have not been used for
+// idle, at startup and then every worktreeGCInterval until ctx is done.
+func collectIdleWorktrees(ctx context.Context, workspaces *workspace.Manager, idle time.Duration) {
+	ticker := time.NewTicker(worktreeGCInterval)
+	defer ticker.Stop()
+	for {
+		removed, err := workspaces.GC(ctx, time.Now(), idle)
+		if err != nil && ctx.Err() == nil {
+			log.Printf("remove idle worktrees: %v", err)
+		}
+		for _, threadID := range removed {
+			log.Printf("removed idle worktrees of thread %s", threadID)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
