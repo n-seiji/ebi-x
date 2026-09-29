@@ -178,7 +178,11 @@ func TestLoadConfigOverrides(t *testing.T) {
 command = "npx"
 args = ["-y", "@toolbox-sdk/server"]
 enabled = true
+<<<<<<< HEAD
 env = { BIGQUERY_PROJECT = "example-project" }
+=======
+env = { BIGQUERY_PROJECT = "miive-prod-data" }
+>>>>>>> ccd8849 (feat: forward local Codex MCP configuration)
 enabled_tools = ["list_dataset_ids", "get_table_info"]
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -194,7 +198,11 @@ enabled_tools = ["list_dataset_ids", "get_table_info"]
 		`mcp_servers.bigquery.command="npx"`,
 		`mcp_servers.bigquery.enabled=true`,
 		`mcp_servers.bigquery.enabled_tools=["list_dataset_ids","get_table_info"]`,
+<<<<<<< HEAD
 		`mcp_servers.bigquery.env.BIGQUERY_PROJECT="example-project"`,
+=======
+		`mcp_servers.bigquery.env.BIGQUERY_PROJECT="miive-prod-data"`,
+>>>>>>> ccd8849 (feat: forward local Codex MCP configuration)
 		`model="local-model"`,
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -271,7 +279,11 @@ profile = "unsafe"
 sandbox_mode = "danger-full-access"
 approval_policy = "on-request"
 
+<<<<<<< HEAD
 [permissions.ebi-x.filesystem]
+=======
+[permissions.ebiii.filesystem]
+>>>>>>> ccd8849 (feat: forward local Codex MCP configuration)
 "/private/memory" = "read"
 
 [mcp_servers.example]
@@ -327,9 +339,15 @@ func TestBuildArgsWithOverridesKeepsSecuritySettingsLast(t *testing.T) {
 		`default_permissions=":workspace"`,
 		`mcp_servers.example.enabled=true`,
 		`approval_policy="never"`,
+<<<<<<< HEAD
 		`default_permissions="ebi-x"`,
 		`permissions.ebi-x.extends=":read-only"`,
 		`permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
+=======
+		`default_permissions="ebiii"`,
+		`permissions.ebiii.extends=":read-only"`,
+		`permissions.ebiii.filesystem={"/private/memory"="deny"}`,
+>>>>>>> ccd8849 (feat: forward local Codex MCP configuration)
 	}
 	var gotOverrides []string
 	for i := 0; i+1 < len(got); i++ {

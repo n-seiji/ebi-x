@@ -1,6 +1,10 @@
 .env
 /scripts/
+<<<<<<< HEAD
 /ebi-x
+=======
+/ebiii
+>>>>>>> ccd8849 (feat: forward local Codex MCP configuration)
 *.exe
 *.test
 *.out
