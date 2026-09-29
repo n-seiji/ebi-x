@@ -95,8 +95,8 @@ type Config struct {
 	// MaxParallelWork is how many work turns for different Slack threads may
 	// run at once. Values below 1 mean 1.
 	MaxParallelWork int
-	// Workspaces, when set, gives each Slack thread its own cwd and git
-	// checkouts in place of WorkspaceDir and the shared repositories.
+	// Workspaces gives each Slack thread its cwd and writable roots. When
+	// nil, every thread shares WorkspaceDir and WritableRoots.
 	Workspaces Workspaces
 }
 
@@ -139,8 +139,8 @@ type processingTrigger struct {
 // New constructs a Bot.
 func New(api SlackAPI, store Store, runner Runner, config Config, playbooks []playbook.Playbook) *Bot {
 	config.WritableRoots = append([]string(nil), config.WritableRoots...)
-	if config.PlaybooksDir != "" {
-		config.WritableRoots = append(config.WritableRoots, config.PlaybooksDir)
+	if config.Workspaces == nil {
+		config.Workspaces = sharedWorkspaces{dir: config.WorkspaceDir, roots: config.WritableRoots}
 	}
 	b := &Bot{
 		api:             api,
@@ -422,19 +422,14 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 	}
 	defer release()
 
-	cwd, roots := b.config.WorkspaceDir, b.config.WritableRoots
-	var checkouts []workspace.Checkout
-	if b.config.Workspaces != nil {
-		lease, err := b.config.Workspaces.Acquire(ctx, workspaceID)
-		if err != nil {
-			return "", nil, false, fmt.Errorf("prepare workspace: %w", err)
-		}
-		defer lease.Release()
-		cwd, checkouts = lease.Dir, lease.Checkouts
-		roots = append([]string(nil), lease.WritableRoots...)
-		if b.config.PlaybooksDir != "" {
-			roots = append(roots, b.config.PlaybooksDir)
-		}
+	lease, err := b.config.Workspaces.Acquire(ctx, workspaceID)
+	if err != nil {
+		return "", nil, false, fmt.Errorf("prepare workspace: %w", err)
+	}
+	defer lease.Release()
+	roots := append([]string(nil), lease.WritableRoots...)
+	if b.config.PlaybooksDir != "" {
+		roots = append(roots, b.config.PlaybooksDir)
 	}
 
 	if err := b.store.Transition(eventKey, state.PlanPosted, state.Working); err != nil {
@@ -455,8 +450,8 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 	if memErr != nil {
 		log.Printf("slackbot: refresh memory before work: %v", memErr)
 	}
-	workPrompt := prompt.BuildWorkPrompt(instruction, workMemoryContext, checkouts)
-	workResult, workErr := b.runTurn(ctx, "", "workspace-write", cwd, roots, workPrompt, nil)
+	workPrompt := prompt.BuildWorkPrompt(instruction, workMemoryContext, lease.Checkouts)
+	workResult, workErr := b.runTurn(ctx, "", "workspace-write", lease.Dir, roots, workPrompt, nil)
 	if workErr != nil {
 		return "", nil, true, workErr
 	}
@@ -512,20 +507,18 @@ func (b *Bot) acquireWork(ctx context.Context, threadKey, channel, threadTS stri
 		<-b.workSlots
 		lock.Unlock()
 	}
-	locked := lock.TryLock()
-	if locked {
+	if lock.TryLock() {
 		select {
 		case b.workSlots <- struct{}{}:
 			return release, nil
 		default:
+			lock.Unlock()
 		}
 	}
 
 	stopQueuedStatus := b.keepStatus(ctx, channel, threadTS, queuedStatus)
 	defer stopQueuedStatus()
-	if !locked {
-		lock.Lock()
-	}
+	lock.Lock()
 	// Prefer cancellation over a slot that frees up at the same moment, so a
 	// shutdown does not start queued work.
 	if err := ctx.Err(); err != nil {
@@ -542,11 +535,8 @@ func (b *Bot) acquireWork(ctx context.Context, threadKey, channel, threadTS stri
 }
 
 // threadWorkspace returns the workspace identifier and plan cwd for a Slack
-// thread. Without Workspaces every thread shares WorkspaceDir.
+// thread.
 func (b *Bot) threadWorkspace(channel, threadTS string) (string, string, error) {
-	if b.config.Workspaces == nil {
-		return "", b.config.WorkspaceDir, nil
-	}
 	id, err := workspace.ThreadID(channel, threadTS)
 	if err != nil {
 		return "", "", err
@@ -556,6 +546,19 @@ func (b *Bot) threadWorkspace(channel, threadTS string) (string, string, error) 
 		return "", "", err
 	}
 	return id, dir, nil
+}
+
+// sharedWorkspaces runs every thread in one directory with the same writable
+// roots. It is the default when Config.Workspaces is not set.
+type sharedWorkspaces struct {
+	dir   string
+	roots []string
+}
+
+func (w sharedWorkspaces) ThreadDir(string) (string, error) { return w.dir, nil }
+
+func (w sharedWorkspaces) Acquire(context.Context, string) (*workspace.Lease, error) {
+	return workspace.NewLease(w.dir, w.roots, nil, func() {}), nil
 }
 
 func (b *Bot) forbidden(ctx context.Context, event *slackevents.AppMentionEvent) {

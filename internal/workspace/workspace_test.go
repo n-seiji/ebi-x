@@ -58,7 +58,7 @@ func TestThreadID(t *testing.T) {
 	}
 	for _, tc := range [][2]string{
 		{"", "1.2"}, {"C1", ""}, {"c1", "1.2"}, {"C1/..", "1.2"},
-		{"C1", "../1"}, {"C1", "1..2"}, {"C1", ".1"}, {"C1", "1.2.3"}, {"C-1", "1.2"},
+		{"C1", "../1"}, {"C1", "1..2"}, {"C1", ".1"}, {"C1", "1.2.3"}, {"C-1", "1.2"}, {"X1", "1.2"},
 	} {
 		if _, err := ThreadID(tc[0], tc[1]); err == nil {
 			t.Errorf("ThreadID(%q, %q) succeeded, want error", tc[0], tc[1])

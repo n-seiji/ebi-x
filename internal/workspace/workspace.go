@@ -16,11 +16,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/n-seiji/ebi-x/internal/memory"
 )
 
 const (
-	// BranchPrefix names the branches created in thread checkouts.
-	BranchPrefix = "ebi-x/"
+	// branchPrefix names the branches created in thread checkouts.
+	branchPrefix = "ebi-x/"
 	// lastUsedFile records, by its modification time, when a thread's
 	// checkouts were last used by a work turn.
 	lastUsedFile = ".last-used"
@@ -40,8 +42,9 @@ type Checkout struct {
 	Branch string
 }
 
-// Lease holds a thread's workspace for the duration of one work turn. The
-// garbage collector never removes a leased thread's checkouts.
+// Lease holds a thread's workspace for the duration of one work turn. It
+// keeps the thread locked, so the garbage collector never removes a leased
+// thread's checkouts.
 type Lease struct {
 	// Dir is the thread's workspace directory, used as the turn's cwd.
 	Dir string
@@ -72,6 +75,8 @@ type root struct {
 	// directory; empty when the root is not the top level of a git
 	// repository.
 	name string
+	// originURL is the repository's origin remote, which checkouts push to.
+	originURL string
 }
 
 // Manager creates per-thread workspace directories and git checkouts and
@@ -81,8 +86,9 @@ type Manager struct {
 	checkoutsDir string
 	roots        []root
 
-	mu      sync.Mutex
-	active  map[string]int
+	mu sync.Mutex
+	// idLocks serialize preparing, using, and removing one thread's
+	// checkouts.
 	idLocks map[string]*sync.Mutex
 }
 
@@ -93,7 +99,6 @@ func New(ctx context.Context, workspaceDir, checkoutsDir string, writableRoots [
 	m := &Manager{
 		workspaceDir: workspaceDir,
 		checkoutsDir: checkoutsDir,
-		active:       make(map[string]int),
 		idLocks:      make(map[string]*sync.Mutex),
 	}
 	for _, path := range writableRoots {
@@ -105,6 +110,9 @@ func New(ctx context.Context, workspaceDir, checkoutsDir string, writableRoots [
 		if repo {
 			sum := sha256.Sum256([]byte(path))
 			r.name = filepath.Base(path) + "-" + hex.EncodeToString(sum[:4])
+			if url, err := gitOutput(ctx, path, "config", "--get", "remote.origin.url"); err == nil {
+				r.originURL = strings.TrimSpace(url)
+			}
 		}
 		m.roots = append(m.roots, r)
 	}
@@ -125,7 +133,7 @@ func (m *Manager) Repositories() []string {
 
 // ThreadID derives a filesystem- and branch-safe identifier for a Slack thread.
 func ThreadID(channel, threadTS string) (string, error) {
-	if !safeComponent(channel, false) || !safeComponent(threadTS, true) {
+	if !memory.ValidChannelID(channel) || !validTimestamp(threadTS) {
 		return "", fmt.Errorf("invalid Slack thread %q/%q", channel, threadTS)
 	}
 	return channel + "-" + threadTS, nil
@@ -133,7 +141,7 @@ func ThreadID(channel, threadTS string) (string, error) {
 
 // ThreadDir returns the thread's workspace directory, creating it if needed.
 func (m *Manager) ThreadDir(threadID string) (string, error) {
-	dir, err := m.threadPath(m.workspaceDir, threadID)
+	dir, err := threadPath(m.workspaceDir, threadID)
 	if err != nil {
 		return "", err
 	}
@@ -151,15 +159,29 @@ func (m *Manager) Acquire(ctx context.Context, threadID string) (*Lease, error) 
 	if err != nil {
 		return nil, err
 	}
-	threadCheckouts, err := m.threadPath(m.checkoutsDir, threadID)
+	threadCheckouts, err := threadPath(m.checkoutsDir, threadID)
 	if err != nil {
 		return nil, err
 	}
 
 	idLock := m.idLock(threadID)
 	idLock.Lock()
-	defer idLock.Unlock()
+	lease, err := m.prepare(ctx, threadID, dir, threadCheckouts)
+	if err != nil {
+		idLock.Unlock()
+		return nil, err
+	}
+	lease.release = func() {
+		if len(lease.Checkouts) > 0 {
+			// Idle time counts from the end of the work turn.
+			_ = touch(filepath.Join(threadCheckouts, lastUsedFile))
+		}
+		idLock.Unlock()
+	}
+	return lease, nil
+}
 
+func (m *Manager) prepare(ctx context.Context, threadID, dir, threadCheckouts string) (*Lease, error) {
 	lease := &Lease{Dir: dir}
 	for _, r := range m.roots {
 		if r.name == "" {
@@ -169,32 +191,17 @@ func (m *Manager) Acquire(ctx context.Context, threadID string) (*Lease, error) 
 		checkout := Checkout{
 			Repo:   r.path,
 			Path:   filepath.Join(threadCheckouts, r.name),
-			Branch: BranchPrefix + threadID,
+			Branch: branchPrefix + threadID,
 		}
-		if err := ensureCheckout(ctx, checkout); err != nil {
+		if err := ensureCheckout(ctx, checkout, r.originURL); err != nil {
 			return nil, err
 		}
 		lease.Checkouts = append(lease.Checkouts, checkout)
 		lease.WritableRoots = append(lease.WritableRoots, checkout.Path, checkout.Path+gitDirSuffix)
 	}
 	if len(lease.Checkouts) > 0 {
-		if err := touch(filepath.Join(threadCheckouts, lastUsedFile), time.Now()); err != nil {
+		if err := touch(filepath.Join(threadCheckouts, lastUsedFile)); err != nil {
 			return nil, err
-		}
-	}
-
-	m.mu.Lock()
-	m.active[threadID]++
-	m.mu.Unlock()
-	lease.release = func() {
-		if len(lease.Checkouts) > 0 {
-			// Idle time counts from the end of the work turn.
-			_ = touch(filepath.Join(threadCheckouts, lastUsedFile), time.Now())
-		}
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		if m.active[threadID]--; m.active[threadID] <= 0 {
-			delete(m.active, threadID)
 		}
 	}
 	return lease, nil
@@ -232,17 +239,12 @@ func (m *Manager) GC(now time.Time, idle time.Duration) ([]string, error) {
 }
 
 func (m *Manager) removeIfIdle(threadID string, now time.Time, idle time.Duration) (bool, error) {
+	// A leased thread holds its lock, so it is skipped here.
 	idLock := m.idLock(threadID)
 	if !idLock.TryLock() {
 		return false, nil
 	}
 	defer idLock.Unlock()
-	m.mu.Lock()
-	inUse := m.active[threadID] > 0
-	m.mu.Unlock()
-	if inUse {
-		return false, nil
-	}
 
 	dir := filepath.Join(m.checkoutsDir, threadID)
 	lastUsed := time.Time{}
@@ -271,7 +273,7 @@ func (m *Manager) idLock(threadID string) *sync.Mutex {
 	return lock
 }
 
-func (m *Manager) threadPath(base, threadID string) (string, error) {
+func threadPath(base, threadID string) (string, error) {
 	if !validThreadID(threadID) {
 		return "", fmt.Errorf("invalid thread ID %q", threadID)
 	}
@@ -280,9 +282,9 @@ func (m *Manager) threadPath(base, threadID string) (string, error) {
 
 // ensureCheckout clones the repository's current HEAD into a thread branch.
 // A local clone hardlinks the repository's objects, so it is cheap and does
-// not depend on the original afterwards. When the repository has an origin
-// remote, the checkout's origin points there too so the branch can be pushed.
-func ensureCheckout(ctx context.Context, checkout Checkout) error {
+// not depend on the original afterwards. When originURL is set, the
+// checkout's origin points there too so the branch can be pushed.
+func ensureCheckout(ctx context.Context, checkout Checkout, originURL string) error {
 	gitDir := checkout.Path + gitDirSuffix
 	if _, err := os.Stat(filepath.Join(checkout.Path, ".git")); err == nil {
 		if _, err := os.Stat(gitDir); err == nil {
@@ -304,13 +306,10 @@ func ensureCheckout(ctx context.Context, checkout Checkout) error {
 	if err := git(ctx, checkout.Path, "checkout", "--quiet", "-b", checkout.Branch); err != nil {
 		return err
 	}
-	originURL, err := gitOutput(ctx, checkout.Repo, "config", "--get", "remote.origin.url")
-	if originURL = strings.TrimSpace(originURL); err == nil && originURL != "" {
-		if err := git(ctx, checkout.Path, "remote", "set-url", "origin", originURL); err != nil {
-			return err
-		}
+	if originURL == "" {
+		return nil
 	}
-	return nil
+	return git(ctx, checkout.Path, "remote", "set-url", "origin", originURL)
 }
 
 // isRepositoryTopLevel reports whether path is the top level of a git
@@ -352,11 +351,13 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 	return stdout.String(), nil
 }
 
-func touch(path string, at time.Time) error {
+// touch records the current time as the file's modification time.
+func touch(path string) error {
+	now := time.Now()
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		return fmt.Errorf("record checkout use: %w", err)
 	}
-	if err := os.Chtimes(path, at, at); err != nil {
+	if err := os.Chtimes(path, now, now); err != nil {
 		return fmt.Errorf("record checkout use: %w", err)
 	}
 	return nil
@@ -364,13 +365,13 @@ func touch(path string, at time.Time) error {
 
 func validThreadID(id string) bool {
 	channel, threadTS, ok := strings.Cut(id, "-")
-	return ok && safeComponent(channel, false) && safeComponent(threadTS, true)
+	return ok && memory.ValidChannelID(channel) && validTimestamp(threadTS)
 }
 
-// safeComponent accepts Slack channel IDs (upper-case letters and digits)
-// and message timestamps (digits and one dot), which keeps thread IDs valid
-// as both directory names and git branch names.
-func safeComponent(value string, timestamp bool) bool {
+// validTimestamp accepts Slack message timestamps (digits and at most one
+// inner dot), which keeps thread IDs valid as both directory names and git
+// branch names.
+func validTimestamp(value string) bool {
 	if value == "" || value[0] == '.' || value[len(value)-1] == '.' {
 		return false
 	}
@@ -378,8 +379,7 @@ func safeComponent(value string, timestamp bool) bool {
 	for _, char := range value {
 		switch {
 		case char >= '0' && char <= '9':
-		case !timestamp && char >= 'A' && char <= 'Z':
-		case timestamp && char == '.':
+		case char == '.':
 			dots++
 		default:
 			return false
