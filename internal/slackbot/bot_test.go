@@ -195,6 +195,7 @@ func (s *fakeSlack) RemoveReaction(_ context.Context, _, _, name string) error {
 func (s *fakeSlack) HasReaction(_ context.Context, channel, timestamp, reaction string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.calls = append(s.calls, slackCall{kind: "has:" + reaction})
 	s.reactionCalls++
 	s.reactionChannel = channel
 	s.reactionTimestamp = timestamp
@@ -585,6 +586,20 @@ func TestSubscriptionStartFailuresDoNotBlockMentionTurn(t *testing.T) {
 	}
 }
 
+func TestMentionAddsEyesBeforeSubscriptionLookup(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	bot := newTestBot(t, store, api, successfulPlanRunner())
+	bot.config.ThreadSubscriptionReaction = "thread-subete"
+	bot.config.ThreadSubscriptionTTL = 48 * time.Hour
+
+	bot.HandleMention(context.Background(), mention())
+
+	if len(api.calls) < 2 || api.calls[0].kind != "add:eyes" || api.calls[1].kind != "has:thread-subete" {
+		t.Fatalf("first Slack calls = %v, want add:eyes before the subscription lookup", api.calls)
+	}
+}
+
 func TestSubscriptionMarkerLookupRetriesTransientSlackErrors(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -611,7 +626,12 @@ func TestSubscriptionMarkerLookupRetriesTransientSlackErrors(t *testing.T) {
 			bot.config.ThreadSubscriptionReaction = "thread-subete"
 			bot.config.ThreadSubscriptionTTL = 48 * time.Hour
 			var waits []time.Duration
-			bot.sleep = func(_ context.Context, duration time.Duration) error {
+			bot.sleep = func(ctx context.Context, duration time.Duration) error {
+				if duration == statusRefreshDelay {
+					// Status refreshes wait for the turn to end.
+					<-ctx.Done()
+					return ctx.Err()
+				}
 				waits = append(waits, duration)
 				return nil
 			}

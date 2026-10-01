@@ -279,10 +279,12 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	if !claimed {
 		return
 	}
+	// Acknowledge first: the subscription check below is a Slack API round
+	// trip that may also wait out a rate limit.
+	b.addReaction(ctx, channel, timestamp, "eyes")
 	if trigger.source == mentionTrigger {
 		b.startThreadSubscription(ctx, channel, threadTS)
 	}
-	b.addReaction(ctx, channel, timestamp, "eyes")
 
 	if err := b.store.Transition(eventKey, state.Received, state.Planning); err != nil {
 		log.Printf("slackbot: start planning %q: %v", eventKey, err)
@@ -292,8 +294,11 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		b.finalReaction(ctx, channel, timestamp, false)
 		return
 	}
-	b.setStatus(ctx, channel, threadTS, planningStatus)
+	// Slack clears a thread status after about two minutes, and a planning
+	// turn can run longer, so keep refreshing it until work takes over.
+	stopPlanningStatus := b.keepStatus(ctx, channel, threadTS, planningStatus)
 	defer b.clearStatus(ctx, channel, threadTS)
+	defer stopPlanningStatus()
 
 	workspaceID, cwd, err := b.threadWorkspace(channel, threadTS)
 	if err != nil {
@@ -386,6 +391,7 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		b.finalReaction(ctx, channel, timestamp, true)
 		return
 	}
+	stopPlanningStatus()
 	resultText, updatedMemoryScopes, started, workErr := b.work(ctx, eventKey, channel, threadTS, threadKey, workspaceID, instruction)
 	if !started {
 		log.Printf("slackbot: start work %q: %v", eventKey, workErr)
@@ -426,6 +432,13 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 	}
 	defer release()
 
+	// A work plan is intentionally not posted: Slack would clear the progress
+	// status when processing that reply. Refresh the status until work
+	// completes, starting before checkouts are prepared since cloning can
+	// take a while.
+	stopWorkingStatus := b.keepStatus(ctx, channel, threadTS, workingStatus)
+	defer stopWorkingStatus()
+
 	lease, err := b.config.Workspaces.Acquire(ctx, workspaceID)
 	if err != nil {
 		return "", nil, false, fmt.Errorf("prepare workspace: %w", err)
@@ -439,11 +452,6 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 	if err := b.store.Transition(eventKey, state.PlanPosted, state.Working); err != nil {
 		return "", nil, false, err
 	}
-	// A work plan is intentionally not posted: Slack would clear the progress
-	// status when processing that reply. Refresh the status until work completes.
-	stopWorkingStatus := b.keepStatus(ctx, channel, threadTS, workingStatus)
-	defer stopWorkingStatus()
-
 	// memoryMu is only held around the memory access itself, so other turns
 	// can read memory while this one runs. The memory directory is
 	// intentionally not a writable root: the agent proposes memory entries
