@@ -172,6 +172,7 @@ func (b *Bot) handleMention(ctx context.Context, event *slackevents.AppMentionEv
 	if event == nil || event.Edited != nil || event.User == b.config.BotUserID {
 		return
 	}
+	log.Printf("slackbot: mention %s:%s from user %q bot %q", event.Channel, event.TimeStamp, event.User, event.BotID)
 	if event.BotID == "" {
 		if _, ok := b.allowedUsers[event.User]; !ok {
 			log.Printf("slackbot: rejecting user %q", event.User)
@@ -247,6 +248,7 @@ func (b *Bot) HandleMessage(ctx context.Context, event *slackevents.MessageEvent
 		return
 	}
 
+	log.Printf("slackbot: message %s:%s in subscribed thread from user %q", event.Channel, event.TimeStamp, event.User)
 	b.processTrigger(ctx, processingTrigger{
 		source:      messageTrigger,
 		authorID:    event.User,
@@ -277,8 +279,10 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		return
 	}
 	if !claimed {
+		log.Printf("slackbot: %s already claimed; skipping", eventKey)
 		return
 	}
+	log.Printf("slackbot: %s planning", eventKey)
 	// Acknowledge first: the subscription check below is a Slack API round
 	// trip that may also wait out a rate limit.
 	b.addReaction(ctx, channel, timestamp, "eyes")
@@ -378,6 +382,7 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		return
 	}
 	if instruction == "" {
+		log.Printf("slackbot: %s answering without work", eventKey)
 		if err := b.post(ctx, channel, threadTS, policy); err != nil {
 			log.Printf("slackbot: post policy %q: %v", eventKey, err)
 			b.fail(ctx, eventKey, state.PlanPosted, state.Failed, channel, threadTS, timestamp, planFailureMessage)
@@ -389,9 +394,11 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 			return
 		}
 		b.finalReaction(ctx, channel, timestamp, true)
+		log.Printf("slackbot: %s done", eventKey)
 		return
 	}
 	stopPlanningStatus()
+	log.Printf("slackbot: %s starting work", eventKey)
 	resultText, updatedMemoryScopes, started, workErr := b.work(ctx, eventKey, channel, threadTS, threadKey, workspaceID, instruction)
 	if !started {
 		log.Printf("slackbot: start work %q: %v", eventKey, workErr)
@@ -420,6 +427,7 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		return
 	}
 	b.finalReaction(ctx, channel, timestamp, true)
+	log.Printf("slackbot: %s done", eventKey)
 }
 
 // work runs the work turn for instruction. started reports whether the event
@@ -584,7 +592,9 @@ func (b *Bot) forbidden(ctx context.Context, event *slackevents.AppMentionEvent)
 	}
 	if err := b.post(ctx, event.Channel, threadTS, fmt.Sprintf(forbiddenMessage, contact)); err != nil {
 		log.Printf("slackbot: post forbidden response: %v", err)
+		return
 	}
+	log.Printf("slackbot: posted forbidden response to %s:%s", event.Channel, event.TimeStamp)
 }
 
 func validWorkflowID(id string) bool {
@@ -653,9 +663,11 @@ func (b *Bot) finishFailClosed(ctx context.Context, eventKey, channel, threadTS,
 		return
 	}
 	b.finalReaction(ctx, channel, timestamp, true)
+	log.Printf("slackbot: %s done without work (instruction unclear)", eventKey)
 }
 
 func (b *Bot) fail(ctx context.Context, eventKey string, from, to state.State, channel, threadTS, timestamp, message string) {
+	log.Printf("slackbot: %s %s", eventKey, to)
 	if err := b.store.Transition(eventKey, from, to); err != nil {
 		log.Printf("slackbot: transition %q to %s: %v", eventKey, to, err)
 	}
@@ -925,6 +937,7 @@ func RunSocketMode(acceptCtx, turnCtx context.Context, botToken, appToken string
 	}
 	bot.api = &webAPI{client: client}
 	bot.config.BotUserID = auth.UserID
+	log.Printf("slackbot: authenticated as %s (%s) in %s", auth.User, auth.UserID, auth.Team)
 	socketClient := socketmode.New(client)
 	runErr := make(chan error, 1)
 	go func() {
@@ -946,6 +959,12 @@ func RunSocketMode(acceptCtx, turnCtx context.Context, botToken, appToken string
 			}
 			if event.Request != nil {
 				socketClient.Ack(*event.Request)
+			}
+			switch event.Type {
+			case socketmode.EventTypeConnecting, socketmode.EventTypeConnected, socketmode.EventTypeDisconnect:
+				log.Printf("slackbot: Socket Mode %s", event.Type)
+			case socketmode.EventTypeConnectionError, socketmode.EventTypeInvalidAuth, socketmode.EventTypeIncomingError:
+				log.Printf("slackbot: Socket Mode %s: %v", event.Type, event.Data)
 			}
 			if event.Type != socketmode.EventTypeEventsAPI {
 				continue

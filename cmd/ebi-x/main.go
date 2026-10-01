@@ -89,6 +89,12 @@ func main() {
 		collectIdleCheckouts(acceptCtx, workspaces, cfg.CheckoutIdleTTL)
 	}()
 
+	model := cfg.CodexModel
+	if model == "" {
+		model = "(Codex default)"
+	}
+	log.Printf("ebi-x starting: home %s, model %s, %d allowed channel(s), %d allowed user(s)",
+		cfg.EBIXHome, model, len(cfg.AllowedChannelIDs), len(cfg.AllowedUserIDs))
 	socketDone := make(chan error, 1)
 	go func() {
 		socketDone <- slackbot.RunSocketMode(acceptCtx, turnCtx, cfg.SlackBotToken, cfg.SlackAppToken, bot, &turns)
