@@ -28,10 +28,13 @@ type Config struct {
 	SlackAppToken     string
 	AllowedUserIDs    []string
 	AllowedChannelIDs []string
-	AllowWorkflows    bool
-	AdminUserID       string
-	CodexCommand      string
-	CodexModel        string
+	// AllowAllPublicChannels accepts every public channel instead of
+	// AllowedChannelIDs. DMs and private channels stay rejected.
+	AllowAllPublicChannels bool
+	AllowWorkflows         bool
+	AdminUserID            string
+	CodexCommand           string
+	CodexModel             string
 	// CodexWorkModel overrides CodexModel for work turns; empty uses CodexModel.
 	CodexWorkModel string
 	CodexTimeout   time.Duration
@@ -80,6 +83,17 @@ func Load() (*Config, error) {
 		if !strings.HasPrefix(userID, "U") {
 			return nil, fmt.Errorf("SLACK_ALLOWED_USER_IDS: invalid user ID %q: %w", userID, errors.New("must start with U"))
 		}
+	}
+	channelIDs := splitList(os.Getenv("SLACK_ALLOWED_CHANNEL_IDS"))
+	allowAllPublicChannels := false
+	if value := strings.TrimSpace(os.Getenv("SLACK_ALLOW_ALL_PUBLIC_CHANNELS")); value != "" {
+		allowAllPublicChannels, err = strconv.ParseBool(value)
+		if err != nil {
+			return nil, fmt.Errorf("SLACK_ALLOW_ALL_PUBLIC_CHANNELS %q: %w", value, err)
+		}
+	}
+	if allowAllPublicChannels && len(channelIDs) > 0 {
+		return nil, fmt.Errorf("SLACK_ALLOW_ALL_PUBLIC_CHANNELS: %w", errors.New("cannot be combined with SLACK_ALLOWED_CHANNEL_IDS"))
 	}
 	allowWorkflows := false
 	if value := strings.TrimSpace(os.Getenv("SLACK_ALLOW_WORKFLOWS")); value != "" {
@@ -172,7 +186,8 @@ func Load() (*Config, error) {
 		SlackBotToken:              botToken,
 		SlackAppToken:              appToken,
 		AllowedUserIDs:             userIDs,
-		AllowedChannelIDs:          splitList(os.Getenv("SLACK_ALLOWED_CHANNEL_IDS")),
+		AllowedChannelIDs:          channelIDs,
+		AllowAllPublicChannels:     allowAllPublicChannels,
 		AllowWorkflows:             allowWorkflows,
 		AdminUserID:                adminUserID,
 		CodexCommand:               codexCommand,

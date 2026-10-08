@@ -50,6 +50,7 @@ type SlackAPI interface {
 	HasReaction(ctx context.Context, channel, timestamp, reaction string) (bool, error)
 	AddReaction(ctx context.Context, channel, timestamp, name string) error
 	RemoveReaction(ctx context.Context, channel, timestamp, name string) error
+	IsPublicChannel(ctx context.Context, channel string) (bool, error)
 }
 
 // ThreadMessage is the Slack thread data supplied to a first planning turn.
@@ -83,8 +84,11 @@ type Workspaces interface {
 
 // Config contains paths, allowlists, and timeout settings needed by Bot.
 type Config struct {
-	AllowedUserIDs             []string
-	AllowedChannelIDs          []string
+	AllowedUserIDs    []string
+	AllowedChannelIDs []string
+	// AllowAllPublicChannels accepts every public channel and ignores
+	// AllowedChannelIDs. DMs and private channels are always rejected.
+	AllowAllPublicChannels     bool
 	AllowWorkflows             bool
 	AdminUserID                string
 	WorkspaceDir               string
@@ -183,12 +187,10 @@ func (b *Bot) handleMention(ctx context.Context, event *slackevents.AppMentionEv
 		b.forbidden(ctx, event)
 		return
 	}
-	if len(b.allowedChannels) > 0 {
-		if _, ok := b.allowedChannels[event.Channel]; !ok {
-			log.Printf("slackbot: rejecting channel %q", event.Channel)
-			b.forbidden(ctx, event)
-			return
-		}
+	if !b.mentionChannelAllowed(ctx, event.Channel) {
+		log.Printf("slackbot: rejecting channel %q", event.Channel)
+		b.forbidden(ctx, event)
+		return
 	}
 	threadTS := event.ThreadTimeStamp
 	if threadTS == "" {
@@ -225,7 +227,8 @@ func (b *Bot) HandleMessage(ctx context.Context, event *slackevents.MessageEvent
 		strings.TrimSpace(event.Text) == "" {
 		return
 	}
-	if _, ok := b.allowedChannels[event.Channel]; !ok {
+	// ChannelType "channel" already guarantees a public channel.
+	if _, ok := b.allowedChannels[event.Channel]; !ok && !b.config.AllowAllPublicChannels {
 		return
 	}
 	if b.config.BotUserID != "" && strings.Contains(event.Text, "<@"+b.config.BotUserID+">") {
@@ -563,6 +566,29 @@ func (w sharedWorkspaces) ThreadDir(string) (string, error) { return w.dir, nil 
 
 func (w sharedWorkspaces) Acquire(context.Context, string) (*workspace.Lease, error) {
 	return workspace.NewLease(w.dir, w.roots, nil, func() {}), nil
+}
+
+// mentionChannelAllowed reports whether a mention in channel may be
+// processed. App mention events carry no channel type, so the all-public mode
+// asks Slack and rejects the channel when that lookup fails.
+func (b *Bot) mentionChannelAllowed(ctx context.Context, channel string) bool {
+	if !b.config.AllowAllPublicChannels {
+		if len(b.allowedChannels) == 0 {
+			return true
+		}
+		_, ok := b.allowedChannels[channel]
+		return ok
+	}
+	// D is a DM; G is a legacy private channel or group DM.
+	if !strings.HasPrefix(channel, "C") {
+		return false
+	}
+	public, err := b.api.IsPublicChannel(ctx, channel)
+	if err != nil {
+		log.Printf("slackbot: look up channel %q: %v", channel, err)
+		return false
+	}
+	return public
 }
 
 func (b *Bot) forbidden(ctx context.Context, event *slackevents.AppMentionEvent) {
@@ -905,6 +931,17 @@ func (w *webAPI) AddReaction(ctx context.Context, channel, timestamp, name strin
 
 func (w *webAPI) RemoveReaction(ctx context.Context, channel, timestamp, name string) error {
 	return w.client.RemoveReactionContext(ctx, name, slack.ItemRef{Channel: channel, Timestamp: timestamp})
+}
+
+// IsPublicChannel reports whether channel is a public channel. Private
+// channels and DMs need scopes ebi-x does not request, so their lookups fail
+// rather than return false; callers must treat errors as not public.
+func (w *webAPI) IsPublicChannel(ctx context.Context, channel string) (bool, error) {
+	info, err := w.client.GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{ChannelID: channel})
+	if err != nil {
+		return false, err
+	}
+	return info.IsChannel && !info.IsPrivate && !info.IsIM && !info.IsMpIM, nil
 }
 
 // RunSocketMode connects a Bot to Slack Socket Mode. It acknowledges every

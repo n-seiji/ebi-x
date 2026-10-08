@@ -14,7 +14,9 @@ ebi-x は、Slack の mention を受けて Codex が方針を検討し、必要�
 
 `.env.example` を `.env` にコピーし、Slack token、許可する user/channel ID などを設定します。
 
-Workflow Builder の「メッセージを送信」からの mention も受け付ける場合は、`SLACK_ALLOW_WORKFLOWS=true` にします。通常のBot投稿は拒否し、Slackイベントに `Wf` で始まる `workflow_id` が含まれるmentionだけを許可します。人・Workflowのどちらも `SLACK_ALLOWED_CHANNEL_IDS` の制限対象です。
+チャンネルは `SLACK_ALLOWED_CHANNEL_IDS` で個別に許可するほか、`SLACK_ALLOW_ALL_PUBLIC_CHANNELS=true` ですべてのパブリックチャンネルを許可できます。この場合もDM・グループDM・プライベートチャンネルは拒否します。mentionイベントにはチャンネル種別が含まれないため、`conversations.info` でパブリックかどうかを確認します（Bot Token Scopes に `channels:read` が必要です）。確認に失敗したチャンネルは拒否します。`SLACK_ALLOWED_CHANNEL_IDS` との併用はできません。
+
+Workflow Builder の「メッセージを送信」からの mention も受け付ける場合は、`SLACK_ALLOW_WORKFLOWS=true` にします。通常のBot投稿は拒否し、Slackイベントに `Wf` で始まる `workflow_id` が含まれるmentionだけを許可します。人・Workflowのどちらもチャンネル制限の対象です。
 
 許可されていないuser、channel、Botからmentionされた場合は、`SLACK_ADMIN_USER_ID` のユーザーへ確認するよう同じスレッドに返信します。未設定時は `@seiji` というテキストを使用します。
 
