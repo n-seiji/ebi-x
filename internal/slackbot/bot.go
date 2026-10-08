@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/n-seiji/ebi-x/internal/attachment"
 	"github.com/n-seiji/ebi-x/internal/codex"
 	"github.com/n-seiji/ebi-x/internal/memory"
 	"github.com/n-seiji/ebi-x/internal/playbook"
@@ -37,6 +39,8 @@ const (
 	workStartFailureMessage = "⚠️ 作業を開始できなかったため、作業は行っていません。もう一度 mention してください。"
 	workFailureMessage      = "⚠️ 作業が完了したことを確認できませんでした。状況を確認し、新しい mention で依頼し直してください。"
 	forbiddenMessage        = "403 forbidden. %s に確認してください。"
+	attachmentFailureNotice = "⚠️ 次のファイルを添付できませんでした。生成済みのファイルは作業領域に残しています。再送する場合は「添付を再送して」と依頼してください。"
+	attachmentOutputNotice  = "⚠️ 添付ファイルの指定を読み取れなかったため、ファイルは添付していません。再送する場合は「添付を再送して」と依頼してください。"
 	planningStatus          = "が方針を考えています…"
 	workingStatus           = "が作業を進めています…"
 	queuedStatus            = "が作業の順番を待っています…"
@@ -52,6 +56,7 @@ type SlackAPI interface {
 	AddReaction(ctx context.Context, channel, timestamp, name string) error
 	RemoveReaction(ctx context.Context, channel, timestamp, name string) error
 	IsPublicChannel(ctx context.Context, channel string) (bool, error)
+	UploadFile(ctx context.Context, channel, threadTS, filename string, size int64, content io.Reader) error
 }
 
 // ThreadMessage is the Slack thread data supplied to a first planning turn.
@@ -432,7 +437,7 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		b.finalReaction(ctx, channel, timestamp, true)
 		return
 	}
-	resultText, updatedMemoryScopes, started, workErr := b.work(ctx, eventKey, channel, threadTS, threadKey, workspaceID, instruction)
+	output, started, workErr := b.work(ctx, eventKey, channel, threadTS, threadKey, workspaceID, instruction)
 	if !started {
 		log.Printf("slackbot: start work %q: %v", eventKey, workErr)
 		b.fail(ctx, eventKey, state.PlanPosted, state.Failed, channel, threadTS, timestamp, workStartFailureMessage)
@@ -443,43 +448,79 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, workFailureMessage)
 		return
 	}
+	resultText := output.text
 	if resultText == "" {
 		resultText = "作業が完了しました。"
 	}
-	if len(updatedMemoryScopes) > 0 {
-		resultText += "\n\n📝 " + strings.Join(updatedMemoryScopes, "・") + "メモリを更新しました。"
+	if len(output.memoryScopes) > 0 {
+		resultText += "\n\n📝 " + strings.Join(output.memoryScopes, "・") + "メモリを更新しました。"
+	}
+	// The deliverable that did not reach Slack must not look successful. The
+	// files stay in the work area for a resend request.
+	final := state.Done
+	if notice := output.attachmentNotice(); notice != "" {
+		resultText += "\n\n" + notice
+		final = state.Interrupted
 	}
 	if err := b.post(ctx, channel, threadTS, resultText); err != nil {
 		log.Printf("slackbot: post work result %q: %v", eventKey, err)
 		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, workFailureMessage)
 		return
 	}
-	if err := b.store.Transition(eventKey, state.Working, state.Done); err != nil {
+	if err := b.store.Transition(eventKey, state.Working, final); err != nil {
 		log.Printf("slackbot: finish work %q: %v", eventKey, err)
 		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, workFailureMessage)
 		return
 	}
-	b.finalReaction(ctx, channel, timestamp, true)
+	b.finalReaction(ctx, channel, timestamp, final == state.Done)
+}
+
+// workOutput is what a completed work turn hands back for posting.
+type workOutput struct {
+	text         string
+	memoryScopes []string
+	// attachmentOutputInvalid reports an attachment section the bot could not
+	// read, so no files were sent.
+	attachmentOutputInvalid bool
+	// failedAttachments lists files that were rejected or failed to upload.
+	failedAttachments []attachment.Rejection
+}
+
+// attachmentNotice tells the user which files did not reach Slack, so the
+// posted result never reads as a complete delivery when it was not.
+func (o workOutput) attachmentNotice() string {
+	if o.attachmentOutputInvalid {
+		return attachmentOutputNotice
+	}
+	if len(o.failedAttachments) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString(attachmentFailureNotice)
+	for _, failed := range o.failedAttachments {
+		fmt.Fprintf(&builder, "\n- `%s`: %s", failed.Path, failed.Reason)
+	}
+	return builder.String()
 }
 
 // work runs the work turn for instruction. started reports whether the event
 // reached the working state; when it did not, nothing was run and the event
 // may be retried.
-func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, workspaceID, instruction string) (resultText string, updatedMemoryScopes []string, started bool, err error) {
+func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, workspaceID, instruction string) (output workOutput, started bool, err error) {
 	release, err := b.acquireWork(ctx, threadKey, channel, threadTS)
 	if err != nil {
-		return "", nil, false, err
+		return workOutput{}, false, err
 	}
 	defer release()
 
 	lease, err := b.config.Workspaces.Acquire(ctx, workspaceID)
 	if err != nil {
-		return "", nil, false, fmt.Errorf("prepare workspace: %w", err)
+		return workOutput{}, false, fmt.Errorf("prepare workspace: %w", err)
 	}
 	defer lease.Release()
 	otherThreads, err := b.config.Workspaces.OtherThreadPaths(workspaceID)
 	if err != nil {
-		return "", nil, false, fmt.Errorf("list other thread workspaces: %w", err)
+		return workOutput{}, false, fmt.Errorf("list other thread workspaces: %w", err)
 	}
 	// Playbooks and global memory reach every channel, so only trusted
 	// channels may change them.
@@ -490,7 +531,7 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 	}
 
 	if err := b.store.Transition(eventKey, state.PlanPosted, state.Working); err != nil {
-		return "", nil, false, err
+		return workOutput{}, false, err
 	}
 	// A work plan is intentionally not posted: Slack would clear the progress
 	// status when processing that reply. Refresh the status until work completes.
@@ -510,17 +551,22 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 	workPrompt := prompt.BuildWorkPrompt(instruction, workMemoryContext, lease.Checkouts, sharedWritable)
 	workResult, workErr := b.runTurn(ctx, "", "workspace-write", lease.Dir, roots, otherThreads, workPrompt, nil)
 	if workErr != nil {
-		return "", nil, true, workErr
+		return workOutput{}, true, workErr
 	}
 	if workResult == nil || !workResult.Completed || len(workResult.Messages) == 0 {
 		if workResult != nil && workResult.Err != "" {
-			return "", nil, true, fmt.Errorf("work turn incomplete: %s", workResult.Err)
+			return workOutput{}, true, fmt.Errorf("work turn incomplete: %s", workResult.Err)
 		}
-		return "", nil, true, errors.New("work turn incomplete")
+		return workOutput{}, true, errors.New("work turn incomplete")
 	}
 
-	resultText, memoryAppends, memoryOutputValid := codex.SplitMemoryAppends(workResult.Messages[len(workResult.Messages)-1])
-	resultText = codex.SanitizeSlackOutput(resultText)
+	resultText, attachmentPaths, attachmentOutputValid := codex.SplitAttachments(workResult.Messages[len(workResult.Messages)-1])
+	if !attachmentOutputValid {
+		log.Printf("slackbot: ignore malformed attachment output %q", eventKey)
+		output.attachmentOutputInvalid = true
+	}
+	resultText, memoryAppends, memoryOutputValid := codex.SplitMemoryAppends(resultText)
+	output.text = codex.SanitizeSlackOutput(resultText)
 	if !memoryOutputValid {
 		log.Printf("slackbot: ignore malformed scoped memory output %q", eventKey)
 	}
@@ -550,12 +596,50 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 				continue
 			}
 			if written != "" {
-				updatedMemoryScopes = append(updatedMemoryScopes, target.label)
+				output.memoryScopes = append(output.memoryScopes, target.label)
 			}
 		}
 		b.memoryMu.Unlock()
 	}
-	return resultText, updatedMemoryScopes, true, nil
+	// Upload while the thread's work lock and lease are held, so a later
+	// turn in the same thread cannot replace the files mid-upload.
+	if len(attachmentPaths) > 0 {
+		output.failedAttachments = b.uploadAttachments(ctx, eventKey, channel, threadTS, lease, attachmentPaths)
+	}
+	return output, true, nil
+}
+
+// uploadAttachments sends the files a work turn listed to the Slack thread.
+// Only files in the thread's own workspace directory and checkouts qualify;
+// shared writable roots and the playbooks directory are other threads' too.
+func (b *Bot) uploadAttachments(ctx context.Context, eventKey, channel, threadTS string, lease *workspace.Lease, paths []string) []attachment.Rejection {
+	files, failed := attachment.Resolve(lease.ThreadAreas(), lease.Dir, paths)
+	for _, rejection := range failed {
+		log.Printf("slackbot: reject attachment %q for %q: %s", rejection.Path, eventKey, rejection.Reason)
+	}
+	for _, file := range files {
+		upload := func() error {
+			content, err := file.Open()
+			if err != nil {
+				return err
+			}
+			defer content.Close()
+			return b.api.UploadFile(ctx, channel, threadTS, file.Name(), file.Size(), content)
+		}
+		// Only a rate limit proves Slack did not take the file. Retrying any
+		// other failure could share the file twice.
+		err := upload()
+		if rateLimited, ok := errors.AsType[*slack.RateLimitedError](err); ok {
+			if err = b.sleep(ctx, rateLimited.RetryAfter); err == nil {
+				err = upload()
+			}
+		}
+		if err != nil {
+			log.Printf("slackbot: upload attachment %q for %q: %v", file.Path, eventKey, err)
+			failed = append(failed, attachment.Rejection{Path: file.Path, Reason: "Slackへのアップロードに失敗しました"})
+		}
+	}
+	return failed
 }
 
 // acquireWork waits until this Slack thread has no other work turn running
@@ -619,7 +703,9 @@ type sharedWorkspaces struct {
 func (w sharedWorkspaces) ThreadDir(string) (string, error) { return w.dir, nil }
 
 func (w sharedWorkspaces) Acquire(context.Context, string) (*workspace.Lease, error) {
-	return workspace.NewLease(w.dir, w.roots, nil, func() {}), nil
+	lease := workspace.NewLease(w.dir, w.roots, nil, func() {})
+	lease.Shared = true
+	return lease, nil
 }
 
 func (w sharedWorkspaces) OtherThreadPaths(string) ([]string, error) { return nil, nil }
@@ -991,6 +1077,21 @@ func (w *webAPI) AddReaction(ctx context.Context, channel, timestamp, name strin
 
 func (w *webAPI) RemoveReaction(ctx context.Context, channel, timestamp, name string) error {
 	return w.client.RemoveReactionContext(ctx, name, slack.ItemRef{Channel: channel, Timestamp: timestamp})
+}
+
+// UploadFile shares one file in the thread through Slack's external upload
+// flow (files.getUploadURLExternal, then files.completeUploadExternal). It
+// needs the files:write scope.
+func (w *webAPI) UploadFile(ctx context.Context, channel, threadTS, filename string, size int64, content io.Reader) error {
+	_, err := w.client.UploadFileV2Context(ctx, slack.UploadFileV2Parameters{
+		Reader:          content,
+		FileSize:        int(size),
+		Filename:        filename,
+		Title:           filename,
+		Channel:         channel,
+		ThreadTimestamp: threadTS,
+	})
+	return err
 }
 
 // IsPublicChannel reports whether channel is a public channel. Private

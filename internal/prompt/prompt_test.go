@@ -156,6 +156,22 @@ func TestBuildWorkPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildWorkPromptDescribesAttachmentContract(t *testing.T) {
+	got := BuildWorkPrompt("スライドを作る", memory.Context{}, nil, true)
+	for _, want := range []string{
+		"## 添付ファイル", "絶対パス", "添付はbotが行います", "シンボリックリンク",
+		"100MB", "10件", "作り直さず",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("BuildWorkPrompt() does not contain %q", want)
+		}
+	}
+	plan := BuildPlanPrompt(memory.Context{}, nil, "", "依頼")
+	if !strings.Contains(plan, "このSlackスレッドへ添付できます") {
+		t.Error("plan prompt does not tell the planner that work turns can attach files")
+	}
+}
+
 func TestBuildWorkPromptListsThreadCheckouts(t *testing.T) {
 	got := BuildWorkPrompt("直す", memory.Context{}, []workspace.Checkout{{
 		Repo: "/src/app", Path: "/home/data/checkouts/C1-1.2/app-abcd", Branch: "ebi-x/C1-1.2",

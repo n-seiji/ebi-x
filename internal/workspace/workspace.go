@@ -53,6 +53,9 @@ type Lease struct {
 	// directory. The original repository is not writable.
 	WritableRoots []string
 	Checkouts     []Checkout
+	// Shared reports that Dir is used by every thread, so it does not belong
+	// to this thread alone.
+	Shared bool
 
 	once    sync.Once
 	release func()
@@ -62,6 +65,20 @@ type Lease struct {
 // lets other implementations of a workspace provider hand out leases.
 func NewLease(dir string, writableRoots []string, checkouts []Checkout, release func()) *Lease {
 	return &Lease{Dir: dir, WritableRoots: writableRoots, Checkouts: checkouts, release: release}
+}
+
+// ThreadAreas returns the directories that belong to this thread alone: its
+// workspace directory, unless it is shared, and its checkouts. Shared
+// writable roots are excluded.
+func (l *Lease) ThreadAreas() []string {
+	var areas []string
+	if !l.Shared {
+		areas = append(areas, l.Dir)
+	}
+	for _, checkout := range l.Checkouts {
+		areas = append(areas, checkout.Path)
+	}
+	return areas
 }
 
 // Release returns the lease. It is safe to call more than once.

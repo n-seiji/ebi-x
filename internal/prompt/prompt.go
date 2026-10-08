@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/n-seiji/ebi-x/internal/attachment"
 	"github.com/n-seiji/ebi-x/internal/memory"
 	"github.com/n-seiji/ebi-x/internal/playbook"
 	"github.com/n-seiji/ebi-x/internal/workspace"
@@ -85,6 +86,7 @@ func buildPlanPrompt(memories memory.Context, playbooks []playbook.Playbook, sla
 - 「## 方針」と「## 作業指示」の2見出しを、この順序で、それぞれちょうど1回出力してください。
 - 両方の見出しの本文を非空にしてください。
 - 作業が不要な場合は「## 作業指示」の本文に NONE という単独行のみを書いてください。
+- 作業ターンは、作成したPDF・画像・pptxをこのSlackスレッドへ添付できます。成果物の送付や再送が必要な場合は、添付するファイルを作業指示に書いてください。
 - 現在の依頼に、長期的に有用で保存基準を満たす全体・チャンネル情報が含まれる場合、メモリ保存は作業として扱ってください。NONE にせず、次の作業ターンが適切なスコープのメモリ追記を提案できる作業指示を書いてください。
 
 「## 方針」の本文はそのままSlackに投稿されるため、次の書式規約に従ってください。「## 作業指示」の本文は投稿されないので、この規約の対象外です。
@@ -118,10 +120,17 @@ func BuildWorkPrompt(instruction string, memories memory.Context, checkouts []wo
 %s
 </work_instruction>
 
-最終応答は、後述のメモリ追記の見出しを除いてそのままSlackに投稿されるため、次の書式規約に従ってください。
+最終応答は、後述の添付ファイルとメモリ追記の見出しを除いてそのままSlackに投稿されるため、次の書式規約に従ってください。
 %s
+作成した成果物をSlackスレッドへ添付する場合は、最終応答に「## 添付ファイル」見出しを1回だけ置き、その下に添付するファイルの絶対パスを「- 」で始まる箇条書きで1行に1つずつ書いてください。
+- 添付はbotが行います。Slackのトークンやコマンドで自分で送信しないでください。
+- 添付できるのは、作業ディレクトリ（cwd）と、このスレッド専用として上に示したリポジトリの作業コピーの中にある通常のファイルだけです。シンボリックリンクを経由するパス、ハードリンクされたファイル、共有のディレクトリやplaybookのディレクトリにあるファイルは送信されません。
+- 種類はPDF・PNG・JPEG・GIF・WebP・pptxで、1ファイル%dMBまで、1回%d件までです。依頼に関係するファイルだけを明示し、ディレクトリ内のファイルを一括で並べないでください。
+- 添付の成否はbotが本文の後に伝えます。本文では「添付しました」と断定せず、「添付します」のように書いてください。
+- 添付の再送を依頼された場合は、成果物を作り直さず、既存のファイルを確認してこの見出しで指定してください。
+
 メモリファイルを直接編集しないでください。
-`, stripClosingTags(instruction, "work_instruction"), slackFormatRules)
+`, stripClosingTags(instruction, "work_instruction"), slackFormatRules, attachment.MaxSize>>20, attachment.MaxFiles)
 	if !sharedWritable {
 		builder.WriteString("このチャンネルからは playbook と全体メモリを変更できません。playbook は読み取り専用です。\n")
 	}
