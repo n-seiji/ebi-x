@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -151,12 +152,13 @@ type fakeSlack struct {
 	reactionName      string
 	uploads           []fakeUpload
 	uploadErrs        []error
-	blockPosts        []fakeBlockMessage
-	blockPostErr      error
-	blockUpdates      []fakeBlockMessage
-	ephemerals        []string
-	members           map[string]bool
-	memberErr         error
+	posts             []fakePost
+}
+
+type fakePost struct {
+	channel  string
+	threadTS string
+	text     string
 }
 
 type fakeUpload struct {
@@ -188,15 +190,20 @@ func (s *fakeSlack) UploadFile(_ context.Context, channel, threadTS, filename st
 	return nil
 }
 
-func (s *fakeSlack) PostMessage(_ context.Context, _, _, text string) (string, error) {
+func (s *fakeSlack) PostMessage(_ context.Context, channel, threadTS, text string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, slackCall{kind: "post", text: text})
 	s.postTexts = append(s.postTexts, text)
+	s.posts = append(s.posts, fakePost{channel: channel, threadTS: threadTS, text: text})
 	var err error
 	if len(s.postErrs) > 0 {
 		err = s.postErrs[0]
 		s.postErrs = s.postErrs[1:]
+	}
+	if err == nil && threadTS == "" {
+		// Top-level posts get distinct timestamps so threads can be told apart.
+		return fmt.Sprintf("top-%d", len(s.posts)), nil
 	}
 	return "reply-ts", err
 }

@@ -5,17 +5,16 @@ ebi-x は、Slack の mention を受けて Codex が方針を検討し、必要�
 ## Slack App の準備
 
 1. Slack App を作成し、Socket Mode を有効にします。
-2. Bot Token Scopes に `app_mentions:read`、`chat:write`、`reactions:write`、`reactions:read`、`channels:history`、`files:write` を追加します。`files:write` は成果物の添付（後述）に使います。承認チャンネル（後述）を使う場合は `groups:read`（承認者がチャンネルのメンバーか確認するため）、プライベートチャンネルで使う場合は `groups:history`（スレッドを読むため）も追加します。scopeを追加・変更した場合は、workspaceへアプリを再インストールしてください。
+2. Bot Token Scopes に `app_mentions:read`、`chat:write`、`reactions:write`、`reactions:read`、`channels:history`、`files:write` を追加します。`files:write` は成果物の添付（後述）に使います。プライベートチャンネルで使う場合は `groups:history`（スレッドを読むため）も追加します。scopeを追加・変更した場合は、workspaceへアプリを再インストールしてください。
 3. Event Subscriptions で `app_mention` と `message.channels` を購読します。`message.groups` は追加しません（mentionなしの返信を処理するスレッド購読は、パブリックチャンネルだけが対象です）。
-4. 承認チャンネルを使う場合は、Interactivity & Shortcuts を有効にします。Socket Mode なので Request URL は不要です。
-5. Workspace に App をインストールして Bot Token (`xoxb-...`) を取得します。
-6. Socket Mode 用の App Token (`xapp-...`) を取得します。
+4. Workspace に App をインストールして Bot Token (`xoxb-...`) を取得します。
+5. Socket Mode 用の App Token (`xapp-...`) を取得します。
 
 ## 設定と起動
 
 `.env.example` を `.env` にコピーし、Slack token、許可する user/channel ID などを設定します。
 
-ebi-x を使えるuser・channel・Workflowは、`.env` の許可リスト（固定の許可）と、承認チャンネルでボタンを押して許可したものの2つで決まります。
+ebi-x を使えるuser・channel・Workflowは、`.env` の許可リスト（固定の許可）と、承認チャンネルで承認者が許可したものの2つで決まります。
 
 - `SLACK_ALLOWED_USER_IDS`、`SLACK_ALLOWED_CHANNEL_IDS`：固定の許可です。承認チャンネルを使わない場合は、それぞれ1件以上必須です（以前の「空なら全チャンネル許可」は廃止しました）。DMは許可リストに書かない限り使えません。
 - `SLACK_ALLOW_ALL_PUBLIC_CHANNELS` は廃止しました。`true` のままだと起動しません。チャンネルは1つずつ列挙するか、承認チャンネルで許可してください。
@@ -25,13 +24,13 @@ ebi-x を使えるuser・channel・Workflowは、`.env` の許可リスト（固
 
 ### 承認チャンネル
 
-`SLACK_APPROVAL_CHANNEL_ID` にチャンネル（プライベート推奨）を設定し、Botをそのチャンネルに招待すると、許可されていないuser・channel・Workflowからのmentionを Slack 上のボタンで許可できます。
+`SLACK_APPROVAL_CHANNEL_ID` にチャンネル（パブリックでも可）を、`SLACK_APPROVER_USER_IDS` に承認者を設定し、Botをそのチャンネルに招待すると、許可されていないuser・channel・Workflowからのmentionを Slack 上で許可できます。追加のscopeやApp設定は不要です。
 
-- 許可されていない相手からmentionされると、元のスレッドには「承認を依頼しました」と返し、承認チャンネルに［許可］［拒否］ボタン付きの依頼を投稿します。userとchannelの両方が未許可なら、依頼は2件になります。同じ相手の依頼は、決まるまで1件だけです。
-- ボタンを押せるのは、押した時点で承認チャンネルのメンバーである人だけです（`conversations.members` で毎回確認します）。つまり承認チャンネルに招待できる人が、承認者を増やせます。
-- 最初に押されたボタンで決まり、依頼メッセージは「✅ @xxx が許可しました」のように書き換わります。許可した後は、依頼者にもう一度mentionしてもらいます。
-- 拒否した相手は記録され、次からは確認せずに拒否します。
-- 承認チャンネルで `@ebi 許可一覧` と mention すると、固定の許可と Slack で決めたものを一覧します。`@ebi 許可取消 <ID>`（`<@U...>` や `<#C...>` の形でも可）で記録を消すと、次のmentionでもう一度確認します。`.env` の固定の許可は取り消せません。どちらもメンバーだけが使えます。
+- 許可されていない相手からmentionされると、元のスレッドには「承認を依頼しました」と返し、承認チャンネルに依頼を投稿します。userとchannelの両方が未許可なら、依頼は2件になります。同じ相手の依頼は、決まるまで1件だけです。
+- 承認者は依頼のスレッドで `@ebi 許可` か `@ebi 拒否` と mention します。スレッドの外からは `@ebi 許可 <ID>` / `@ebi 拒否 <ID>`（`<@U...>` や `<#C...>` の形でも可）で決められ、依頼が来る前に許可しておくこともできます。
+- 操作できるのは `SLACK_APPROVER_USER_IDS` の人だけです。チャンネルのメンバーでも、承認者でなければ断ります。
+- 最初の決定が優先されます。許可すると、依頼元のスレッドに「許可されました。もう一度 mention してください」と知らせます。拒否した相手は記録され、次からは確認せずに拒否します。
+- `@ebi 許可一覧` で固定の許可と Slack で決めたものを一覧し、`@ebi 許可取消 <ID>` で記録を消すと、次のmentionでもう一度確認します。`.env` の固定の許可はここでは変更できません。
 - 決定は `data/state/approvals.json` に、誰がいつ決めたかと一緒に保存します。`data/state` はCodexから読み書きできないため（後述）、エージェントが自分で許可を書き足すことはできません。
 
 同じ `data` を複数の ebi-x で共有すると状態を上書きし合うため、起動時に `data/state/ebi-x.lock` をロックし、2つ目のプロセスは起動エラーにします。

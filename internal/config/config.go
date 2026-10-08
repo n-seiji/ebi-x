@@ -30,10 +30,11 @@ type Config struct {
 	AllowedUserIDs    []string
 	AllowedChannelIDs []string
 	// ApprovalChannelID is the channel where users, channels, and workflows
-	// outside the allowlists are approved with buttons. Empty disables
-	// approvals.
+	// outside the allowlists are approved. Empty disables approvals.
 	ApprovalChannelID string
-	AllowWorkflows    bool
+	// ApproverUserIDs are the only users who may decide approvals.
+	ApproverUserIDs []string
+	AllowWorkflows  bool
 	// AllowedWorkflowIDs are the Slack workflows that may mention ebi-x when
 	// AllowWorkflows is set.
 	AllowedWorkflowIDs []string
@@ -98,6 +99,15 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("SLACK_APPROVAL_CHANNEL_ID: invalid channel ID %q: %w", approvalChannelID, errors.New("must start with C or G"))
 	}
 	approvals := approvalChannelID != ""
+	approverIDs := splitList(os.Getenv("SLACK_APPROVER_USER_IDS"))
+	for _, userID := range approverIDs {
+		if !strings.HasPrefix(userID, "U") {
+			return nil, fmt.Errorf("SLACK_APPROVER_USER_IDS: invalid user ID %q: %w", userID, errors.New("must start with U"))
+		}
+	}
+	if approvals && len(approverIDs) == 0 {
+		return nil, fmt.Errorf("SLACK_APPROVER_USER_IDS: %w", errors.New("must contain at least one user ID when SLACK_APPROVAL_CHANNEL_ID is set"))
+	}
 
 	userIDs := splitList(os.Getenv("SLACK_ALLOWED_USER_IDS"))
 	if len(userIDs) == 0 && !approvals {
@@ -251,6 +261,7 @@ func Load() (*Config, error) {
 		AllowedUserIDs:             userIDs,
 		AllowedChannelIDs:          channelIDs,
 		ApprovalChannelID:          approvalChannelID,
+		ApproverUserIDs:            approverIDs,
 		AllowWorkflows:             allowWorkflows,
 		AllowedWorkflowIDs:         workflowIDs,
 		AdminUserID:                adminUserID,

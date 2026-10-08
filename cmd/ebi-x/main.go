@@ -70,6 +70,7 @@ func main() {
 		AllowedUserIDs:             cfg.AllowedUserIDs,
 		AllowedChannelIDs:          cfg.AllowedChannelIDs,
 		ApprovalChannelID:          cfg.ApprovalChannelID,
+		ApproverUserIDs:            cfg.ApproverUserIDs,
 		Approvals:                  store,
 		AllowWorkflows:             cfg.AllowWorkflows,
 		AllowedWorkflowIDs:         cfg.AllowedWorkflowIDs,

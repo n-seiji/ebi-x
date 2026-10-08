@@ -56,15 +56,6 @@ type SlackAPI interface {
 	AddReaction(ctx context.Context, channel, timestamp, name string) error
 	RemoveReaction(ctx context.Context, channel, timestamp, name string) error
 	UploadFile(ctx context.Context, channel, threadTS, filename string, size int64, content io.Reader) error
-	// PostBlocks posts Block Kit blocks as a new message and returns its
-	// timestamp. fallback is the notification text.
-	PostBlocks(ctx context.Context, channel, fallback string, blocks []slack.Block) (string, error)
-	// UpdateBlocks replaces the blocks of the message at timestamp.
-	UpdateBlocks(ctx context.Context, channel, timestamp, fallback string, blocks []slack.Block) error
-	// PostEphemeral shows text only to user in channel.
-	PostEphemeral(ctx context.Context, channel, user, text string) error
-	// IsChannelMember reports whether user is currently a member of channel.
-	IsChannelMember(ctx context.Context, channel, user string) (bool, error)
 }
 
 // ThreadMessage is the Slack thread data supplied to a first planning turn.
@@ -108,6 +99,8 @@ type Config struct {
 	// allowlists are approved. Approvals are disabled unless both it and
 	// Approvals are set.
 	ApprovalChannelID string
+	// ApproverUserIDs are the only users who may decide approvals.
+	ApproverUserIDs []string
 	// Approvals records the decisions made in ApprovalChannelID.
 	Approvals      Approvals
 	AllowWorkflows bool
@@ -149,6 +142,7 @@ type Bot struct {
 	allowedUsers        map[string]struct{}
 	allowedChannels     map[string]struct{}
 	allowedWorkflows    map[string]struct{}
+	approvers           map[string]struct{}
 	sharedWriteChannels map[string]struct{}
 	workSlots           chan struct{}
 	planSlots           chan struct{}
@@ -192,6 +186,7 @@ func New(api SlackAPI, store Store, runner Runner, config Config, playbooks []pl
 		allowedUsers:        makeSet(config.AllowedUserIDs),
 		allowedChannels:     makeSet(config.AllowedChannelIDs),
 		allowedWorkflows:    makeSet(config.AllowedWorkflowIDs),
+		approvers:           makeSet(config.ApproverUserIDs),
 		sharedWriteChannels: makeSet(config.SharedWriteChannelIDs),
 		workSlots:           make(chan struct{}, max(config.MaxParallelWork, 1)),
 		planSlots:           make(chan struct{}, max(config.MaxParallelPlan, 1)),
@@ -1089,8 +1084,7 @@ func (w *webAPI) UploadFile(ctx context.Context, channel, threadTS, filename str
 }
 
 // RunSocketMode connects a Bot to Slack Socket Mode. It acknowledges every
-// envelope before dispatching app mentions, ordinary messages, and approval
-// button clicks separately.
+// envelope before dispatching app mentions and ordinary messages separately.
 func RunSocketMode(acceptCtx, turnCtx context.Context, botToken, appToken string, bot *Bot, wg *sync.WaitGroup) error {
 	client := slack.New(botToken, slack.OptionAppLevelToken(appToken))
 	auth, err := client.AuthTestContext(acceptCtx)
@@ -1120,15 +1114,6 @@ func RunSocketMode(acceptCtx, turnCtx context.Context, botToken, appToken string
 			}
 			if event.Request != nil {
 				socketClient.Ack(*event.Request)
-			}
-			if event.Type == socketmode.EventTypeInteractive {
-				callback, ok := event.Data.(slack.InteractionCallback)
-				if ok && callback.Type == slack.InteractionTypeBlockActions {
-					wg.Go(func() {
-						bot.HandleApprovalAction(turnCtx, callback)
-					})
-				}
-				continue
 			}
 			if event.Type != socketmode.EventTypeEventsAPI {
 				continue

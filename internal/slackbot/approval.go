@@ -2,7 +2,6 @@ package slackbot
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"regexp"
 	"slices"
@@ -10,23 +9,19 @@ import (
 	"time"
 
 	"github.com/n-seiji/ebi-x/internal/state"
-	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 )
 
 const (
-	approveActionID = "ebix_approval_approve"
-	denyActionID    = "ebix_approval_deny"
-	approvalBlockID = "ebix_approval"
-
+	approveCommand        = "許可"
+	denyCommand           = "拒否"
 	listApprovalsCommand  = "許可一覧"
 	revokeApprovalCommand = "許可取消"
 
 	approvalRequestedMessage = "403 forbidden. まだ許可されていないため、承認を依頼しました。許可されたら、もう一度 mention してください。"
-	notApproverMessage       = "承認チャンネルのメンバーだけが操作できます。"
-	approverCheckFailMessage = "メンバーかどうかを確認できなかったため、操作していません。もう一度お試しください。"
+	notApproverMessage       = "承認者（SLACK_APPROVER_USER_IDS）だけが操作できます。"
 	approvalSaveFailMessage  = "記録の保存に失敗したため、操作していません。もう一度お試しください。"
-	approvalCancelledMessage = "この依頼は取り消されています。"
+	approvalThreadMissing    = "このスレッドの依頼が見つかりません。`" + approveCommand + " <ID>` の形で指定してください。"
 )
 
 var (
@@ -38,9 +33,10 @@ var (
 // Approvals records access decisions made in the approval channel.
 type Approvals interface {
 	ApprovalStatus(kind state.ApprovalKind, id string) state.ApprovalStatus
-	GetApproval(kind state.ApprovalKind, id string) (state.Approval, bool)
 	ListApprovals() []state.Approval
-	RequestApproval(kind state.ApprovalKind, id, requestedBy, requestChannel string, now time.Time) (bool, error)
+	RequestApproval(kind state.ApprovalKind, id, requestedBy, requestChannel, requestThreadTS string, now time.Time) (bool, error)
+	SetApprovalRequestMessage(kind state.ApprovalKind, id, timestamp string) error
+	FindApprovalByRequestMessage(timestamp string) (state.Approval, bool)
 	DecideApproval(kind state.ApprovalKind, id string, approve bool, decidedBy string, now time.Time) (state.Approval, bool, error)
 	DeleteApproval(kind state.ApprovalKind, id string) (bool, error)
 }
@@ -79,12 +75,6 @@ func (s approvalSubject) label() string {
 
 func (s approvalSubject) value() string {
 	return string(s.kind) + ":" + s.id
-}
-
-func parseApprovalValue(value string) (approvalSubject, bool) {
-	kind, id, ok := strings.Cut(value, ":")
-	subject := approvalSubject{kind: state.ApprovalKind(kind), id: id}
-	return subject, ok && subject.valid()
 }
 
 func validWorkflowID(id string) bool {
@@ -138,7 +128,7 @@ func (b *Bot) rejectUnapproved(ctx context.Context, event *slackevents.AppMentio
 	}
 	requested := false
 	for _, subject := range missing {
-		created, err := b.config.Approvals.RequestApproval(subject.kind, subject.id, event.User, event.Channel, b.now())
+		created, err := b.config.Approvals.RequestApproval(subject.kind, subject.id, event.User, event.Channel, mentionThreadTS(event), b.now())
 		if err != nil {
 			log.Printf("slackbot: record approval request %s: %v", subject.value(), err)
 			continue
@@ -167,125 +157,121 @@ func (b *Bot) rejectUnapproved(ctx context.Context, event *slackevents.AppMentio
 	}
 }
 
+// postApprovalRequest asks the approval channel about subject. Approvers
+// answer in the request's thread.
 func (b *Bot) postApprovalRequest(ctx context.Context, subject approvalSubject, event *slackevents.AppMentionEvent) error {
-	approval := state.Approval{
-		Kind:           subject.kind,
-		ID:             subject.id,
-		Status:         state.Pending,
-		RequestedBy:    event.User,
-		RequestChannel: event.Channel,
-	}
-	_, err := b.api.PostBlocks(ctx, b.config.ApprovalChannelID, approvalFallback(subject), approvalBlocks(approval))
-	return err
-}
-
-// HandleApprovalAction applies an approve or deny button click from the
-// approval channel. Only current members of that channel may decide, and the
-// first decision wins.
-func (b *Bot) HandleApprovalAction(ctx context.Context, callback slack.InteractionCallback) {
-	if !b.approvalsEnabled() || callback.Channel.ID != b.config.ApprovalChannelID {
-		return
-	}
-	for _, action := range callback.ActionCallback.BlockActions {
-		if action == nil || (action.ActionID != approveActionID && action.ActionID != denyActionID) {
-			continue
-		}
-		subject, ok := parseApprovalValue(action.Value)
-		if !ok {
-			log.Printf("slackbot: ignoring approval action with value %q", action.Value)
-			continue
-		}
-		b.decideApproval(ctx, callback, subject, action.ActionID == approveActionID)
-	}
-}
-
-func (b *Bot) decideApproval(ctx context.Context, callback slack.InteractionCallback, subject approvalSubject, approve bool) {
-	channel := callback.Channel.ID
-	user := callback.User.ID
-	if !b.isApprover(ctx, user) {
-		b.ephemeral(ctx, channel, user, notApproverMessage)
-		return
-	}
-	approval, decided, err := b.config.Approvals.DecideApproval(subject.kind, subject.id, approve, user, b.now())
+	text := "🔐 ebi-x の利用許可の依頼\n対象: " + subject.label() +
+		"\n<@" + event.User + "> が <#" + event.Channel + "> で mention しました。" +
+		"\n\nこのスレッドで ebi-x に mention して「" + approveCommand + "」か「" + denyCommand + "」と返信してください。"
+	timestamp, err := b.api.PostMessage(ctx, b.config.ApprovalChannelID, "", text)
 	if err != nil {
-		log.Printf("slackbot: decide approval %s: %v", subject.value(), err)
-		b.ephemeral(ctx, channel, user, approvalSaveFailMessage)
-		return
+		return err
 	}
-	timestamp := callback.Container.MessageTs
-	if timestamp == "" {
-		timestamp = callback.Message.Timestamp
+	// Without the timestamp approvers can still answer with the ID.
+	if err := b.config.Approvals.SetApprovalRequestMessage(subject.kind, subject.id, timestamp); err != nil {
+		log.Printf("slackbot: record approval request message %s: %v", subject.value(), err)
 	}
-	if !decided {
-		current, ok := b.config.Approvals.GetApproval(subject.kind, subject.id)
-		if !ok {
-			b.updateApprovalMessage(ctx, channel, timestamp, subject, cancelledApprovalBlocks(subject))
-			b.ephemeral(ctx, channel, user, approvalCancelledMessage)
-			return
-		}
-		b.updateApprovalMessage(ctx, channel, timestamp, subject, approvalBlocks(current))
-		b.ephemeral(ctx, channel, user, "すでに"+decisionText(current)+"。")
-		return
-	}
-	log.Printf("slackbot: %s %s by %q", approval.Status, subject.value(), user)
-	b.updateApprovalMessage(ctx, channel, timestamp, subject, approvalBlocks(approval))
+	return nil
 }
 
-// isApprover reports whether user is a current member of the approval
-// channel. Lookup failures deny.
-func (b *Bot) isApprover(ctx context.Context, user string) bool {
-	member, err := b.api.IsChannelMember(ctx, b.config.ApprovalChannelID, user)
-	if err != nil {
-		log.Printf("slackbot: check approval channel membership of %q: %v", user, err)
-		return false
-	}
-	return member
-}
-
-func (b *Bot) updateApprovalMessage(ctx context.Context, channel, timestamp string, subject approvalSubject, blocks []slack.Block) {
-	if timestamp == "" {
-		return
-	}
-	if err := b.api.UpdateBlocks(ctx, channel, timestamp, approvalFallback(subject), blocks); err != nil {
-		log.Printf("slackbot: update approval message %s: %v", subject.value(), err)
-	}
-}
-
-func (b *Bot) ephemeral(ctx context.Context, channel, user, text string) {
-	if err := b.api.PostEphemeral(ctx, channel, user, text); err != nil {
-		log.Printf("slackbot: post ephemeral to %q: %v", user, err)
-	}
-}
-
-// handleApprovalCommand runs 許可一覧 and 許可取消 in the approval channel. It
-// reports false for any other text, which is then handled as a normal
-// mention.
+// handleApprovalCommand runs the approval commands in the approval channel:
+// 許可 and 拒否 (in a request's thread or with an ID), 許可一覧, and
+// 許可取消. It reports false for any other text, which is then handled as a
+// normal mention. Only SLACK_APPROVER_USER_IDS may run them.
 func (b *Bot) handleApprovalCommand(ctx context.Context, event *slackevents.AppMentionEvent) bool {
 	fields := strings.Fields(stripBotMention(event.Text, b.config.BotUserID))
-	if len(fields) == 0 {
+	if len(fields) == 0 || len(fields) > 2 {
 		return false
 	}
-	var reply string
+	command, argument := fields[0], ""
+	if len(fields) == 2 {
+		argument = normalizeSlackID(fields[1])
+	}
 	switch {
-	case fields[0] == listApprovalsCommand && len(fields) == 1:
-		if !b.isApprover(ctx, event.User) {
-			reply = notApproverMessage
-			break
-		}
-		reply = b.approvalList()
-	case fields[0] == revokeApprovalCommand && len(fields) == 2:
-		if !b.isApprover(ctx, event.User) {
-			reply = notApproverMessage
-			break
-		}
-		reply = b.revokeApproval(normalizeSlackID(fields[1]))
+	case command == approveCommand || command == denyCommand:
+	case command == listApprovalsCommand && argument == "":
+	case command == revokeApprovalCommand && argument != "":
 	default:
 		return false
+	}
+
+	var reply string
+	switch {
+	case !b.isApprover(event.User):
+		reply = notApproverMessage
+	case command == listApprovalsCommand:
+		reply = b.approvalList()
+	case command == revokeApprovalCommand:
+		reply = b.revokeApproval(argument)
+	default:
+		reply = b.decideApproval(ctx, event, command == approveCommand, argument)
 	}
 	if err := b.post(ctx, event.Channel, mentionThreadTS(event), reply); err != nil {
 		log.Printf("slackbot: post approval command reply: %v", err)
 	}
 	return true
+}
+
+func (b *Bot) isApprover(user string) bool {
+	_, ok := b.approvers[user]
+	return ok
+}
+
+// decideApproval approves or denies the subject named by id, or the request
+// whose thread the command was posted in when id is empty. The first
+// decision wins; changing it takes 許可取消 first.
+func (b *Bot) decideApproval(ctx context.Context, event *slackevents.AppMentionEvent, approve bool, id string) string {
+	var subject approvalSubject
+	if id == "" {
+		request, ok := b.config.Approvals.FindApprovalByRequestMessage(event.ThreadTimeStamp)
+		if !ok {
+			return approvalThreadMissing
+		}
+		subject = approvalSubject{kind: request.Kind, id: request.ID}
+	} else {
+		kind, ok := approvalKindOf(id)
+		if !ok {
+			return "`" + id + "` はユーザー・チャンネル・Workflow の ID として読み取れませんでした。"
+		}
+		subject = approvalSubject{kind: kind, id: id}
+	}
+	if b.fixedAllowed(subject) {
+		return subject.label() + " は .env の固定の許可なので、ここでは変更できません。"
+	}
+	approval, decided, err := b.config.Approvals.DecideApproval(subject.kind, subject.id, approve, event.User, b.now())
+	if err != nil {
+		log.Printf("slackbot: decide approval %s: %v", subject.value(), err)
+		return approvalSaveFailMessage
+	}
+	if !decided {
+		return subject.label() + " は、すでに" + decisionText(approval) + "。変えるには `" + revokeApprovalCommand + " " + subject.id + "` で記録を消してから、もう一度決めてください。"
+	}
+	log.Printf("slackbot: %s %s by %q", approval.Status, subject.value(), event.User)
+	reply := statusIcon(approval.Status) + " " + subject.label() + ": " + decisionText(approval) + "。"
+	// A decision made by ID elsewhere is also noted in the request's thread.
+	if approval.RequestMessageTS != "" && approval.RequestMessageTS != mentionThreadTS(event) {
+		if err := b.post(ctx, b.config.ApprovalChannelID, approval.RequestMessageTS, reply); err != nil {
+			log.Printf("slackbot: post approval decision to request thread %s: %v", subject.value(), err)
+		}
+	}
+	if approval.Status == state.Approved && approval.RequestChannel != "" && approval.RequestThreadTS != "" {
+		notice := "✅ " + subject.label() + " が許可されました。もう一度 mention してください。"
+		if err := b.post(ctx, approval.RequestChannel, approval.RequestThreadTS, notice); err != nil {
+			log.Printf("slackbot: notify approval %s: %v", subject.value(), err)
+		}
+	}
+	return reply
+}
+
+// fixedAllowed reports whether subject is allowed by .env, which the
+// approval channel cannot change.
+func (b *Bot) fixedAllowed(subject approvalSubject) bool {
+	fixed := map[state.ApprovalKind][]string{
+		state.ApprovalUser:     b.config.AllowedUserIDs,
+		state.ApprovalChannel:  b.config.AllowedChannelIDs,
+		state.ApprovalWorkflow: b.config.AllowedWorkflowIDs,
+	}
+	return slices.Contains(fixed[subject.kind], subject.id)
 }
 
 func (b *Bot) approvalList() string {
@@ -318,7 +304,7 @@ func (b *Bot) approvalList() string {
 		subject := approvalSubject{kind: approval.Kind, id: approval.ID}
 		lines = append(lines, "- "+statusIcon(approval.Status)+" "+subject.label()+" — "+decisionText(approval))
 	}
-	lines = append(lines, "", "記録を消すには `"+revokeApprovalCommand+" <ID>` と mention してください。")
+	lines = append(lines, "", "決めるには `"+approveCommand+" <ID>` / `"+denyCommand+" <ID>`、記録を消すには `"+revokeApprovalCommand+" <ID>` と mention してください。")
 	return strings.Join(lines, "\n")
 }
 
@@ -328,12 +314,7 @@ func (b *Bot) revokeApproval(id string) string {
 		return "`" + id + "` はユーザー・チャンネル・Workflow の ID として読み取れませんでした。"
 	}
 	subject := approvalSubject{kind: kind, id: id}
-	fixed := map[state.ApprovalKind][]string{
-		state.ApprovalUser:     b.config.AllowedUserIDs,
-		state.ApprovalChannel:  b.config.AllowedChannelIDs,
-		state.ApprovalWorkflow: b.config.AllowedWorkflowIDs,
-	}
-	if slices.Contains(fixed[kind], id) {
+	if b.fixedAllowed(subject) {
 		return subject.label() + " は .env の固定の許可なので、ここでは取り消せません。"
 	}
 	deleted, err := b.config.Approvals.DeleteApproval(kind, id)
@@ -369,40 +350,6 @@ func normalizeSlackID(text string) string {
 	return text
 }
 
-func approvalFallback(subject approvalSubject) string {
-	return "ebi-x の利用許可の依頼: " + subject.label()
-}
-
-// approvalBlocks renders a request, with buttons while it is pending and with
-// the decision afterwards.
-func approvalBlocks(approval state.Approval) []slack.Block {
-	subject := approvalSubject{kind: approval.Kind, id: approval.ID}
-	body := "*ebi-x の利用許可の依頼*\n対象: " + subject.label()
-	if approval.RequestedBy != "" && approval.RequestChannel != "" {
-		body += "\n<@" + approval.RequestedBy + "> が <#" + approval.RequestChannel + "> で mention しました。"
-	}
-	blocks := []slack.Block{
-		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, body, false, false), nil, nil),
-	}
-	if approval.Status == state.Pending {
-		approve := slack.NewButtonBlockElement(approveActionID, subject.value(),
-			slack.NewTextBlockObject(slack.PlainTextType, "許可", false, false)).WithStyle(slack.StylePrimary)
-		deny := slack.NewButtonBlockElement(denyActionID, subject.value(),
-			slack.NewTextBlockObject(slack.PlainTextType, "拒否", false, false)).WithStyle(slack.StyleDanger)
-		return append(blocks, slack.NewActionBlock(approvalBlockID, approve, deny))
-	}
-	return append(blocks, slack.NewContextBlock("",
-		slack.NewTextBlockObject(slack.MarkdownType, statusIcon(approval.Status)+" "+decisionText(approval)+"（"+slackDate(approval.DecidedAt)+"）", false, false)))
-}
-
-func cancelledApprovalBlocks(subject approvalSubject) []slack.Block {
-	body := "*ebi-x の利用許可の依頼*\n対象: " + subject.label()
-	return []slack.Block{
-		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, body, false, false), nil, nil),
-		slack.NewContextBlock("", slack.NewTextBlockObject(slack.MarkdownType, approvalCancelledMessage, false, false)),
-	}
-}
-
 func statusIcon(status state.ApprovalStatus) string {
 	switch status {
 	case state.Approved:
@@ -425,57 +372,9 @@ func decisionText(approval state.Approval) string {
 	}
 }
 
-// slackDate renders t in each viewer's own time zone.
-func slackDate(t time.Time) string {
-	return fmt.Sprintf("<!date^%d^{date_num} {time}|%s>", t.Unix(), t.UTC().Format("2006-01-02 15:04 UTC"))
-}
-
 func mentionThreadTS(event *slackevents.AppMentionEvent) string {
 	if event.ThreadTimeStamp != "" {
 		return event.ThreadTimeStamp
 	}
 	return event.TimeStamp
-}
-
-// PostBlocks posts blocks as a new top-level message.
-func (w *webAPI) PostBlocks(ctx context.Context, channel, fallback string, blocks []slack.Block) (string, error) {
-	_, timestamp, err := w.client.PostMessageContext(ctx, channel,
-		slack.MsgOptionBlocks(blocks...), slack.MsgOptionText(fallback, false))
-	return timestamp, err
-}
-
-// UpdateBlocks replaces a message's blocks.
-func (w *webAPI) UpdateBlocks(ctx context.Context, channel, timestamp, fallback string, blocks []slack.Block) error {
-	_, _, _, err := w.client.UpdateMessageContext(ctx, channel, timestamp,
-		slack.MsgOptionBlocks(blocks...), slack.MsgOptionText(fallback, false))
-	return err
-}
-
-// PostEphemeral shows text only to user.
-func (w *webAPI) PostEphemeral(ctx context.Context, channel, user, text string) error {
-	_, err := w.client.PostEphemeralContext(ctx, channel, user, slack.MsgOptionText(text, false))
-	return err
-}
-
-// IsChannelMember pages through conversations.members. A private channel
-// needs the groups:read scope, a public one channels:read.
-func (w *webAPI) IsChannelMember(ctx context.Context, channel, user string) (bool, error) {
-	cursor := ""
-	for {
-		members, nextCursor, err := w.client.GetUsersInConversationContext(ctx, &slack.GetUsersInConversationParameters{
-			ChannelID: channel,
-			Cursor:    cursor,
-			Limit:     1000,
-		})
-		if err != nil {
-			return false, err
-		}
-		if slices.Contains(members, user) {
-			return true, nil
-		}
-		if nextCursor == "" || nextCursor == cursor {
-			return false, nil
-		}
-		cursor = nextCursor
-	}
 }

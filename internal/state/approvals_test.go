@@ -17,11 +17,11 @@ func TestApprovalLifecycleSurvivesReload(t *testing.T) {
 	}
 	now := time.Date(2026, time.October, 8, 12, 0, 0, 0, time.UTC)
 
-	created, err := store.RequestApproval(ApprovalUser, "U2", "U2", "C1", now)
+	created, err := store.RequestApproval(ApprovalUser, "U2", "U2", "C1", "100.1", now)
 	if err != nil || !created {
 		t.Fatalf("RequestApproval() = %v, %v; want created", created, err)
 	}
-	if created, err := store.RequestApproval(ApprovalUser, "U2", "U2", "C1", now); err != nil || created {
+	if created, err := store.RequestApproval(ApprovalUser, "U2", "U2", "C1", "100.1", now); err != nil || created {
 		t.Fatalf("second RequestApproval() = %v, %v; want not created", created, err)
 	}
 	approval, decided, err := store.DecideApproval(ApprovalUser, "U2", true, "UOWNER", now)
@@ -63,7 +63,7 @@ func TestConcurrentApprovalRequestsAreAllSaved(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range count {
 		wg.Go(func() {
-			if _, err := store.RequestApproval(ApprovalChannel, fmt.Sprintf("C%d", i), "U1", "C1", time.Now()); err != nil {
+			if _, err := store.RequestApproval(ApprovalChannel, fmt.Sprintf("C%d", i), "U1", "C1", "100.1", time.Now()); err != nil {
 				t.Errorf("RequestApproval() error = %v", err)
 			}
 		})
@@ -83,7 +83,7 @@ func TestApprovalRollsBackAfterSaveFailure(t *testing.T) {
 	store := newTestStore(t)
 	restore := blockStateDirectory(t, store.dir)
 
-	if created, err := store.RequestApproval(ApprovalUser, "U2", "U2", "C1", time.Now()); err == nil || created {
+	if created, err := store.RequestApproval(ApprovalUser, "U2", "U2", "C1", "100.1", time.Now()); err == nil || created {
 		t.Fatalf("RequestApproval() = %v, %v; want error", created, err)
 	}
 	if status := store.ApprovalStatus(ApprovalUser, "U2"); status != "" {
@@ -100,6 +100,31 @@ func TestApprovalRollsBackAfterSaveFailure(t *testing.T) {
 		t.Fatalf("status = %q, want pending", status)
 	}
 	restore()
+}
+
+func TestDecideApprovalWithoutRequest(t *testing.T) {
+	store := newTestStore(t)
+	approval, decided, err := store.DecideApproval(ApprovalChannel, "C9", true, "UOWNER", time.Now())
+	if err != nil || !decided || approval.Status != Approved {
+		t.Fatalf("DecideApproval() = %+v, %v, %v; want approved", approval, decided, err)
+	}
+}
+
+func TestApprovalRequestMessage(t *testing.T) {
+	store := newTestStore(t)
+	mustRequestApproval(t, store, "U2")
+	if err := store.SetApprovalRequestMessage(ApprovalUser, "U2", "500.1"); err != nil {
+		t.Fatalf("SetApprovalRequestMessage() error = %v", err)
+	}
+	if approval, ok := store.FindApprovalByRequestMessage("500.1"); !ok || approval.ID != "U2" {
+		t.Fatalf("FindApprovalByRequestMessage() = %+v, %v; want U2", approval, ok)
+	}
+	if _, ok := store.FindApprovalByRequestMessage(""); ok {
+		t.Fatal("FindApprovalByRequestMessage(\"\") found an approval, want none")
+	}
+	if err := store.SetApprovalRequestMessage(ApprovalUser, "U9", "500.2"); err == nil {
+		t.Fatal("SetApprovalRequestMessage() for unknown approval error = nil, want error")
+	}
 }
 
 func TestNewStoreRejectsInvalidApprovals(t *testing.T) {
@@ -136,7 +161,7 @@ func TestLockDirRejectsSecondHolder(t *testing.T) {
 
 func mustRequestApproval(t *testing.T, store *Store, id string) {
 	t.Helper()
-	if created, err := store.RequestApproval(ApprovalUser, id, id, "C1", time.Now()); err != nil || !created {
+	if created, err := store.RequestApproval(ApprovalUser, id, id, "C1", "100.1", time.Now()); err != nil || !created {
 		t.Fatalf("RequestApproval(%q) = %v, %v; want created", id, created, err)
 	}
 }

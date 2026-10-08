@@ -10,45 +10,8 @@ import (
 
 	"github.com/n-seiji/ebi-x/internal/codex"
 	"github.com/n-seiji/ebi-x/internal/state"
-	"github.com/slack-go/slack"
+	"github.com/slack-go/slack/slackevents"
 )
-
-type fakeBlockMessage struct {
-	channel   string
-	timestamp string
-	fallback  string
-	blocks    []slack.Block
-}
-
-func (s *fakeSlack) PostBlocks(_ context.Context, channel, fallback string, blocks []slack.Block) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.blockPostErr != nil {
-		return "", s.blockPostErr
-	}
-	s.blockPosts = append(s.blockPosts, fakeBlockMessage{channel: channel, fallback: fallback, blocks: blocks})
-	return fmt.Sprintf("approval-%d", len(s.blockPosts)), nil
-}
-
-func (s *fakeSlack) UpdateBlocks(_ context.Context, channel, timestamp, fallback string, blocks []slack.Block) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.blockUpdates = append(s.blockUpdates, fakeBlockMessage{channel: channel, timestamp: timestamp, fallback: fallback, blocks: blocks})
-	return nil
-}
-
-func (s *fakeSlack) PostEphemeral(_ context.Context, _, user, text string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.ephemerals = append(s.ephemerals, user+":"+text)
-	return nil
-}
-
-func (s *fakeSlack) IsChannelMember(_ context.Context, _, user string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.members[user], s.memberErr
-}
 
 func newApprovalBot(t *testing.T, runner *fakeRunner) (*Bot, *fakeSlack, *fakeStore, *state.Store) {
 	t.Helper()
@@ -57,30 +20,50 @@ func newApprovalBot(t *testing.T, runner *fakeRunner) (*Bot, *fakeSlack, *fakeSt
 		t.Fatalf("NewStore() error = %v", err)
 	}
 	store := &fakeStore{claim: true}
-	api := &fakeSlack{members: map[string]bool{"UOWNER": true, "UOWNER2": true}}
+	api := &fakeSlack{}
 	bot := newTestBot(t, store, api, runner)
-	bot.config.ApprovalChannelID = "GOWNER"
+	bot.config.ApprovalChannelID = "COWNER"
 	bot.config.Approvals = approvals
+	bot.approvers = makeSet([]string{"UOWNER", "UOWNER2"})
 	return bot, api, store, approvals
 }
 
-func approvalClick(user, actionID, value string) slack.InteractionCallback {
-	var callback slack.InteractionCallback
-	callback.Type = slack.InteractionTypeBlockActions
-	callback.User.ID = user
-	callback.Channel.ID = "GOWNER"
-	callback.Container.MessageTs = "approval-1"
-	callback.ActionCallback.BlockActions = []*slack.BlockAction{{ActionID: actionID, Value: value}}
-	return callback
-}
-
-func hasActions(blocks []slack.Block) bool {
-	for _, block := range blocks {
-		if block.BlockType() == slack.MBTAction {
-			return true
+// approvalCommand mentions the bot in the approval channel, in threadTS when
+// it is set, and returns the bot's replies there.
+func approvalCommand(bot *Bot, api *fakeSlack, user, threadTS, text string) string {
+	api.mu.Lock()
+	start := len(api.posts)
+	api.mu.Unlock()
+	bot.HandleMention(context.Background(), &slackevents.AppMentionEvent{
+		User:            user,
+		Channel:         "COWNER",
+		TimeStamp:       "900.1",
+		ThreadTimeStamp: threadTS,
+		Text:            "<@UBOT> " + text,
+	})
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	want := threadTS
+	if want == "" {
+		want = "900.1"
+	}
+	var replies []string
+	for _, post := range api.posts[start:] {
+		if post.channel == "COWNER" && post.threadTS == want {
+			replies = append(replies, post.text)
 		}
 	}
-	return false
+	return strings.Join(replies, "|")
+}
+
+func approvalRequests(api *fakeSlack) []fakePost {
+	var requests []fakePost
+	for _, post := range api.posts {
+		if post.channel == "COWNER" && post.threadTS == "" {
+			requests = append(requests, post)
+		}
+	}
+	return requests
 }
 
 func TestUnknownUserMentionRequestsApprovalOnce(t *testing.T) {
@@ -94,18 +77,22 @@ func TestUnknownUserMentionRequestsApprovalOnce(t *testing.T) {
 	if store.claimCalls != 0 {
 		t.Fatalf("ClaimEvent called %d times, want 0", store.claimCalls)
 	}
-	if len(api.blockPosts) != 1 {
-		t.Fatalf("approval requests = %d, want 1", len(api.blockPosts))
+	requests := approvalRequests(api)
+	if len(requests) != 1 || !strings.Contains(requests[0].text, "ユーザー <@U2>") || !strings.Contains(requests[0].text, "<#C1>") {
+		t.Fatalf("approval requests = %+v, want one for U2 from C1", requests)
 	}
-	request := api.blockPosts[0]
-	if request.channel != "GOWNER" || !hasActions(request.blocks) || !strings.Contains(request.fallback, "<@U2>") {
-		t.Fatalf("approval request = %+v, want buttons for U2 in GOWNER", request)
+	approval, _ := approvals.GetApproval(state.ApprovalUser, "U2")
+	if approval.Status != state.Pending || approval.RequestMessageTS != "top-1" || approval.RequestThreadTS != "100.1" {
+		t.Fatalf("approval = %+v, want pending with request message and origin thread", approval)
 	}
-	if got := approvals.ApprovalStatus(state.ApprovalUser, "U2"); got != state.Pending {
-		t.Fatalf("status = %q, want pending", got)
+	var origin []string
+	for _, post := range api.posts {
+		if post.channel == "C1" {
+			origin = append(origin, post.text)
+		}
 	}
-	if got := strings.Join(api.postTexts, "|"); got != approvalRequestedMessage+"|"+approvalRequestedMessage {
-		t.Fatalf("posts = %q, want approval requested twice", got)
+	if got := strings.Join(origin, "|"); got != approvalRequestedMessage+"|"+approvalRequestedMessage {
+		t.Fatalf("origin replies = %q, want approval requested twice", got)
 	}
 }
 
@@ -113,15 +100,15 @@ func TestUnknownUserAndChannelRequestBothApprovals(t *testing.T) {
 	bot, api, _, approvals := newApprovalBot(t, &fakeRunner{})
 	event := mention()
 	event.User = "U2"
-	event.Channel = "G2"
+	event.Channel = "C2"
 
 	bot.HandleMention(context.Background(), event)
 
-	if len(api.blockPosts) != 2 {
-		t.Fatalf("approval requests = %d, want 2", len(api.blockPosts))
+	if got := len(approvalRequests(api)); got != 2 {
+		t.Fatalf("approval requests = %d, want 2", got)
 	}
 	if approvals.ApprovalStatus(state.ApprovalUser, "U2") != state.Pending ||
-		approvals.ApprovalStatus(state.ApprovalChannel, "G2") != state.Pending {
+		approvals.ApprovalStatus(state.ApprovalChannel, "C2") != state.Pending {
 		t.Fatalf("approvals = %+v, want user and channel pending", approvals.ListApprovals())
 	}
 }
@@ -133,7 +120,6 @@ func TestApprovalIsNotRequestedForDeniedOrUnapprovableSubjects(t *testing.T) {
 		channel   string
 	}{
 		{name: "denied user", channel: "C1", configure: func(_ *Bot, approvals *state.Store) {
-			mustRequest(t, approvals, state.ApprovalUser, "U2")
 			if _, _, err := approvals.DecideApproval(state.ApprovalUser, "U2", false, "UOWNER", time.Now()); err != nil {
 				t.Fatal(err)
 			}
@@ -155,8 +141,8 @@ func TestApprovalIsNotRequestedForDeniedOrUnapprovableSubjects(t *testing.T) {
 
 			bot.HandleMention(context.Background(), event)
 
-			if store.claimCalls != 0 || len(api.blockPosts) != 0 {
-				t.Fatalf("claims = %d, approval requests = %d, want 0", store.claimCalls, len(api.blockPosts))
+			if store.claimCalls != 0 || len(approvalRequests(api)) != 0 {
+				t.Fatalf("claims = %d, approval requests = %d, want 0", store.claimCalls, len(approvalRequests(api)))
 			}
 			if got := strings.Join(api.postTexts, "|"); got != "403 forbidden. @seiji に確認してください。" {
 				t.Fatalf("posts = %q, want forbidden response", got)
@@ -167,7 +153,7 @@ func TestApprovalIsNotRequestedForDeniedOrUnapprovableSubjects(t *testing.T) {
 
 func TestFailedApprovalPostIsRolledBack(t *testing.T) {
 	bot, api, _, approvals := newApprovalBot(t, &fakeRunner{})
-	api.blockPostErr = fmt.Errorf("not_in_channel")
+	api.postErrs = []error{fmt.Errorf("not_in_channel")}
 	event := mention()
 	event.User = "U2"
 
@@ -176,23 +162,129 @@ func TestFailedApprovalPostIsRolledBack(t *testing.T) {
 	if got := approvals.ApprovalStatus(state.ApprovalUser, "U2"); got != "" {
 		t.Fatalf("status = %q, want no record", got)
 	}
-	if got := strings.Join(api.postTexts, "|"); got != "403 forbidden. @seiji に確認してください。" {
-		t.Fatalf("posts = %q, want forbidden response", got)
+	if got := api.posts[len(api.posts)-1].text; got != "403 forbidden. @seiji に確認してください。" {
+		t.Fatalf("last post = %q, want forbidden response", got)
+	}
+}
+
+func TestApproveInRequestThreadAllowsUser(t *testing.T) {
+	runner := successfulPlanRunner()
+	bot, api, _, approvals := newApprovalBot(t, runner)
+	event := mention()
+	event.User = "U2"
+	bot.HandleMention(context.Background(), event)
+
+	reply := approvalCommand(bot, api, "UOWNER", "top-1", "許可")
+
+	if !strings.Contains(reply, "✅ ユーザー <@U2>: <@UOWNER> が許可しました") {
+		t.Fatalf("reply = %q, want approval by UOWNER", reply)
+	}
+	approval, _ := approvals.GetApproval(state.ApprovalUser, "U2")
+	if approval.Status != state.Approved || approval.DecidedBy != "UOWNER" || approval.DecidedAt.IsZero() {
+		t.Fatalf("approval = %+v, want approved by UOWNER", approval)
+	}
+	notified := false
+	for _, post := range api.posts {
+		if post.channel == "C1" && post.threadTS == "100.1" && strings.Contains(post.text, "許可されました") {
+			notified = true
+		}
+	}
+	if !notified {
+		t.Fatalf("posts = %+v, want approval notice in the origin thread", api.posts)
+	}
+
+	bot.HandleMention(context.Background(), event)
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want 1", runner.calls)
+	}
+}
+
+func TestDenyByIDIsNotedInRequestThread(t *testing.T) {
+	bot, api, _, approvals := newApprovalBot(t, &fakeRunner{})
+	event := mention()
+	event.User = "U2"
+	bot.HandleMention(context.Background(), event)
+
+	reply := approvalCommand(bot, api, "UOWNER", "", "拒否 <@U2>")
+
+	if !strings.Contains(reply, "🚫 ユーザー <@U2>: <@UOWNER> が拒否しました") {
+		t.Fatalf("reply = %q, want denial", reply)
+	}
+	if got := approvals.ApprovalStatus(state.ApprovalUser, "U2"); got != state.Denied {
+		t.Fatalf("status = %q, want denied", got)
+	}
+	noted := false
+	for _, post := range api.posts {
+		if post.channel == "COWNER" && post.threadTS == "top-1" && strings.Contains(post.text, "拒否しました") {
+			noted = true
+		}
+		if post.channel == "C1" && strings.Contains(post.text, "許可されました") {
+			t.Fatalf("denial notified origin thread: %+v", post)
+		}
+	}
+	if !noted {
+		t.Fatalf("posts = %+v, want denial noted in the request thread", api.posts)
+	}
+}
+
+func TestFirstDecisionWins(t *testing.T) {
+	bot, api, _, approvals := newApprovalBot(t, &fakeRunner{})
+	event := mention()
+	event.User = "U2"
+	bot.HandleMention(context.Background(), event)
+
+	approvalCommand(bot, api, "UOWNER", "top-1", "許可")
+	reply := approvalCommand(bot, api, "UOWNER2", "top-1", "拒否")
+
+	if !strings.Contains(reply, "すでに<@UOWNER> が許可しました") {
+		t.Fatalf("reply = %q, want already decided", reply)
+	}
+	if got := approvals.ApprovalStatus(state.ApprovalUser, "U2"); got != state.Approved {
+		t.Fatalf("status = %q, want approved", got)
+	}
+}
+
+func TestApprovalCommandRejections(t *testing.T) {
+	tests := []struct {
+		name     string
+		user     string
+		threadTS string
+		text     string
+		want     string
+	}{
+		{name: "non-approver", user: "U1", threadTS: "top-1", text: "許可", want: notApproverMessage},
+		{name: "not a request thread", user: "UOWNER", threadTS: "555.5", text: "許可", want: approvalThreadMissing},
+		{name: "top level without ID", user: "UOWNER", text: "許可", want: approvalThreadMissing},
+		{name: "unreadable ID", user: "UOWNER", text: "許可 everyone", want: "ID として読み取れませんでした"},
+		{name: "fixed allowlist", user: "UOWNER", text: "拒否 U1", want: ".env の固定の許可"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bot, api, _, approvals := newApprovalBot(t, &fakeRunner{})
+			event := mention()
+			event.User = "U2"
+			bot.HandleMention(context.Background(), event)
+
+			reply := approvalCommand(bot, api, test.user, test.threadTS, test.text)
+
+			if !strings.Contains(reply, test.want) {
+				t.Fatalf("reply = %q, want containing %q", reply, test.want)
+			}
+			if got := approvals.ApprovalStatus(state.ApprovalUser, "U2"); got != state.Pending {
+				t.Fatalf("status = %q, want pending", got)
+			}
+		})
 	}
 }
 
 func TestApprovedUserAndChannelAreHandled(t *testing.T) {
 	runner := successfulPlanRunner()
-	bot, _, _, approvals := newApprovalBot(t, runner)
-	for _, subject := range []approvalSubject{{state.ApprovalUser, "U2"}, {state.ApprovalChannel, "G2"}} {
-		mustRequest(t, approvals, subject.kind, subject.id)
-		if _, _, err := approvals.DecideApproval(subject.kind, subject.id, true, "UOWNER", time.Now()); err != nil {
-			t.Fatal(err)
-		}
-	}
+	bot, api, _, _ := newApprovalBot(t, runner)
+	approvalCommand(bot, api, "UOWNER", "", "許可 U2")
+	approvalCommand(bot, api, "UOWNER", "", "許可 <#C2|general>")
 	event := mention()
 	event.User = "U2"
-	event.Channel = "G2"
+	event.Channel = "C2"
 
 	bot.HandleMention(context.Background(), event)
 
@@ -213,10 +305,10 @@ func TestWorkflowApproval(t *testing.T) {
 	event.BotID = "BWORKFLOW"
 
 	bot.handleMention(context.Background(), event, "Wf0NEW")
-	if len(api.blockPosts) != 1 || approvals.ApprovalStatus(state.ApprovalWorkflow, "Wf0NEW") != state.Pending {
-		t.Fatalf("approval requests = %d, approvals = %+v, want workflow pending", len(api.blockPosts), approvals.ListApprovals())
+	if approvals.ApprovalStatus(state.ApprovalWorkflow, "Wf0NEW") != state.Pending {
+		t.Fatalf("approvals = %+v, want workflow pending", approvals.ListApprovals())
 	}
-	bot.HandleApprovalAction(context.Background(), approvalClick("UOWNER", approveActionID, "workflow:Wf0NEW"))
+	approvalCommand(bot, api, "UOWNER", "top-1", "許可")
 	bot.handleMention(context.Background(), event, "Wf0NEW")
 
 	if runner.calls != 1 {
@@ -232,126 +324,68 @@ func TestDisabledWorkflowsAreNotOfferedForApproval(t *testing.T) {
 
 	bot.handleMention(context.Background(), event, "Wf0NEW")
 
-	if len(api.blockPosts) != 0 {
-		t.Fatalf("approval requests = %d, want 0", len(api.blockPosts))
-	}
-}
-
-func TestApprovalButtonDecidesOnce(t *testing.T) {
-	bot, api, _, approvals := newApprovalBot(t, &fakeRunner{})
-	mustRequest(t, approvals, state.ApprovalUser, "U2")
-
-	bot.HandleApprovalAction(context.Background(), approvalClick("UOWNER", approveActionID, "user:U2"))
-	bot.HandleApprovalAction(context.Background(), approvalClick("UOWNER2", denyActionID, "user:U2"))
-
-	approval, _ := approvals.GetApproval(state.ApprovalUser, "U2")
-	if approval.Status != state.Approved || approval.DecidedBy != "UOWNER" || approval.DecidedAt.IsZero() {
-		t.Fatalf("approval = %+v, want approved by UOWNER", approval)
-	}
-	if len(api.blockUpdates) != 2 || hasActions(api.blockUpdates[0].blocks) || api.blockUpdates[0].timestamp != "approval-1" {
-		t.Fatalf("updates = %+v, want buttons removed from approval-1", api.blockUpdates)
-	}
-	if len(api.ephemerals) != 1 || !strings.Contains(api.ephemerals[0], "UOWNER2:すでに<@UOWNER> が許可しました") {
-		t.Fatalf("ephemerals = %q, want already decided notice", api.ephemerals)
-	}
-}
-
-func TestApprovalButtonRejectsNonMembersAndOtherChannels(t *testing.T) {
-	tests := []struct {
-		name      string
-		click     slack.InteractionCallback
-		memberErr error
-		ephemeral bool
-	}{
-		{name: "non-member", click: approvalClick("U2", approveActionID, "user:U2"), ephemeral: true},
-		{name: "membership lookup error", click: approvalClick("UOWNER", approveActionID, "user:U2"), memberErr: fmt.Errorf("missing_scope"), ephemeral: true},
-		{name: "other channel", click: func() slack.InteractionCallback {
-			click := approvalClick("UOWNER", approveActionID, "user:U2")
-			click.Channel.ID = "C1"
-			return click
-		}()},
-		{name: "malformed value", click: approvalClick("UOWNER", approveActionID, "user:<!channel>")},
-		{name: "unknown action", click: approvalClick("UOWNER", "other", "user:U2")},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			bot, api, _, approvals := newApprovalBot(t, &fakeRunner{})
-			api.memberErr = test.memberErr
-			mustRequest(t, approvals, state.ApprovalUser, "U2")
-
-			bot.HandleApprovalAction(context.Background(), test.click)
-
-			if got := approvals.ApprovalStatus(state.ApprovalUser, "U2"); got != state.Pending {
-				t.Fatalf("status = %q, want pending", got)
-			}
-			if got := len(api.ephemerals) == 1; got != test.ephemeral {
-				t.Fatalf("ephemerals = %q, want notice %v", api.ephemerals, test.ephemeral)
-			}
-		})
+	if got := len(approvalRequests(api)); got != 0 {
+		t.Fatalf("approval requests = %d, want 0", got)
 	}
 }
 
 func TestConcurrentApprovalsAreAllKept(t *testing.T) {
-	bot, _, _, approvals := newApprovalBot(t, &fakeRunner{})
+	bot, api, _, approvals := newApprovalBot(t, &fakeRunner{})
 	const count = 32
-	for i := range count {
-		mustRequest(t, approvals, state.ApprovalUser, fmt.Sprintf("U%d", i))
-	}
-
 	var wg sync.WaitGroup
 	for i := range count {
 		wg.Go(func() {
-			bot.HandleApprovalAction(context.Background(), approvalClick("UOWNER", approveActionID, fmt.Sprintf("user:U%d", i)))
+			approvalCommand(bot, api, "UOWNER", "", fmt.Sprintf("許可 UX%d", i))
 		})
 	}
 	wg.Wait()
 
 	for i := range count {
-		if got := approvals.ApprovalStatus(state.ApprovalUser, fmt.Sprintf("U%d", i)); got != state.Approved {
-			t.Fatalf("U%d status = %q, want approved", i, got)
+		if got := approvals.ApprovalStatus(state.ApprovalUser, fmt.Sprintf("UX%d", i)); got != state.Approved {
+			t.Fatalf("UX%d status = %q, want approved", i, got)
 		}
 	}
 }
 
-func TestApprovalCommands(t *testing.T) {
+func TestListAndRevokeCommands(t *testing.T) {
 	bot, api, store, approvals := newApprovalBot(t, &fakeRunner{})
-	mustRequest(t, approvals, state.ApprovalUser, "U2")
-	if _, _, err := approvals.DecideApproval(state.ApprovalUser, "U2", true, "UOWNER", time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	command := func(user, text string) string {
-		api.postTexts = nil
-		event := mention()
-		event.User = user
-		event.Channel = "GOWNER"
-		event.Text = "<@UBOT> " + text
-		bot.HandleMention(context.Background(), event)
-		return strings.Join(api.postTexts, "|")
-	}
+	approvalCommand(bot, api, "UOWNER", "", "許可 U2")
 
-	list := command("UOWNER", "許可一覧")
+	list := approvalCommand(bot, api, "UOWNER", "", "許可一覧")
 	for _, want := range []string{"ユーザー <@U1>", "チャンネル <#C1>", "✅ ユーザー <@U2> — <@UOWNER> が許可しました"} {
 		if !strings.Contains(list, want) {
 			t.Fatalf("list = %q, want containing %q", list, want)
 		}
 	}
-	if got := command("UOWNER", "許可取消 <@U1>"); !strings.Contains(got, ".env の固定の許可") {
+	if got := approvalCommand(bot, api, "UOWNER", "", "許可取消 <@U1>"); !strings.Contains(got, ".env の固定の許可") {
 		t.Fatalf("revoke fixed = %q, want refusal", got)
 	}
-	if got := command("U3", "許可取消 U2"); got != notApproverMessage {
-		t.Fatalf("revoke by non-member = %q, want %q", got, notApproverMessage)
+	if got := approvalCommand(bot, api, "U3", "", "許可取消 U2"); got != notApproverMessage {
+		t.Fatalf("revoke by non-approver = %q, want %q", got, notApproverMessage)
 	}
-	if got := command("UOWNER", "許可取消 <@U2|someone>"); !strings.Contains(got, "記録を削除しました") {
+	if got := approvalCommand(bot, api, "UOWNER", "", "許可取消 <@U2|someone>"); !strings.Contains(got, "記録を削除しました") {
 		t.Fatalf("revoke = %q, want deleted", got)
 	}
 	if got := approvals.ApprovalStatus(state.ApprovalUser, "U2"); got != "" {
 		t.Fatalf("status after revoke = %q, want none", got)
 	}
-	if got := command("UOWNER", "許可取消 U2"); !strings.Contains(got, "記録はありません") {
+	if got := approvalCommand(bot, api, "UOWNER", "", "許可取消 U2"); !strings.Contains(got, "記録はありません") {
 		t.Fatalf("second revoke = %q, want not found", got)
 	}
 	if store.claimCalls != 0 {
 		t.Fatalf("ClaimEvent called %d times by commands, want 0", store.claimCalls)
+	}
+}
+
+func TestOtherTextInApprovalChannelIsANormalMention(t *testing.T) {
+	runner := successfulPlanRunner()
+	bot, api, _, _ := newApprovalBot(t, runner)
+	bot.allowedChannels = makeSet([]string{"C1", "COWNER"})
+
+	approvalCommand(bot, api, "U1", "", "許可について教えて")
+
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want 1", runner.calls)
 	}
 }
 
@@ -361,7 +395,6 @@ func TestApprovedUserMayReplyInSubscribedThread(t *testing.T) {
 	bot, _, store, approvals := newApprovalBot(t, runner)
 	configureActiveSubscription(bot, store, now)
 	bot.allowedUsers = makeSet([]string{"U1"})
-	mustRequest(t, approvals, state.ApprovalUser, "U9")
 	if _, _, err := approvals.DecideApproval(state.ApprovalUser, "U9", true, "UOWNER", now); err != nil {
 		t.Fatal(err)
 	}
@@ -384,13 +417,5 @@ func TestNormalizeSlackID(t *testing.T) {
 		if got := normalizeSlackID(input); got != want {
 			t.Errorf("normalizeSlackID(%q) = %q, want %q", input, got, want)
 		}
-	}
-}
-
-func mustRequest(t *testing.T, approvals *state.Store, kind state.ApprovalKind, id string) {
-	t.Helper()
-	created, err := approvals.RequestApproval(kind, id, "U1", "C1", time.Now())
-	if err != nil || !created {
-		t.Fatalf("RequestApproval(%s, %s) = %v, %v; want created", kind, id, created, err)
 	}
 }

@@ -220,13 +220,17 @@ func TestLoad(t *testing.T) {
 				"SLACK_BOT_TOKEN":           "xoxb-test",
 				"SLACK_APP_TOKEN":           "xapp-test",
 				"SLACK_ALLOWED_CHANNEL_IDS": "",
-				"SLACK_APPROVAL_CHANNEL_ID": " G123 ",
+				"SLACK_APPROVAL_CHANNEL_ID": " C777 ",
+				"SLACK_APPROVER_USER_IDS":   "UOWNER, UOWNER2",
 				"SLACK_ALLOW_WORKFLOWS":     "true",
 			},
 			check: func(t *testing.T, cfg *Config, _ string) {
 				t.Helper()
-				if cfg.ApprovalChannelID != "G123" {
-					t.Errorf("ApprovalChannelID = %q, want G123", cfg.ApprovalChannelID)
+				if cfg.ApprovalChannelID != "C777" {
+					t.Errorf("ApprovalChannelID = %q, want C777", cfg.ApprovalChannelID)
+				}
+				if !reflect.DeepEqual(cfg.ApproverUserIDs, []string{"UOWNER", "UOWNER2"}) {
+					t.Errorf("ApproverUserIDs = %v, want [UOWNER UOWNER2]", cfg.ApproverUserIDs)
 				}
 				if len(cfg.AllowedUserIDs) != 0 || len(cfg.AllowedChannelIDs) != 0 || len(cfg.AllowedWorkflowIDs) != 0 {
 					t.Errorf("allowlists = %v %v %v, want empty", cfg.AllowedUserIDs, cfg.AllowedChannelIDs, cfg.AllowedWorkflowIDs)
@@ -242,6 +246,27 @@ func TestLoad(t *testing.T) {
 				"SLACK_APPROVAL_CHANNEL_ID": "D123",
 			},
 			wantErr: "SLACK_APPROVAL_CHANNEL_ID",
+		},
+		{
+			name: "approval channel without approvers",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":           "xoxb-test",
+				"SLACK_APP_TOKEN":           "xapp-test",
+				"SLACK_ALLOWED_USER_IDS":    "U123",
+				"SLACK_APPROVAL_CHANNEL_ID": "C777",
+			},
+			wantErr: "SLACK_APPROVER_USER_IDS: must contain",
+		},
+		{
+			name: "invalid approver",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":           "xoxb-test",
+				"SLACK_APP_TOKEN":           "xapp-test",
+				"SLACK_ALLOWED_USER_IDS":    "U123",
+				"SLACK_APPROVAL_CHANNEL_ID": "C777",
+				"SLACK_APPROVER_USER_IDS":   "C123",
+			},
+			wantErr: `SLACK_APPROVER_USER_IDS: invalid user ID "C123"`,
 		},
 		{
 			name: "no users without approval channel",
@@ -656,6 +681,7 @@ func clearConfigEnv(t *testing.T) {
 		"SLACK_ALLOWED_CHANNEL_IDS",
 		"SLACK_ALLOW_ALL_PUBLIC_CHANNELS",
 		"SLACK_APPROVAL_CHANNEL_ID",
+		"SLACK_APPROVER_USER_IDS",
 		"SLACK_ALLOW_WORKFLOWS",
 		"SLACK_ADMIN_USER_ID",
 		"SLACK_THREAD_SUBSCRIPTION_REACTION",
