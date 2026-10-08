@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -149,11 +150,15 @@ type fakeSlack struct {
 	reactionChannel   string
 	reactionTimestamp string
 	reactionName      string
-	publicChannels    map[string]bool
-	channelErr        error
-	channelCalls      int
 	uploads           []fakeUpload
 	uploadErrs        []error
+	posts             []fakePost
+}
+
+type fakePost struct {
+	channel  string
+	threadTS string
+	text     string
 }
 
 type fakeUpload struct {
@@ -185,22 +190,20 @@ func (s *fakeSlack) UploadFile(_ context.Context, channel, threadTS, filename st
 	return nil
 }
 
-func (s *fakeSlack) IsPublicChannel(_ context.Context, channel string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.channelCalls++
-	return s.publicChannels[channel], s.channelErr
-}
-
-func (s *fakeSlack) PostMessage(_ context.Context, _, _, text string) (string, error) {
+func (s *fakeSlack) PostMessage(_ context.Context, channel, threadTS, text string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, slackCall{kind: "post", text: text})
 	s.postTexts = append(s.postTexts, text)
+	s.posts = append(s.posts, fakePost{channel: channel, threadTS: threadTS, text: text})
 	var err error
 	if len(s.postErrs) > 0 {
 		err = s.postErrs[0]
 		s.postErrs = s.postErrs[1:]
+	}
+	if err == nil && threadTS == "" {
+		// Top-level posts get distinct timestamps so threads can be told apart.
+		return fmt.Sprintf("top-%d", len(s.posts)), nil
 	}
 	return "reply-ts", err
 }
@@ -334,57 +337,6 @@ func configureActiveSubscription(bot *Bot, store *fakeStore, now time.Time) {
 	store.subscriptions["C1:100.1"] = state.Subscription{
 		StartedAt: now.Add(-time.Hour),
 		ExpiresAt: now.Add(time.Hour),
-	}
-}
-
-func TestAllowAllPublicChannelsMention(t *testing.T) {
-	tests := []struct {
-		name       string
-		channel    string
-		public     map[string]bool
-		channelErr error
-		wantAllow  bool
-		wantLookup int
-	}{
-		{name: "public channel", channel: "C1", public: map[string]bool{"C1": true}, wantAllow: true, wantLookup: 1},
-		{name: "private channel", channel: "C1", public: map[string]bool{"C1": false}, wantLookup: 1},
-		{name: "lookup error", channel: "C1", public: map[string]bool{"C1": true}, channelErr: errors.New("missing_scope"), wantLookup: 1},
-		{name: "DM", channel: "D1"},
-		{name: "group", channel: "G1"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			store := &fakeStore{claim: true}
-			api := &fakeSlack{publicChannels: test.public, channelErr: test.channelErr}
-			bot := newTestBot(t, store, api, &fakeRunner{})
-			bot.config.AllowAllPublicChannels = true
-			bot.allowedChannels = makeSet([]string{"C2"})
-
-			if got := bot.mentionChannelAllowed(context.Background(), test.channel); got != test.wantAllow {
-				t.Fatalf("mentionChannelAllowed(%q) = %v, want %v", test.channel, got, test.wantAllow)
-			}
-			if api.channelCalls != test.wantLookup {
-				t.Fatalf("channel lookups = %d, want %d", api.channelCalls, test.wantLookup)
-			}
-		})
-	}
-}
-
-func TestAllowAllPublicChannelsRejectsMentionWithForbidden(t *testing.T) {
-	store := &fakeStore{claim: true}
-	api := &fakeSlack{}
-	bot := newTestBot(t, store, api, &fakeRunner{})
-	bot.config.AllowAllPublicChannels = true
-	event := mention()
-	event.Channel = "D1"
-
-	bot.HandleMention(context.Background(), event)
-
-	if store.claimCalls != 0 {
-		t.Fatalf("ClaimEvent called %d times, want 0", store.claimCalls)
-	}
-	if got := strings.Join(api.postTexts, "|"); got != "403 forbidden. @seiji に確認してください。" {
-		t.Fatalf("posts = %q, want forbidden response", got)
 	}
 }
 
@@ -1006,26 +958,6 @@ func TestAllowedActiveMessageReplyRunsPlanningInSharedThreadSession(t *testing.T
 	wantSubscription := state.Subscription{StartedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour)}
 	if got, ok := store.GetSubscription("C1:100.1"); !ok || got != wantSubscription {
 		t.Fatalf("subscription after reply = (%+v, %v), want unchanged (%+v, true)", got, ok, wantSubscription)
-	}
-}
-
-func TestAllowAllPublicChannelsActiveMessageReplyRunsPlanning(t *testing.T) {
-	now := time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
-	store := &fakeStore{claim: true}
-	api := &fakeSlack{}
-	runner := successfulPlanRunner()
-	bot := newTestBot(t, store, api, runner)
-	configureActiveSubscription(bot, store, now)
-	bot.allowedChannels = nil
-	bot.config.AllowAllPublicChannels = true
-
-	bot.HandleMessage(context.Background(), messageReply("U2", "200.2", "please continue"))
-
-	if runner.calls != 1 {
-		t.Fatalf("runner calls = %d, want 1", runner.calls)
-	}
-	if api.channelCalls != 0 {
-		t.Fatalf("channel lookups = %d, want 0", api.channelCalls)
 	}
 }
 

@@ -215,19 +215,86 @@ func TestLoad(t *testing.T) {
 			},
 		},
 		{
-			name: "allow all public channels",
+			name: "approval channel without allowlists",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":           "xoxb-test",
+				"SLACK_APP_TOKEN":           "xapp-test",
+				"SLACK_ALLOWED_CHANNEL_IDS": "",
+				"SLACK_APPROVAL_CHANNEL_ID": " C777 ",
+				"SLACK_APPROVER_USER_IDS":   "UOWNER, UOWNER2",
+				"SLACK_ALLOW_WORKFLOWS":     "true",
+			},
+			check: func(t *testing.T, cfg *Config, _ string) {
+				t.Helper()
+				if cfg.ApprovalChannelID != "C777" {
+					t.Errorf("ApprovalChannelID = %q, want C777", cfg.ApprovalChannelID)
+				}
+				if !reflect.DeepEqual(cfg.ApproverUserIDs, []string{"UOWNER", "UOWNER2"}) {
+					t.Errorf("ApproverUserIDs = %v, want [UOWNER UOWNER2]", cfg.ApproverUserIDs)
+				}
+				if len(cfg.AllowedUserIDs) != 0 || len(cfg.AllowedChannelIDs) != 0 || len(cfg.AllowedWorkflowIDs) != 0 {
+					t.Errorf("allowlists = %v %v %v, want empty", cfg.AllowedUserIDs, cfg.AllowedChannelIDs, cfg.AllowedWorkflowIDs)
+				}
+			},
+		},
+		{
+			name: "invalid approval channel",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":           "xoxb-test",
+				"SLACK_APP_TOKEN":           "xapp-test",
+				"SLACK_ALLOWED_USER_IDS":    "U123",
+				"SLACK_APPROVAL_CHANNEL_ID": "D123",
+			},
+			wantErr: "SLACK_APPROVAL_CHANNEL_ID",
+		},
+		{
+			name: "approval channel without approvers",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":           "xoxb-test",
+				"SLACK_APP_TOKEN":           "xapp-test",
+				"SLACK_ALLOWED_USER_IDS":    "U123",
+				"SLACK_APPROVAL_CHANNEL_ID": "C777",
+			},
+			wantErr: "SLACK_APPROVER_USER_IDS: must contain",
+		},
+		{
+			name: "invalid approver",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":           "xoxb-test",
+				"SLACK_APP_TOKEN":           "xapp-test",
+				"SLACK_ALLOWED_USER_IDS":    "U123",
+				"SLACK_APPROVAL_CHANNEL_ID": "C777",
+				"SLACK_APPROVER_USER_IDS":   "C123",
+			},
+			wantErr: `SLACK_APPROVER_USER_IDS: invalid user ID "C123"`,
+		},
+		{
+			name: "no users without approval channel",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN": "xoxb-test",
+				"SLACK_APP_TOKEN": "xapp-test",
+			},
+			wantErr: "SLACK_ALLOWED_USER_IDS",
+		},
+		{
+			name: "allow all public channels false is ignored",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":                 "xoxb-test",
+				"SLACK_APP_TOKEN":                 "xapp-test",
+				"SLACK_ALLOWED_USER_IDS":          "U123",
+				"SLACK_ALLOW_ALL_PUBLIC_CHANNELS": "false",
+			},
+			check: func(*testing.T, *Config, string) {},
+		},
+		{
+			name: "allow all public channels was removed",
 			env: map[string]string{
 				"SLACK_BOT_TOKEN":                 "xoxb-test",
 				"SLACK_APP_TOKEN":                 "xapp-test",
 				"SLACK_ALLOWED_USER_IDS":          "U123",
 				"SLACK_ALLOW_ALL_PUBLIC_CHANNELS": "true",
 			},
-			check: func(t *testing.T, cfg *Config, _ string) {
-				t.Helper()
-				if !cfg.AllowAllPublicChannels {
-					t.Error("AllowAllPublicChannels = false, want true")
-				}
-			},
+			wantErr: "SLACK_ALLOW_ALL_PUBLIC_CHANNELS: was removed",
 		},
 		{
 			name: "no channel restriction",
@@ -279,17 +346,6 @@ func TestLoad(t *testing.T) {
 				"EBIX_SHARED_WRITE_CHANNEL_IDS": "D123",
 			},
 			wantErr: "EBIX_SHARED_WRITE_CHANNEL_IDS",
-		},
-		{
-			name: "allow all public channels with channel IDs",
-			env: map[string]string{
-				"SLACK_BOT_TOKEN":                 "xoxb-test",
-				"SLACK_APP_TOKEN":                 "xapp-test",
-				"SLACK_ALLOWED_USER_IDS":          "U123",
-				"SLACK_ALLOWED_CHANNEL_IDS":       "C123",
-				"SLACK_ALLOW_ALL_PUBLIC_CHANNELS": "true",
-			},
-			wantErr: "SLACK_ALLOW_ALL_PUBLIC_CHANNELS",
 		},
 		{
 			name: "invalid allow all public channels",
@@ -391,9 +447,7 @@ func TestLoad(t *testing.T) {
 				t.Fatalf("filepath.Abs() error = %v, want nil", err)
 			}
 			clearConfigEnv(t)
-			_, hasChannels := tt.env["SLACK_ALLOWED_CHANNEL_IDS"]
-			_, allowsAll := tt.env["SLACK_ALLOW_ALL_PUBLIC_CHANNELS"]
-			if !hasChannels && !allowsAll {
+			if _, hasChannels := tt.env["SLACK_ALLOWED_CHANNEL_IDS"]; !hasChannels {
 				t.Setenv("SLACK_ALLOWED_CHANNEL_IDS", "C999")
 			}
 			for key, value := range tt.env {
@@ -626,6 +680,8 @@ func clearConfigEnv(t *testing.T) {
 		"SLACK_ALLOWED_USER_IDS",
 		"SLACK_ALLOWED_CHANNEL_IDS",
 		"SLACK_ALLOW_ALL_PUBLIC_CHANNELS",
+		"SLACK_APPROVAL_CHANNEL_ID",
+		"SLACK_APPROVER_USER_IDS",
 		"SLACK_ALLOW_WORKFLOWS",
 		"SLACK_ADMIN_USER_ID",
 		"SLACK_THREAD_SUBSCRIPTION_REACTION",

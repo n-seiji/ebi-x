@@ -29,10 +29,12 @@ type Config struct {
 	SlackAppToken     string
 	AllowedUserIDs    []string
 	AllowedChannelIDs []string
-	// AllowAllPublicChannels accepts every public channel instead of
-	// AllowedChannelIDs. DMs and private channels stay rejected.
-	AllowAllPublicChannels bool
-	AllowWorkflows         bool
+	// ApprovalChannelID is the channel where users, channels, and workflows
+	// outside the allowlists are approved. Empty disables approvals.
+	ApprovalChannelID string
+	// ApproverUserIDs are the only users who may decide approvals.
+	ApproverUserIDs []string
+	AllowWorkflows  bool
 	// AllowedWorkflowIDs are the Slack workflows that may mention ebi-x when
 	// AllowWorkflows is set.
 	AllowedWorkflowIDs []string
@@ -92,9 +94,24 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("SLACK_APP_TOKEN: %w", err)
 	}
 
+	approvalChannelID := strings.TrimSpace(os.Getenv("SLACK_APPROVAL_CHANNEL_ID"))
+	if approvalChannelID != "" && !strings.HasPrefix(approvalChannelID, "C") && !strings.HasPrefix(approvalChannelID, "G") {
+		return nil, fmt.Errorf("SLACK_APPROVAL_CHANNEL_ID: invalid channel ID %q: %w", approvalChannelID, errors.New("must start with C or G"))
+	}
+	approvals := approvalChannelID != ""
+	approverIDs := splitList(os.Getenv("SLACK_APPROVER_USER_IDS"))
+	for _, userID := range approverIDs {
+		if !strings.HasPrefix(userID, "U") {
+			return nil, fmt.Errorf("SLACK_APPROVER_USER_IDS: invalid user ID %q: %w", userID, errors.New("must start with U"))
+		}
+	}
+	if approvals && len(approverIDs) == 0 {
+		return nil, fmt.Errorf("SLACK_APPROVER_USER_IDS: %w", errors.New("must contain at least one user ID when SLACK_APPROVAL_CHANNEL_ID is set"))
+	}
+
 	userIDs := splitList(os.Getenv("SLACK_ALLOWED_USER_IDS"))
-	if len(userIDs) == 0 {
-		return nil, fmt.Errorf("SLACK_ALLOWED_USER_IDS: %w", errors.New("must contain at least one user ID"))
+	if len(userIDs) == 0 && !approvals {
+		return nil, fmt.Errorf("SLACK_ALLOWED_USER_IDS: %w", errors.New("must contain at least one user ID unless SLACK_APPROVAL_CHANNEL_ID is set"))
 	}
 	for _, userID := range userIDs {
 		if !strings.HasPrefix(userID, "U") {
@@ -102,20 +119,22 @@ func Load() (*Config, error) {
 		}
 	}
 	channelIDs := splitList(os.Getenv("SLACK_ALLOWED_CHANNEL_IDS"))
-	allowAllPublicChannels := false
+	// Every public channel used to be allowable at once. Channels are now
+	// listed or approved one by one, so refuse to start rather than silently
+	// narrow an operator's setup.
 	if value := strings.TrimSpace(os.Getenv("SLACK_ALLOW_ALL_PUBLIC_CHANNELS")); value != "" {
-		allowAllPublicChannels, err = strconv.ParseBool(value)
+		allowAll, err := strconv.ParseBool(value)
 		if err != nil {
 			return nil, fmt.Errorf("SLACK_ALLOW_ALL_PUBLIC_CHANNELS %q: %w", value, err)
 		}
-	}
-	if allowAllPublicChannels && len(channelIDs) > 0 {
-		return nil, fmt.Errorf("SLACK_ALLOW_ALL_PUBLIC_CHANNELS: %w", errors.New("cannot be combined with SLACK_ALLOWED_CHANNEL_IDS"))
+		if allowAll {
+			return nil, fmt.Errorf("SLACK_ALLOW_ALL_PUBLIC_CHANNELS: %w", errors.New("was removed; list channels in SLACK_ALLOWED_CHANNEL_IDS or approve them through SLACK_APPROVAL_CHANNEL_ID"))
+		}
 	}
 	// An empty list used to allow every conversation, including DMs and
 	// private channels. Require an explicit choice instead.
-	if !allowAllPublicChannels && len(channelIDs) == 0 {
-		return nil, fmt.Errorf("SLACK_ALLOWED_CHANNEL_IDS: %w", errors.New("must contain at least one channel ID unless SLACK_ALLOW_ALL_PUBLIC_CHANNELS=true"))
+	if len(channelIDs) == 0 && !approvals {
+		return nil, fmt.Errorf("SLACK_ALLOWED_CHANNEL_IDS: %w", errors.New("must contain at least one channel ID unless SLACK_APPROVAL_CHANNEL_ID is set"))
 	}
 	allowWorkflows := false
 	if value := strings.TrimSpace(os.Getenv("SLACK_ALLOW_WORKFLOWS")); value != "" {
@@ -130,9 +149,10 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("SLACK_ALLOWED_WORKFLOW_IDS: invalid workflow ID %q: %w", workflowID, errors.New("must start with Wf followed by uppercase letters or digits"))
 		}
 	}
-	// Anyone who can build a workflow could otherwise bypass the user allowlist.
-	if allowWorkflows && len(workflowIDs) == 0 {
-		return nil, fmt.Errorf("SLACK_ALLOWED_WORKFLOW_IDS: %w", errors.New("must contain at least one workflow ID when SLACK_ALLOW_WORKFLOWS=true"))
+	// Anyone who can build a workflow could otherwise bypass the user
+	// allowlist, so workflows are listed or approved one by one.
+	if allowWorkflows && len(workflowIDs) == 0 && !approvals {
+		return nil, fmt.Errorf("SLACK_ALLOWED_WORKFLOW_IDS: %w", errors.New("must contain at least one workflow ID when SLACK_ALLOW_WORKFLOWS=true unless SLACK_APPROVAL_CHANNEL_ID is set"))
 	}
 	adminUserID := strings.TrimSpace(os.Getenv("SLACK_ADMIN_USER_ID"))
 	if adminUserID != "" && !strings.HasPrefix(adminUserID, "U") {
@@ -240,7 +260,8 @@ func Load() (*Config, error) {
 		SlackAppToken:              appToken,
 		AllowedUserIDs:             userIDs,
 		AllowedChannelIDs:          channelIDs,
-		AllowAllPublicChannels:     allowAllPublicChannels,
+		ApprovalChannelID:          approvalChannelID,
+		ApproverUserIDs:            approverIDs,
 		AllowWorkflows:             allowWorkflows,
 		AllowedWorkflowIDs:         workflowIDs,
 		AdminUserID:                adminUserID,

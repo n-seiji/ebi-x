@@ -55,7 +55,6 @@ type SlackAPI interface {
 	HasReaction(ctx context.Context, channel, timestamp, reaction string) (bool, error)
 	AddReaction(ctx context.Context, channel, timestamp, name string) error
 	RemoveReaction(ctx context.Context, channel, timestamp, name string) error
-	IsPublicChannel(ctx context.Context, channel string) (bool, error)
 	UploadFile(ctx context.Context, channel, threadTS, filename string, size int64, content io.Reader) error
 }
 
@@ -96,10 +95,15 @@ type Workspaces interface {
 type Config struct {
 	AllowedUserIDs    []string
 	AllowedChannelIDs []string
-	// AllowAllPublicChannels accepts every public channel and ignores
-	// AllowedChannelIDs. DMs and private channels are always rejected.
-	AllowAllPublicChannels bool
-	AllowWorkflows         bool
+	// ApprovalChannelID is where users, channels, and workflows outside the
+	// allowlists are approved. Approvals are disabled unless both it and
+	// Approvals are set.
+	ApprovalChannelID string
+	// ApproverUserIDs are the only users who may decide approvals.
+	ApproverUserIDs []string
+	// Approvals records the decisions made in ApprovalChannelID.
+	Approvals      Approvals
+	AllowWorkflows bool
 	// AllowedWorkflowIDs are the only workflows accepted when AllowWorkflows
 	// is set.
 	AllowedWorkflowIDs         []string
@@ -138,6 +142,7 @@ type Bot struct {
 	allowedUsers        map[string]struct{}
 	allowedChannels     map[string]struct{}
 	allowedWorkflows    map[string]struct{}
+	approvers           map[string]struct{}
 	sharedWriteChannels map[string]struct{}
 	workSlots           chan struct{}
 	planSlots           chan struct{}
@@ -181,6 +186,7 @@ func New(api SlackAPI, store Store, runner Runner, config Config, playbooks []pl
 		allowedUsers:        makeSet(config.AllowedUserIDs),
 		allowedChannels:     makeSet(config.AllowedChannelIDs),
 		allowedWorkflows:    makeSet(config.AllowedWorkflowIDs),
+		approvers:           makeSet(config.ApproverUserIDs),
 		sharedWriteChannels: makeSet(config.SharedWriteChannelIDs),
 		workSlots:           make(chan struct{}, max(config.MaxParallelWork, 1)),
 		planSlots:           make(chan struct{}, max(config.MaxParallelPlan, 1)),
@@ -201,20 +207,31 @@ func (b *Bot) handleMention(ctx context.Context, event *slackevents.AppMentionEv
 	if event == nil || event.Edited != nil || event.User == b.config.BotUserID {
 		return
 	}
-	if event.BotID == "" {
-		if _, ok := b.allowedUsers[event.User]; !ok {
-			log.Printf("slackbot: rejecting user %q", event.User)
-			b.forbidden(ctx, event)
-			return
+	// The approval channel is only for deciding requests.
+	if b.approvalsEnabled() && event.Channel == b.config.ApprovalChannelID {
+		if event.BotID == "" {
+			b.handleApprovalCommand(ctx, event)
 		}
-	} else if !b.workflowAllowed(workflowID) {
+		return
+	}
+	var missing []approvalSubject
+	if event.BotID == "" {
+		if !b.userAllowed(event.User) {
+			missing = append(missing, approvalSubject{kind: state.ApprovalUser, id: event.User})
+		}
+	} else if !b.config.AllowWorkflows || !validWorkflowID(workflowID) {
 		log.Printf("slackbot: rejecting bot %q with workflow %q", event.BotID, workflowID)
 		b.forbidden(ctx, event)
 		return
+	} else if !b.workflowAllowed(workflowID) {
+		missing = append(missing, approvalSubject{kind: state.ApprovalWorkflow, id: workflowID})
 	}
-	if !b.mentionChannelAllowed(ctx, event.Channel) {
-		log.Printf("slackbot: rejecting channel %q", event.Channel)
-		b.forbidden(ctx, event)
+	if !b.channelAllowed(event.Channel) {
+		missing = append(missing, approvalSubject{kind: state.ApprovalChannel, id: event.Channel})
+	}
+	if len(missing) > 0 {
+		log.Printf("slackbot: rejecting mention by %q (bot %q, workflow %q) in %q", event.User, event.BotID, workflowID, event.Channel)
+		b.rejectUnapproved(ctx, event, missing)
 		return
 	}
 	threadTS := event.ThreadTimeStamp
@@ -252,13 +269,12 @@ func (b *Bot) HandleMessage(ctx context.Context, event *slackevents.MessageEvent
 		strings.TrimSpace(event.Text) == "" {
 		return
 	}
-	// ChannelType "channel" already guarantees a public channel.
-	if _, ok := b.allowedChannels[event.Channel]; !ok && !b.config.AllowAllPublicChannels {
+	if !b.channelAllowed(event.Channel) {
 		return
 	}
 	// A subscription lets allowed users talk without mentioning the bot; it
 	// does not extend the bot to everyone who can reply in the thread.
-	if _, ok := b.allowedUsers[event.User]; !ok {
+	if !b.userAllowed(event.User) {
 		return
 	}
 	if b.config.BotUserID != "" && strings.Contains(event.Text, "<@"+b.config.BotUserID+">") {
@@ -713,26 +729,6 @@ func (w sharedWorkspaces) Acquire(context.Context, string) (*workspace.Lease, er
 
 func (w sharedWorkspaces) OtherThreadPaths(string) ([]string, error) { return nil, nil }
 
-// mentionChannelAllowed reports whether a mention in channel may be
-// processed. App mention events carry no channel type, so the all-public mode
-// asks Slack and rejects the channel when that lookup fails.
-func (b *Bot) mentionChannelAllowed(ctx context.Context, channel string) bool {
-	if !b.config.AllowAllPublicChannels {
-		_, ok := b.allowedChannels[channel]
-		return ok
-	}
-	// D is a DM; G is a legacy private channel or group DM.
-	if !strings.HasPrefix(channel, "C") {
-		return false
-	}
-	public, err := b.api.IsPublicChannel(ctx, channel)
-	if err != nil {
-		log.Printf("slackbot: look up channel %q: %v", channel, err)
-		return false
-	}
-	return public
-}
-
 func (b *Bot) forbidden(ctx context.Context, event *slackevents.AppMentionEvent) {
 	contact := "@seiji"
 	if b.config.AdminUserID != "" {
@@ -745,13 +741,6 @@ func (b *Bot) forbidden(ctx context.Context, event *slackevents.AppMentionEvent)
 	if err := b.post(ctx, event.Channel, threadTS, fmt.Sprintf(forbiddenMessage, contact)); err != nil {
 		log.Printf("slackbot: post forbidden response: %v", err)
 	}
-}
-
-// workflowAllowed reports whether a bot-authored mention comes from an
-// explicitly allowed Slack workflow. The configuration validates the IDs.
-func (b *Bot) workflowAllowed(id string) bool {
-	_, ok := b.allowedWorkflows[id]
-	return b.config.AllowWorkflows && ok
 }
 
 func workflowIDFromPayload(payload json.RawMessage) string {
@@ -1095,17 +1084,6 @@ func (w *webAPI) UploadFile(ctx context.Context, channel, threadTS, filename str
 		ThreadTimestamp: threadTS,
 	})
 	return err
-}
-
-// IsPublicChannel reports whether channel is a public channel. Private
-// channels and DMs need scopes ebi-x does not request, so their lookups fail
-// rather than return false; callers must treat errors as not public.
-func (w *webAPI) IsPublicChannel(ctx context.Context, channel string) (bool, error) {
-	info, err := w.client.GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{ChannelID: channel})
-	if err != nil {
-		return false, err
-	}
-	return info.IsChannel && !info.IsPrivate && !info.IsIM && !info.IsMpIM, nil
 }
 
 // RunSocketMode connects a Bot to Slack Socket Mode. It acknowledges every
