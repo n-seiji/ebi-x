@@ -140,10 +140,11 @@ func (r *Runner) Run(
 
 // codexHomeVisible are the Codex home entries sandboxed commands must still
 // read: skills and plugins the model opens itself, the helper binaries Codex
-// puts on PATH, and the shell snapshots it sources.
+// puts on PATH, installed Codex packages, and the shell snapshots it sources.
 var codexHomeVisible = map[string]struct{}{
 	"skills":          {},
 	"plugins":         {},
+	"packages":        {},
 	"tmp":             {},
 	".tmp":            {},
 	"shell_snapshots": {},

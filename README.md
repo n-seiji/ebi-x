@@ -180,7 +180,7 @@ Codex は最終応答で追記を提案し、bot が保存先を決定します�
 
 - `data/memory`、`data/state`
 - `.env`（起動ディレクトリと `EBIX_HOME`）と `EBIX_HOME/.codex`
-- `CODEX_HOME`（既定 `~/.codex`）の中身。認証情報・設定・全スレッドの履歴（`sessions`、`codex.sqlite` など）を含むため、コマンドから使う `skills`、`plugins`、`tmp`、`.tmp`、`shell_snapshots` 以外をターンごとに列挙して deny します
+- `CODEX_HOME`（既定 `~/.codex`）の中身。認証情報・設定・全スレッドの履歴（`sessions`、`codex.sqlite` など）を含むため、コマンドから使う `skills`、`plugins`、`packages`（Codex 本体などの実行ファイル）、`tmp`、`.tmp`、`shell_snapshots` 以外をターンごとに列挙して deny します
 - `data/workspace/...` と `data/checkouts/...` のうち、そのスレッド自身のもの以外すべて（ターン開始直前に列挙します。ターン中に作られた別スレッドのディレクトリは対象外です）
 - `EBIX_DENIED_READ_PATHS` に列挙したパス（`~/.aws` など。git push に使う認証情報は作業ターンで必要なので含めないでください）
 

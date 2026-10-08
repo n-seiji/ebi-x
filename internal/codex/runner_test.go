@@ -652,7 +652,7 @@ func TestRunRejectsOversizedDenyList(t *testing.T) {
 
 func TestCodexHomeDeniedKeepsOnlyVisibleEntries(t *testing.T) {
 	home := t.TempDir()
-	for _, name := range []string{"auth.json", "codex.sqlite", "config.toml", "sessions", "skills", "tmp", "shell_snapshots"} {
+	for _, name := range []string{"auth.json", "codex.sqlite", "config.toml", "sessions", "skills", "plugins", "packages", "tmp", "shell_snapshots"} {
 		if err := os.WriteFile(filepath.Join(home, name), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
