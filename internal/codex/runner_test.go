@@ -481,7 +481,7 @@ printf '{"type":"turn.completed"}\n'
 	var callbackIDs []string
 	runner := &Runner{Command: script}
 	result, err := runner.Run(
-		context.Background(), "", "read-only", dir, nil, "hello from stdin",
+		context.Background(), "", "read-only", dir, nil, nil, "hello from stdin",
 		func(id string) error {
 			callbackIDs = append(callbackIDs, id)
 			return nil
@@ -518,7 +518,7 @@ while :; do :; done
 	runner := &Runner{Command: script}
 	start := time.Now()
 	_, err := runner.Run(
-		context.Background(), "", "read-only", dir, nil, "prompt",
+		context.Background(), "", "read-only", dir, nil, nil, "prompt",
 		func(string) error { return errors.New("persist failed") },
 	)
 	if err == nil || !strings.Contains(err.Error(), "persist failed") {
@@ -543,7 +543,7 @@ exit 1
 	}
 
 	runner := &Runner{Command: script}
-	result, err := runner.Run(context.Background(), "", "read-only", dir, nil, "prompt", nil)
+	result, err := runner.Run(context.Background(), "", "read-only", dir, nil, nil, "prompt", nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v, want semantic failure in TurnResult", err)
 	}
@@ -566,7 +566,7 @@ while :; do :; done
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	runner := &Runner{Command: script}
-	_, err := runner.Run(ctx, "", "read-only", dir, nil, "prompt", nil)
+	_, err := runner.Run(ctx, "", "read-only", dir, nil, nil, "prompt", nil)
 	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Run() error = %v, want deadline exceeded", err)
 	}
@@ -597,5 +597,55 @@ func TestRunnerUsesWorkModelOnlyForWorkTurns(t *testing.T) {
 	runner.WorkModel = ""
 	if got := runner.modelFor("workspace-write"); got != "plan-model" {
 		t.Errorf("modelFor(workspace-write) without WorkModel = %q, want plan-model", got)
+	}
+}
+
+func TestRunHidesSlackTokensAndPassesDeniedPaths(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "codex")
+	envFile := filepath.Join(dir, "env")
+	argsFile := filepath.Join(dir, "args")
+	content := `#!/bin/sh
+cat >/dev/null
+env > "` + envFile + `"
+printf '%s\n' "$@" > "` + argsFile + `"
+printf '{"type":"turn.completed"}\n'
+`
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	t.Setenv("SLACK_BOT_TOKEN", "xoxb-secret")
+	t.Setenv("SLACK_APP_TOKEN", "xapp-secret")
+	t.Setenv("EBIX_TEST_VISIBLE", "kept")
+
+	runner := &Runner{Command: script, DeniedReadPaths: []string{"/protected"}}
+	if _, err := runner.Run(context.Background(), "", "read-only", dir, nil, []string{"/other-thread"}, "prompt", nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	env, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(env), "secret") || !strings.Contains(string(env), "EBIX_TEST_VISIBLE=kept") {
+		t.Fatalf("codex environment = %q, want Slack tokens removed and others kept", env)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), `permissions.ebi-x.filesystem={"/protected"="deny","/other-thread"="deny"}`) {
+		t.Fatalf("codex args = %q, want both denied paths", args)
+	}
+}
+
+func TestRunRejectsOversizedDenyList(t *testing.T) {
+	denied := make([]string, 0, 3000)
+	for i := range 3000 {
+		denied = append(denied, fmt.Sprintf("/data/workspace/C0123456789-%d.000000", i))
+	}
+	runner := &Runner{Command: "/nonexistent/codex"}
+	_, err := runner.Run(context.Background(), "", "read-only", t.TempDir(), nil, denied, "prompt", nil)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("Run() error = %v, want oversized argument error", err)
 	}
 }

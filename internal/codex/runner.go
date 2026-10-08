@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -21,7 +22,18 @@ const (
 	maxStderrBytes = 16 << 20
 	maxMessages    = 100
 	maxFinalBytes  = 128 << 10
+	// maxArgBytes keeps each argument below Linux's 128KiB MAX_ARG_STRLEN.
+	// The deny list is one argument because Codex cannot parse paths as
+	// separate dotted keys.
+	maxArgBytes = 120 << 10
 )
+
+// secretEnvNames are environment variables Codex and the commands it runs
+// never need. They are removed so no shell environment policy can expose them.
+var secretEnvNames = map[string]struct{}{
+	"SLACK_BOT_TOKEN": {},
+	"SLACK_APP_TOKEN": {},
+}
 
 // Runner executes Codex CLI turns.
 type Runner struct {
@@ -56,7 +68,7 @@ type TurnResult struct {
 func (r *Runner) Run(
 	ctx context.Context,
 	threadID, sandbox, cwd string,
-	writableRoots []string,
+	writableRoots, deniedPaths []string,
 	prompt string,
 	onThreadStarted func(id string) error,
 ) (*TurnResult, error) {
@@ -64,11 +76,19 @@ func (r *Runner) Run(
 	if err != nil {
 		return nil, err
 	}
-	args := buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, r.DeniedReadPaths, r.modelFor(sandbox), r.DeveloperInstructions, configOverrides)
+	denied := append(append([]string(nil), r.DeniedReadPaths...), deniedPaths...)
+	args := buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, denied, r.modelFor(sandbox), r.DeveloperInstructions, configOverrides)
+	for _, arg := range args {
+		if len(arg) > maxArgBytes {
+			// Running with a truncated deny list would expose protected paths.
+			return nil, fmt.Errorf("codex exec: argument of %d bytes exceeds %d; remove unused thread directories under data/workspace", len(arg), maxArgBytes)
+		}
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, r.Command, args...)
+	cmd.Env = filterEnv(os.Environ())
 	cmd.Stdin = strings.NewReader(prompt)
 
 	stdout, err := cmd.StdoutPipe()
@@ -108,6 +128,19 @@ func (r *Runner) Run(
 
 	truncateFinalMessage(result)
 	return result, nil
+}
+
+// filterEnv returns env without the Slack credentials.
+func filterEnv(env []string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if _, secret := secretEnvNames[name]; secret {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 func (r *Runner) modelFor(sandbox string) string {

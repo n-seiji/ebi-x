@@ -19,6 +19,7 @@ const (
 	defaultThreadSubscriptionReaction = "thread-subete"
 	defaultThreadSubscriptionTTL      = 336 * time.Hour
 	defaultMaxParallelWork            = 3
+	defaultMaxParallelPlan            = 3
 	defaultCheckoutIdleTTL            = 120 * time.Hour
 )
 
@@ -32,15 +33,24 @@ type Config struct {
 	// AllowedChannelIDs. DMs and private channels stay rejected.
 	AllowAllPublicChannels bool
 	AllowWorkflows         bool
-	AdminUserID            string
-	CodexCommand           string
-	CodexModel             string
+	// AllowedWorkflowIDs are the Slack workflows that may mention ebi-x when
+	// AllowWorkflows is set.
+	AllowedWorkflowIDs []string
+	AdminUserID        string
+	CodexCommand       string
+	CodexModel         string
 	// CodexWorkModel overrides CodexModel for work turns; empty uses CodexModel.
 	CodexWorkModel string
 	CodexTimeout   time.Duration
 	// MaxParallelWork is how many work turns for different Slack threads may
 	// run at once.
 	MaxParallelWork int
+	// MaxParallelPlan is how many planning turns for different Slack threads
+	// may run at once.
+	MaxParallelPlan int
+	// SharedWriteChannelIDs are the channels whose work turns may change state
+	// shared by every channel: playbooks and global memory.
+	SharedWriteChannelIDs []string
 	// CheckoutIdleTTL is how long a thread's git checkouts are kept after its
 	// last work turn.
 	CheckoutIdleTTL            time.Duration
@@ -55,6 +65,10 @@ type Config struct {
 	// WritableRoots are absolute, symlink-resolved directories the work turn
 	// may write to in addition to the workspace.
 	WritableRoots []string
+	// ProtectedPaths are files and directories that model-generated commands
+	// must neither read nor write: memory, bot state, secrets, and Codex
+	// credentials and session history.
+	ProtectedPaths []string
 }
 
 // Load reads configuration from the environment and a local .env file.
@@ -95,12 +109,27 @@ func Load() (*Config, error) {
 	if allowAllPublicChannels && len(channelIDs) > 0 {
 		return nil, fmt.Errorf("SLACK_ALLOW_ALL_PUBLIC_CHANNELS: %w", errors.New("cannot be combined with SLACK_ALLOWED_CHANNEL_IDS"))
 	}
+	// An empty list used to allow every conversation, including DMs and
+	// private channels. Require an explicit choice instead.
+	if !allowAllPublicChannels && len(channelIDs) == 0 {
+		return nil, fmt.Errorf("SLACK_ALLOWED_CHANNEL_IDS: %w", errors.New("must contain at least one channel ID unless SLACK_ALLOW_ALL_PUBLIC_CHANNELS=true"))
+	}
 	allowWorkflows := false
 	if value := strings.TrimSpace(os.Getenv("SLACK_ALLOW_WORKFLOWS")); value != "" {
 		allowWorkflows, err = strconv.ParseBool(value)
 		if err != nil {
 			return nil, fmt.Errorf("SLACK_ALLOW_WORKFLOWS %q: %w", value, err)
 		}
+	}
+	workflowIDs := splitList(os.Getenv("SLACK_ALLOWED_WORKFLOW_IDS"))
+	for _, workflowID := range workflowIDs {
+		if !validWorkflowID(workflowID) {
+			return nil, fmt.Errorf("SLACK_ALLOWED_WORKFLOW_IDS: invalid workflow ID %q: %w", workflowID, errors.New("must start with Wf followed by uppercase letters or digits"))
+		}
+	}
+	// Anyone who can build a workflow could otherwise bypass the user allowlist.
+	if allowWorkflows && len(workflowIDs) == 0 {
+		return nil, fmt.Errorf("SLACK_ALLOWED_WORKFLOW_IDS: %w", errors.New("must contain at least one workflow ID when SLACK_ALLOW_WORKFLOWS=true"))
 	}
 	adminUserID := strings.TrimSpace(os.Getenv("SLACK_ADMIN_USER_ID"))
 	if adminUserID != "" && !strings.HasPrefix(adminUserID, "U") {
@@ -129,6 +158,22 @@ func Load() (*Config, error) {
 		}
 		if maxParallelWork < 1 {
 			return nil, fmt.Errorf("CODEX_MAX_PARALLEL_WORK %q: %w", value, errors.New("must be at least 1"))
+		}
+	}
+	maxParallelPlan := defaultMaxParallelPlan
+	if value := strings.TrimSpace(os.Getenv("CODEX_MAX_PARALLEL_PLAN")); value != "" {
+		maxParallelPlan, err = strconv.Atoi(value)
+		if err != nil {
+			return nil, fmt.Errorf("CODEX_MAX_PARALLEL_PLAN %q: %w", value, err)
+		}
+		if maxParallelPlan < 1 {
+			return nil, fmt.Errorf("CODEX_MAX_PARALLEL_PLAN %q: %w", value, errors.New("must be at least 1"))
+		}
+	}
+	sharedWriteChannelIDs := splitList(os.Getenv("EBIX_SHARED_WRITE_CHANNEL_IDS"))
+	for _, channelID := range sharedWriteChannelIDs {
+		if !strings.HasPrefix(channelID, "C") {
+			return nil, fmt.Errorf("EBIX_SHARED_WRITE_CHANNEL_IDS: invalid channel ID %q: %w", channelID, errors.New("must start with C"))
 		}
 	}
 	checkoutIdleTTL := defaultCheckoutIdleTTL
@@ -177,8 +222,21 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve playbooks directory: %w", err)
 	}
+	stateDir := filepath.Join(home, "data", "state")
 	isolationRoots := append(append([]string(nil), writableRoots...), playbooksDir, checkoutsDir)
 	if err := validateMemoryIsolation(workspaceDir, memoryDir, isolationRoots); err != nil {
+		return nil, err
+	}
+	protectedPaths, err := resolveProtectedPaths(home, memoryDir, stateDir)
+	if err != nil {
+		return nil, err
+	}
+	extraDenied, err := resolveDeniedPaths(os.Getenv("EBIX_DENIED_READ_PATHS"))
+	if err != nil {
+		return nil, fmt.Errorf("EBIX_DENIED_READ_PATHS: %w", err)
+	}
+	protectedPaths = append(protectedPaths, extraDenied...)
+	if err := validateProtectedIsolation(isolationRoots, protectedPaths); err != nil {
 		return nil, err
 	}
 
@@ -189,12 +247,15 @@ func Load() (*Config, error) {
 		AllowedChannelIDs:          channelIDs,
 		AllowAllPublicChannels:     allowAllPublicChannels,
 		AllowWorkflows:             allowWorkflows,
+		AllowedWorkflowIDs:         workflowIDs,
 		AdminUserID:                adminUserID,
 		CodexCommand:               codexCommand,
 		CodexModel:                 strings.TrimSpace(os.Getenv("CODEX_MODEL")),
 		CodexWorkModel:             strings.TrimSpace(os.Getenv("CODEX_WORK_MODEL")),
 		CodexTimeout:               codexTimeout,
 		MaxParallelWork:            maxParallelWork,
+		MaxParallelPlan:            maxParallelPlan,
+		SharedWriteChannelIDs:      sharedWriteChannelIDs,
 		CheckoutIdleTTL:            checkoutIdleTTL,
 		ThreadSubscriptionReaction: threadSubscriptionReaction,
 		ThreadSubscriptionTTL:      threadSubscriptionTTL,
@@ -203,8 +264,9 @@ func Load() (*Config, error) {
 		CheckoutsDir:               checkoutsDir,
 		MemoryDir:                  memoryDir,
 		PlaybooksDir:               playbooksDir,
-		StateDir:                   filepath.Join(home, "data", "state"),
+		StateDir:                   stateDir,
 		WritableRoots:              writableRoots,
+		ProtectedPaths:             protectedPaths,
 	}, nil
 }
 
@@ -230,6 +292,90 @@ func validateMemoryIsolation(workspaceDir, memoryDir string, writableRoots []str
 		}
 	}
 	return nil
+}
+
+// resolveProtectedPaths returns the paths ebi-x always hides from the agent:
+// memory and bot state, the .env file holding the Slack tokens, the local
+// Codex config, and the Codex credentials and session history, which hold
+// every other thread's conversation.
+func resolveProtectedPaths(home, memoryDir, stateDir string) ([]string, error) {
+	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	if codexHome == "" {
+		userHome, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("resolve Codex home: %w", err)
+		}
+		codexHome = filepath.Join(userHome, ".codex")
+	}
+	candidates := []string{
+		memoryDir,
+		stateDir,
+		".env",
+		filepath.Join(home, ".env"),
+		filepath.Join(home, ".codex"),
+	}
+	for _, name := range []string{"auth.json", "sessions", "archived_sessions", "history.jsonl"} {
+		candidates = append(candidates, filepath.Join(codexHome, name))
+	}
+	var paths []string
+	seen := make(map[string]struct{})
+	for _, candidate := range candidates {
+		path, err := canonicalPath(candidate)
+		if err != nil {
+			return nil, fmt.Errorf("resolve protected path %q: %w", candidate, err)
+		}
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	return paths, nil
+}
+
+// resolveDeniedPaths parses operator-supplied paths to hide from the agent.
+// Unlike writable roots they need not exist yet.
+func resolveDeniedPaths(value string) ([]string, error) {
+	var paths []string
+	for _, item := range splitList(value) {
+		expanded, err := expandHome(item)
+		if err != nil {
+			return nil, fmt.Errorf("%q: %w", item, err)
+		}
+		path, err := canonicalPath(expanded)
+		if err != nil {
+			return nil, fmt.Errorf("%q: %w", item, err)
+		}
+		paths = append(paths, path)
+	}
+	return paths, nil
+}
+
+// validateProtectedIsolation rejects writable roots that contain or sit inside
+// a protected path. A writable .codex/config.toml, for example, would let the
+// agent register commands that Codex runs outside the sandbox.
+func validateProtectedIsolation(writableRoots, protectedPaths []string) error {
+	for _, root := range writableRoots {
+		for _, protected := range protectedPaths {
+			if pathsOverlap(root, protected) {
+				return fmt.Errorf("EBIX_WRITABLE_ROOTS: %q overlaps protected path %q", root, protected)
+			}
+		}
+	}
+	return nil
+}
+
+// validWorkflowID reports whether id looks like a Slack workflow ID.
+func validWorkflowID(id string) bool {
+	if len(id) <= 2 || !strings.HasPrefix(id, "Wf") {
+		return false
+	}
+	for _, char := range id[2:] {
+		if (char < 'A' || char > 'Z') && (char < '0' || char > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // canonicalPath resolves symlinks in the existing prefix while still

@@ -151,6 +151,29 @@ func (m *Manager) ThreadDir(threadID string) (string, error) {
 	return dir, nil
 }
 
+// OtherThreadPaths returns the workspace and checkout directories of every
+// thread other than threadID. Each turn denies them so a request in one
+// conversation cannot read files produced for another, such as a DM.
+func (m *Manager) OtherThreadPaths(threadID string) ([]string, error) {
+	var paths []string
+	for _, base := range []string{m.workspaceDir, m.checkoutsDir} {
+		entries, err := os.ReadDir(base)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("list thread directories: %w", err)
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() || entry.Name() == threadID || !validThreadID(entry.Name()) {
+				continue
+			}
+			paths = append(paths, filepath.Join(base, entry.Name()))
+		}
+	}
+	return paths, nil
+}
+
 // Acquire prepares the thread's workspace and checkouts for a work turn.
 // Existing checkouts are reused, so later work in the thread continues on the
 // same branch.

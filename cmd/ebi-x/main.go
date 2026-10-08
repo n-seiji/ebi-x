@@ -57,7 +57,7 @@ func main() {
 		Model:                 cfg.CodexModel,
 		WorkModel:             cfg.CodexWorkModel,
 		ConfigPath:            filepath.Join(cfg.EBIXHome, ".codex", "config.toml"),
-		DeniedReadPaths:       []string{cfg.MemoryDir},
+		DeniedReadPaths:       cfg.ProtectedPaths,
 		DeveloperInstructions: policy.Instructions(),
 	}
 	bot := slackbot.New(nil, store, runner, slackbot.Config{
@@ -65,6 +65,7 @@ func main() {
 		AllowedChannelIDs:          cfg.AllowedChannelIDs,
 		AllowAllPublicChannels:     cfg.AllowAllPublicChannels,
 		AllowWorkflows:             cfg.AllowWorkflows,
+		AllowedWorkflowIDs:         cfg.AllowedWorkflowIDs,
 		AdminUserID:                cfg.AdminUserID,
 		WorkspaceDir:               cfg.WorkspaceDir,
 		MemoryDir:                  cfg.MemoryDir,
@@ -74,6 +75,8 @@ func main() {
 		ThreadSubscriptionTTL:      cfg.ThreadSubscriptionTTL,
 		WritableRoots:              cfg.WritableRoots,
 		MaxParallelWork:            cfg.MaxParallelWork,
+		MaxParallelPlan:            cfg.MaxParallelPlan,
+		SharedWriteChannelIDs:      cfg.SharedWriteChannelIDs,
 		Workspaces:                 workspaces,
 	}, playbooks)
 
