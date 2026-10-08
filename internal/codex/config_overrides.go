@@ -15,7 +15,7 @@ import (
 
 // loadConfigOverrides converts a local Codex TOML file into deterministic
 // command-line overrides. The caller keeps --ignore-user-config enabled and
-// appends ebiii's mandatory security overrides after these values.
+// appends ebi-x's mandatory security overrides after these values.
 func loadConfigOverrides(path string) ([]string, error) {
 	if path == "" {
 		return nil, nil

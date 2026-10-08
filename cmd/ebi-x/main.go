@@ -1,4 +1,4 @@
-// Command ebiii is the entry point for the ebiii Slack bot.
+// Command ebi-x is the entry point for the ebi-x Slack bot.
 package main
 
 import (
@@ -11,13 +11,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/n-seiji/ebiii/internal/codex"
-	"github.com/n-seiji/ebiii/internal/config"
-	"github.com/n-seiji/ebiii/internal/playbook"
-	"github.com/n-seiji/ebiii/internal/policy"
-	"github.com/n-seiji/ebiii/internal/slackbot"
-	"github.com/n-seiji/ebiii/internal/state"
+	"github.com/n-seiji/ebi-x/internal/codex"
+	"github.com/n-seiji/ebi-x/internal/config"
+	"github.com/n-seiji/ebi-x/internal/playbook"
+	"github.com/n-seiji/ebi-x/internal/policy"
+	"github.com/n-seiji/ebi-x/internal/slackbot"
+	"github.com/n-seiji/ebi-x/internal/state"
+	"github.com/n-seiji/ebi-x/internal/workspace"
 )
+
+// checkoutGCInterval is how often idle thread checkouts are looked for.
+const checkoutGCInterval = time.Hour
 
 func main() {
 	cfg, err := config.Load()
@@ -40,24 +44,41 @@ func main() {
 		playbooks = nil
 	}
 
+	workspaces, err := workspace.New(context.Background(), cfg.WorkspaceDir, cfg.CheckoutsDir, cfg.WritableRoots)
+	if err != nil {
+		log.Fatalf("prepare workspaces: %v", err)
+	}
+	for _, repo := range workspaces.Repositories() {
+		log.Printf("work turns use per-thread checkouts of %s", repo)
+	}
+
 	runner := &codex.Runner{
 		Command:               cfg.CodexCommand,
 		Model:                 cfg.CodexModel,
-		ConfigPath:            filepath.Join(cfg.EBIIIHome, ".codex", "config.toml"),
-		DeniedReadPaths:       []string{cfg.MemoryDir},
+		WorkModel:             cfg.CodexWorkModel,
+		ConfigPath:            filepath.Join(cfg.EBIXHome, ".codex", "config.toml"),
+		DeniedReadPaths:       cfg.ProtectedPaths,
+		CodexHome:             cfg.CodexHome,
 		DeveloperInstructions: policy.Instructions(),
 	}
 	bot := slackbot.New(nil, store, runner, slackbot.Config{
 		AllowedUserIDs:             cfg.AllowedUserIDs,
 		AllowedChannelIDs:          cfg.AllowedChannelIDs,
+		AllowAllPublicChannels:     cfg.AllowAllPublicChannels,
 		AllowWorkflows:             cfg.AllowWorkflows,
+		AllowedWorkflowIDs:         cfg.AllowedWorkflowIDs,
 		AdminUserID:                cfg.AdminUserID,
 		WorkspaceDir:               cfg.WorkspaceDir,
 		MemoryDir:                  cfg.MemoryDir,
+		PlaybooksDir:               cfg.PlaybooksDir,
 		CodexTimeout:               cfg.CodexTimeout,
 		ThreadSubscriptionReaction: cfg.ThreadSubscriptionReaction,
 		ThreadSubscriptionTTL:      cfg.ThreadSubscriptionTTL,
 		WritableRoots:              cfg.WritableRoots,
+		MaxParallelWork:            cfg.MaxParallelWork,
+		MaxParallelPlan:            cfg.MaxParallelPlan,
+		SharedWriteChannelIDs:      cfg.SharedWriteChannelIDs,
+		Workspaces:                 workspaces,
 	}, playbooks)
 
 	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -66,6 +87,12 @@ func main() {
 	turnCtx, cancelTurns := context.WithCancel(context.Background())
 	defer cancelTurns()
 	var turns sync.WaitGroup
+
+	gcDone := make(chan struct{})
+	go func() {
+		defer close(gcDone)
+		collectIdleCheckouts(acceptCtx, workspaces, cfg.CheckoutIdleTTL)
+	}()
 
 	socketDone := make(chan error, 1)
 	go func() {
@@ -86,6 +113,8 @@ func main() {
 		stopAccepting()
 	}
 
+	<-gcDone
+
 	drained := make(chan struct{})
 	go func() {
 		turns.Wait()
@@ -99,5 +128,26 @@ func main() {
 		cancelTurns()
 		<-drained
 		log.Printf("shutdown complete after forced cancellation")
+	}
+}
+
+// collectIdleCheckouts removes thread checkouts that have not been used for
+// idle, at startup and then every checkoutGCInterval until ctx is done.
+func collectIdleCheckouts(ctx context.Context, workspaces *workspace.Manager, idle time.Duration) {
+	ticker := time.NewTicker(checkoutGCInterval)
+	defer ticker.Stop()
+	for {
+		removed, err := workspaces.GC(time.Now(), idle)
+		if err != nil && ctx.Err() == nil {
+			log.Printf("remove idle checkouts: %v", err)
+		}
+		for _, threadID := range removed {
+			log.Printf("removed idle checkouts of thread %s", threadID)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }

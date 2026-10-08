@@ -1,6 +1,6 @@
 .env
 /scripts/
-/ebiii
+/ebi-x
 *.exe
 *.test
 *.out
@@ -13,3 +13,4 @@
 
 .codex/
 docs/
+.DS_Store

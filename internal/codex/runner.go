@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,12 +23,26 @@ const (
 	maxStderrBytes = 16 << 20
 	maxMessages    = 100
 	maxFinalBytes  = 128 << 10
+	// maxArgBytes keeps each argument below Linux's 128KiB MAX_ARG_STRLEN.
+	// The deny list is one argument because Codex cannot parse paths as
+	// separate dotted keys.
+	maxArgBytes = 120 << 10
 )
+
+// secretEnvNames are environment variables Codex and the commands it runs
+// never need. They are removed so no shell environment policy can expose them.
+var secretEnvNames = map[string]struct{}{
+	"SLACK_BOT_TOKEN": {},
+	"SLACK_APP_TOKEN": {},
+}
 
 // Runner executes Codex CLI turns.
 type Runner struct {
 	Command string
 	Model   string
+	// WorkModel, when set, replaces Model for workspace-write turns so work
+	// can run on a cheaper model than planning.
+	WorkModel string
 	// ConfigPath is a local project config whose values are forwarded as CLI
 	// overrides while the global user config remains disabled.
 	ConfigPath string
@@ -34,6 +50,9 @@ type Runner struct {
 	// commands must not read or write. They are enforced with a Codex
 	// permission profile, independently of prompt instructions.
 	DeniedReadPaths []string
+	// CodexHome holds Codex credentials, configuration, and the history of
+	// every thread. Each turn denies everything in it except codexHomeVisible.
+	CodexHome string
 	// DeveloperInstructions is injected into each session with the
 	// "developer" role, which outranks user messages and AGENTS.md in the
 	// model's chain of command. Codex stores it once per thread, so passing
@@ -53,7 +72,7 @@ type TurnResult struct {
 func (r *Runner) Run(
 	ctx context.Context,
 	threadID, sandbox, cwd string,
-	writableRoots []string,
+	writableRoots, deniedPaths []string,
 	prompt string,
 	onThreadStarted func(id string) error,
 ) (*TurnResult, error) {
@@ -61,11 +80,23 @@ func (r *Runner) Run(
 	if err != nil {
 		return nil, err
 	}
-	args := buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, r.DeniedReadPaths, r.Model, r.DeveloperInstructions, configOverrides)
+	homeDenied, err := codexHomeDenied(r.CodexHome)
+	if err != nil {
+		return nil, err
+	}
+	denied := append(append(append([]string(nil), r.DeniedReadPaths...), homeDenied...), deniedPaths...)
+	args := buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, denied, r.modelFor(sandbox), r.DeveloperInstructions, configOverrides)
+	for _, arg := range args {
+		if len(arg) > maxArgBytes {
+			// Running with a truncated deny list would expose protected paths.
+			return nil, fmt.Errorf("codex exec: argument of %d bytes exceeds %d; remove unused thread directories under data/workspace", len(arg), maxArgBytes)
+		}
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, r.Command, args...)
+	cmd.Env = filterEnv(os.Environ())
 	cmd.Stdin = strings.NewReader(prompt)
 
 	stdout, err := cmd.StdoutPipe()
@@ -107,6 +138,60 @@ func (r *Runner) Run(
 	return result, nil
 }
 
+// codexHomeVisible are the Codex home entries sandboxed commands must still
+// read: skills and plugins the model opens itself, the helper binaries Codex
+// puts on PATH, and the shell snapshots it sources.
+var codexHomeVisible = map[string]struct{}{
+	"skills":          {},
+	"plugins":         {},
+	"tmp":             {},
+	".tmp":            {},
+	"shell_snapshots": {},
+}
+
+// codexHomeDenied lists the entries of home to hide. Codex adds state files
+// across versions, so everything not known to be needed is denied rather
+// than naming the sensitive ones.
+func codexHomeDenied(home string) ([]string, error) {
+	if home == "" {
+		return nil, nil
+	}
+	entries, err := os.ReadDir(home)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("codex exec: list Codex home: %w", err)
+	}
+	var denied []string
+	for _, entry := range entries {
+		if _, visible := codexHomeVisible[entry.Name()]; !visible {
+			denied = append(denied, filepath.Join(home, entry.Name()))
+		}
+	}
+	return denied, nil
+}
+
+// filterEnv returns env without the Slack credentials.
+func filterEnv(env []string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if _, secret := secretEnvNames[name]; secret {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+func (r *Runner) modelFor(sandbox string) string {
+	if sandbox == "workspace-write" && r.WorkModel != "" {
+		return r.WorkModel
+	}
+	return r.Model
+}
+
 func buildArgs(threadID, sandbox, cwd string, writableRoots, deniedReadPaths []string, model, developerInstructions string) []string {
 	return buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, deniedReadPaths, model, developerInstructions, nil)
 }
@@ -129,24 +214,24 @@ func buildArgsWithOverrides(threadID, sandbox, cwd string, writableRoots, denied
 	}
 	// Security invariants come after local values so local configuration can
 	// never weaken them.
-	args = append(args, "-c", `approval_policy="never"`, "-c", `default_permissions="ebiii"`)
+	args = append(args, "-c", `approval_policy="never"`, "-c", `default_permissions="ebi-x"`)
 	parentProfile := ":read-only"
 	if sandbox == "workspace-write" {
 		parentProfile = ":workspace"
 	}
-	args = append(args, "-c", "permissions.ebiii.extends="+strconv.Quote(parentProfile))
+	args = append(args, "-c", "permissions.ebi-x.extends="+strconv.Quote(parentProfile))
 	if len(deniedReadPaths) > 0 {
 		entries := make([]string, 0, len(deniedReadPaths))
 		for _, path := range deniedReadPaths {
 			entries = append(entries, strconv.Quote(path)+`="deny"`)
 		}
-		args = append(args, "-c", "permissions.ebiii.filesystem={"+strings.Join(entries, ",")+"}")
+		args = append(args, "-c", "permissions.ebi-x.filesystem={"+strings.Join(entries, ",")+"}")
 	}
 	if developerInstructions != "" {
 		args = append(args, "-c", "developer_instructions="+strconv.Quote(developerInstructions))
 	}
 	if sandbox == "workspace-write" || sandbox == "read-only-network" {
-		args = append(args, "-c", "permissions.ebiii.network.enabled=true")
+		args = append(args, "-c", "permissions.ebi-x.network.enabled=true")
 	}
 	if sandbox == "workspace-write" {
 		for _, root := range writableRoots {

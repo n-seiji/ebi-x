@@ -33,9 +33,9 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
-				"-c", `default_permissions="ebiii"`,
-				"-c", `permissions.ebiii.extends=":read-only"`,
-				"-c", `permissions.ebiii.filesystem={"/Users/example/github.com/repo/memory"="deny"}`,
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":read-only"`,
+				"-c", `permissions.ebi-x.filesystem={"/Users/example/github.com/repo/memory"="deny"}`,
 				"-C", "/work", "-",
 			},
 		},
@@ -48,9 +48,9 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
-				"-c", `default_permissions="ebiii"`,
-				"-c", `permissions.ebiii.extends=":read-only"`,
-				"-c", `permissions.ebiii.filesystem={"/private/memory"="deny"}`,
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":read-only"`,
+				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
 				"-c", `developer_instructions="絶対ルール\n\"quoted\""`,
 				"-C", "/work", "-",
 			},
@@ -65,10 +65,10 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
-				"-c", `default_permissions="ebiii"`,
-				"-c", `permissions.ebiii.extends=":workspace"`,
-				"-c", `permissions.ebiii.filesystem={"/private/memory"="deny"}`,
-				"-c", "permissions.ebiii.network.enabled=true",
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":workspace"`,
+				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
+				"-c", "permissions.ebi-x.network.enabled=true",
 				"--add-dir", "/extra",
 				"--add-dir", `/a"b`,
 				"-m", "gpt-test", "-C", "/work", "-",
@@ -83,10 +83,10 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
-				"-c", `default_permissions="ebiii"`,
-				"-c", `permissions.ebiii.extends=":workspace"`,
-				"-c", `permissions.ebiii.filesystem={"/private/memory"="deny"}`,
-				"-c", "permissions.ebiii.network.enabled=true",
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":workspace"`,
+				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
+				"-c", "permissions.ebi-x.network.enabled=true",
 				"--add-dir", "/a dir",
 				"--add-dir", "/b/c",
 				"--add-dir", "/d e/f",
@@ -101,10 +101,10 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
-				"-c", `default_permissions="ebiii"`,
-				"-c", `permissions.ebiii.extends=":workspace"`,
-				"-c", `permissions.ebiii.filesystem={"/private/memory"="deny"}`,
-				"-c", "permissions.ebiii.network.enabled=true",
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":workspace"`,
+				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
+				"-c", "permissions.ebi-x.network.enabled=true",
 				"-C", "/work", "-",
 			},
 		},
@@ -116,10 +116,10 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
-				"-c", `default_permissions="ebiii"`,
-				"-c", `permissions.ebiii.extends=":read-only"`,
-				"-c", `permissions.ebiii.filesystem={"/private/memory"="deny"}`,
-				"-c", "permissions.ebiii.network.enabled=true",
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":read-only"`,
+				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
+				"-c", "permissions.ebi-x.network.enabled=true",
 				"-C", "/work", "-",
 			},
 		},
@@ -132,9 +132,9 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
-				"-c", `default_permissions="ebiii"`,
-				"-c", `permissions.ebiii.extends=":read-only"`,
-				"-c", `permissions.ebiii.filesystem={"/private/memory"="deny"}`,
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":read-only"`,
+				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
 				"-C", "/work", "-",
 			},
 		},
@@ -149,10 +149,10 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"exec", "resume", "thread-1", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
-				"-c", `default_permissions="ebiii"`,
-				"-c", `permissions.ebiii.extends=":workspace"`,
-				"-c", `permissions.ebiii.filesystem={"/private/memory"="deny"}`,
-				"-c", "permissions.ebiii.network.enabled=true",
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":workspace"`,
+				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
+				"-c", "permissions.ebi-x.network.enabled=true",
 				"--add-dir", "/extra",
 				"-m", "gpt-test", "-",
 			},
@@ -178,7 +178,7 @@ func TestLoadConfigOverrides(t *testing.T) {
 command = "npx"
 args = ["-y", "@toolbox-sdk/server"]
 enabled = true
-env = { BIGQUERY_PROJECT = "miive-prod-data" }
+env = { BIGQUERY_PROJECT = "example-project" }
 enabled_tools = ["list_dataset_ids", "get_table_info"]
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -194,7 +194,7 @@ enabled_tools = ["list_dataset_ids", "get_table_info"]
 		`mcp_servers.bigquery.command="npx"`,
 		`mcp_servers.bigquery.enabled=true`,
 		`mcp_servers.bigquery.enabled_tools=["list_dataset_ids","get_table_info"]`,
-		`mcp_servers.bigquery.env.BIGQUERY_PROJECT="miive-prod-data"`,
+		`mcp_servers.bigquery.env.BIGQUERY_PROJECT="example-project"`,
 		`model="local-model"`,
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -271,7 +271,7 @@ profile = "unsafe"
 sandbox_mode = "danger-full-access"
 approval_policy = "on-request"
 
-[permissions.ebiii.filesystem]
+[permissions.ebi-x.filesystem]
 "/private/memory" = "read"
 
 [mcp_servers.example]
@@ -327,9 +327,9 @@ func TestBuildArgsWithOverridesKeepsSecuritySettingsLast(t *testing.T) {
 		`default_permissions=":workspace"`,
 		`mcp_servers.example.enabled=true`,
 		`approval_policy="never"`,
-		`default_permissions="ebiii"`,
-		`permissions.ebiii.extends=":read-only"`,
-		`permissions.ebiii.filesystem={"/private/memory"="deny"}`,
+		`default_permissions="ebi-x"`,
+		`permissions.ebi-x.extends=":read-only"`,
+		`permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
 	}
 	var gotOverrides []string
 	for i := 0; i+1 < len(got); i++ {
@@ -481,7 +481,7 @@ printf '{"type":"turn.completed"}\n'
 	var callbackIDs []string
 	runner := &Runner{Command: script}
 	result, err := runner.Run(
-		context.Background(), "", "read-only", dir, nil, "hello from stdin",
+		context.Background(), "", "read-only", dir, nil, nil, "hello from stdin",
 		func(id string) error {
 			callbackIDs = append(callbackIDs, id)
 			return nil
@@ -518,7 +518,7 @@ while :; do :; done
 	runner := &Runner{Command: script}
 	start := time.Now()
 	_, err := runner.Run(
-		context.Background(), "", "read-only", dir, nil, "prompt",
+		context.Background(), "", "read-only", dir, nil, nil, "prompt",
 		func(string) error { return errors.New("persist failed") },
 	)
 	if err == nil || !strings.Contains(err.Error(), "persist failed") {
@@ -543,7 +543,7 @@ exit 1
 	}
 
 	runner := &Runner{Command: script}
-	result, err := runner.Run(context.Background(), "", "read-only", dir, nil, "prompt", nil)
+	result, err := runner.Run(context.Background(), "", "read-only", dir, nil, nil, "prompt", nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v, want semantic failure in TurnResult", err)
 	}
@@ -566,7 +566,7 @@ while :; do :; done
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	runner := &Runner{Command: script}
-	_, err := runner.Run(ctx, "", "read-only", dir, nil, "prompt", nil)
+	_, err := runner.Run(ctx, "", "read-only", dir, nil, nil, "prompt", nil)
 	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Run() error = %v, want deadline exceeded", err)
 	}
@@ -580,5 +580,97 @@ func TestLimitedBufferTruncates(t *testing.T) {
 	}
 	if n != 6 || buffer.String() != "abcd" {
 		t.Fatalf("write = (%d, %q), want (6, %q)", n, buffer.String(), "abcd")
+	}
+}
+
+func TestRunnerUsesWorkModelOnlyForWorkTurns(t *testing.T) {
+	runner := &Runner{Model: "plan-model", WorkModel: "work-model"}
+	for sandbox, want := range map[string]string{
+		"read-only-network": "plan-model",
+		"read-only":         "plan-model",
+		"workspace-write":   "work-model",
+	} {
+		if got := runner.modelFor(sandbox); got != want {
+			t.Errorf("modelFor(%q) = %q, want %q", sandbox, got, want)
+		}
+	}
+	runner.WorkModel = ""
+	if got := runner.modelFor("workspace-write"); got != "plan-model" {
+		t.Errorf("modelFor(workspace-write) without WorkModel = %q, want plan-model", got)
+	}
+}
+
+func TestRunHidesSlackTokensAndPassesDeniedPaths(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "codex")
+	envFile := filepath.Join(dir, "env")
+	argsFile := filepath.Join(dir, "args")
+	content := `#!/bin/sh
+cat >/dev/null
+env > "` + envFile + `"
+printf '%s\n' "$@" > "` + argsFile + `"
+printf '{"type":"turn.completed"}\n'
+`
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	t.Setenv("SLACK_BOT_TOKEN", "xoxb-secret")
+	t.Setenv("SLACK_APP_TOKEN", "xapp-secret")
+	t.Setenv("EBIX_TEST_VISIBLE", "kept")
+
+	runner := &Runner{Command: script, DeniedReadPaths: []string{"/protected"}}
+	if _, err := runner.Run(context.Background(), "", "read-only", dir, nil, []string{"/other-thread"}, "prompt", nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	env, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(env), "secret") || !strings.Contains(string(env), "EBIX_TEST_VISIBLE=kept") {
+		t.Fatalf("codex environment = %q, want Slack tokens removed and others kept", env)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), `permissions.ebi-x.filesystem={"/protected"="deny","/other-thread"="deny"}`) {
+		t.Fatalf("codex args = %q, want both denied paths", args)
+	}
+}
+
+func TestRunRejectsOversizedDenyList(t *testing.T) {
+	denied := make([]string, 0, 3000)
+	for i := range 3000 {
+		denied = append(denied, fmt.Sprintf("/data/workspace/C0123456789-%d.000000", i))
+	}
+	runner := &Runner{Command: "/nonexistent/codex"}
+	_, err := runner.Run(context.Background(), "", "read-only", t.TempDir(), nil, denied, "prompt", nil)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("Run() error = %v, want oversized argument error", err)
+	}
+}
+
+func TestCodexHomeDeniedKeepsOnlyVisibleEntries(t *testing.T) {
+	home := t.TempDir()
+	for _, name := range []string{"auth.json", "codex.sqlite", "config.toml", "sessions", "skills", "tmp", "shell_snapshots"} {
+		if err := os.WriteFile(filepath.Join(home, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := codexHomeDenied(home)
+	if err != nil {
+		t.Fatalf("codexHomeDenied() error = %v", err)
+	}
+	want := []string{
+		filepath.Join(home, "auth.json"),
+		filepath.Join(home, "codex.sqlite"),
+		filepath.Join(home, "config.toml"),
+		filepath.Join(home, "sessions"),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("codexHomeDenied() = %v, want %v", got, want)
+	}
+	if got, err := codexHomeDenied(filepath.Join(home, "missing")); err != nil || got != nil {
+		t.Fatalf("codexHomeDenied(missing) = %v, %v; want nil, nil", got, err)
 	}
 }

@@ -1,4 +1,4 @@
-module github.com/n-seiji/ebiii
+module github.com/n-seiji/ebi-x
 
 go 1.27
 

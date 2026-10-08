@@ -12,6 +12,7 @@ const (
 	globalMemoryHeading        = "## 全体メモリ追記"
 	channelMemoryHeading       = "## チャンネルメモリ追記"
 	forbiddenUserMemoryHeading = "## ユーザーメモリ追記"
+	attachmentsHeading         = "## 添付ファイル"
 )
 
 // MemoryAppends contains optional entries proposed by a work turn. The bot
@@ -25,25 +26,13 @@ type MemoryAppends struct {
 func ParsePlan(text string) (string, string, error) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	var policyIndexes, instructionIndexes []int
-	inFence := false
-	var fence byte
-	var fenceLen int
+	prose := proseLines(lines)
 
 	for i, line := range lines {
+		if !prose[i] {
+			continue
+		}
 		trimmed := strings.TrimSpace(line)
-		if marker, length, ok := fenceMarker(trimmed); ok {
-			if !inFence {
-				inFence = true
-				fence = marker
-				fenceLen = length
-			} else if marker == fence && length >= fenceLen {
-				inFence = false
-			}
-			continue
-		}
-		if inFence {
-			continue
-		}
 		switch trimmed {
 		case policyHeading:
 			policyIndexes = append(policyIndexes, i)
@@ -99,25 +88,13 @@ func SplitMemoryAppends(text string) (rest string, appends MemoryAppends, valid 
 	}
 	var sections []section
 	firstMemoryIndex := -1
-	inFence := false
-	var fence byte
-	var fenceLen int
+	prose := proseLines(lines)
 
 	for i, line := range lines {
+		if !prose[i] {
+			continue
+		}
 		trimmed := strings.TrimSpace(line)
-		if marker, length, ok := fenceMarker(trimmed); ok {
-			if !inFence {
-				inFence = true
-				fence = marker
-				fenceLen = length
-			} else if marker == fence && length >= fenceLen {
-				inFence = false
-			}
-			continue
-		}
-		if inFence {
-			continue
-		}
 		scope := -1
 		switch trimmed {
 		case memoryHeading, globalMemoryHeading:
@@ -168,6 +145,91 @@ func SplitMemoryAppend(text string) (rest, entry string) {
 		return text, ""
 	}
 	return rest, appends.Global
+}
+
+// SplitAttachments removes the attachment section from a work response. The
+// section is its heading followed by bullet lines, one file path each. It
+// ends at the first other line, so text or memory sections after it stay in
+// place. It must occur at most once. Malformed output yields no attachments
+// and reports valid as false, so the bot can tell the user instead of
+// guessing which files were meant.
+func SplitAttachments(text string) (rest string, paths []string, valid bool) {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	prose := proseLines(lines)
+	var starts []int
+	for i, line := range lines {
+		if prose[i] && strings.TrimSpace(line) == attachmentsHeading {
+			starts = append(starts, i)
+		}
+	}
+	if len(starts) == 0 {
+		return text, nil, true
+	}
+	start := starts[0]
+	if len(starts) > 1 {
+		// Which list is meant is unclear, so none of it is shown or sent.
+		return strings.TrimSpace(strings.Join(lines[:start], "\n")), nil, false
+	}
+
+	valid = true
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		item, ok := strings.CutPrefix(trimmed, "- ")
+		if !prose[i] || !ok {
+			// A section with no bullets before other text is malformed; a
+			// heading right after it only means the list is empty.
+			if len(paths) == 0 && valid && !(prose[i] && strings.HasPrefix(trimmed, "#")) {
+				valid = false
+			}
+			end = i
+			break
+		}
+		item = strings.TrimSpace(item)
+		if unquoted, ok := strings.CutPrefix(item, "`"); ok {
+			item, ok = strings.CutSuffix(unquoted, "`")
+			if !ok {
+				valid = false
+			}
+		}
+		if item == "" {
+			valid = false
+		}
+		paths = append(paths, item)
+	}
+	kept := append(append([]string(nil), lines[:start]...), lines[end:]...)
+	rest = strings.TrimSpace(strings.Join(kept, "\n"))
+	if !valid {
+		return rest, nil, false
+	}
+	return rest, paths, true
+}
+
+// proseLines reports, for each line, whether it is outside fenced code
+// blocks and is not a fence line itself, so headings quoted in code are not
+// taken as output-contract sections.
+func proseLines(lines []string) []bool {
+	prose := make([]bool, len(lines))
+	inFence := false
+	var fence byte
+	var fenceLen int
+	for i, line := range lines {
+		if marker, length, ok := fenceMarker(strings.TrimSpace(line)); ok {
+			if !inFence {
+				inFence = true
+				fence = marker
+				fenceLen = length
+			} else if marker == fence && length >= fenceLen {
+				inFence = false
+			}
+			continue
+		}
+		prose[i] = !inFence
+	}
+	return prose
 }
 
 // fenceMarker reports the fence character and the number of times it is

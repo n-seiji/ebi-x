@@ -87,7 +87,7 @@ func ScopeDir(root string, scope Scope, id string) (string, error) {
 	case ScopeGlobal:
 		return root, nil
 	case ScopeChannel:
-		if !validSlackID(id, "CGD") {
+		if !ValidChannelID(id) {
 			return "", fmt.Errorf("invalid Slack channel ID %q", id)
 		}
 		return filepath.Join(root, "channels", id), nil
@@ -166,6 +166,12 @@ func truncateTailRunes(text string, limit int) string {
 		start++
 	}
 	return text[start:]
+}
+
+// ValidChannelID reports whether id looks like a Slack conversation ID
+// (public channel, private channel, or DM).
+func ValidChannelID(id string) bool {
+	return validSlackID(id, "CGD")
 }
 
 func validSlackID(id, prefixes string) bool {

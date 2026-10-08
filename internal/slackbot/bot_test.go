@@ -6,17 +6,21 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/n-seiji/ebiii/internal/codex"
-	"github.com/n-seiji/ebiii/internal/memory"
-	"github.com/n-seiji/ebiii/internal/state"
+	"github.com/n-seiji/ebi-x/internal/codex"
+	"github.com/n-seiji/ebi-x/internal/memory"
+	"github.com/n-seiji/ebi-x/internal/slackfmt"
+	"github.com/n-seiji/ebi-x/internal/state"
+	"github.com/n-seiji/ebi-x/internal/workspace"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 )
@@ -145,6 +149,47 @@ type fakeSlack struct {
 	reactionChannel   string
 	reactionTimestamp string
 	reactionName      string
+	publicChannels    map[string]bool
+	channelErr        error
+	channelCalls      int
+	uploads           []fakeUpload
+	uploadErrs        []error
+}
+
+type fakeUpload struct {
+	channel  string
+	threadTS string
+	filename string
+	content  string
+}
+
+func (s *fakeSlack) UploadFile(_ context.Context, channel, threadTS, filename string, size int64, content io.Reader) error {
+	data, err := io.ReadAll(content)
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) != size {
+		return errors.New("size does not match content")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, slackCall{kind: "upload", text: filename})
+	if len(s.uploadErrs) > 0 {
+		err := s.uploadErrs[0]
+		s.uploadErrs = s.uploadErrs[1:]
+		if err != nil {
+			return err
+		}
+	}
+	s.uploads = append(s.uploads, fakeUpload{channel: channel, threadTS: threadTS, filename: filename, content: string(data)})
+	return nil
+}
+
+func (s *fakeSlack) IsPublicChannel(_ context.Context, channel string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.channelCalls++
+	return s.publicChannels[channel], s.channelErr
 }
 
 func (s *fakeSlack) PostMessage(_ context.Context, _, _, text string) (string, error) {
@@ -217,11 +262,12 @@ type fakeRunner struct {
 	sandboxes []string
 	cwds      []string
 	roots     [][]string
+	denied    [][]string
 	prompts   []string
 	onRun     func(call int)
 }
 
-func (r *fakeRunner) Run(_ context.Context, threadID, sandbox, cwd string, roots []string, prompt string, callback func(string) error) (*codex.TurnResult, error) {
+func (r *fakeRunner) Run(_ context.Context, threadID, sandbox, cwd string, roots, denied []string, prompt string, callback func(string) error) (*codex.TurnResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
@@ -232,6 +278,7 @@ func (r *fakeRunner) Run(_ context.Context, threadID, sandbox, cwd string, roots
 	r.sandboxes = append(r.sandboxes, sandbox)
 	r.cwds = append(r.cwds, cwd)
 	r.roots = append(r.roots, roots)
+	r.denied = append(r.denied, denied)
 	r.prompts = append(r.prompts, prompt)
 	if callback != nil {
 		if err := callback("plan-thread"); err != nil {
@@ -246,11 +293,13 @@ func (r *fakeRunner) Run(_ context.Context, threadID, sandbox, cwd string, roots
 func newTestBot(t *testing.T, store *fakeStore, api *fakeSlack, runner *fakeRunner) *Bot {
 	t.Helper()
 	return New(api, store, runner, Config{
-		AllowedUserIDs: []string{"U1"},
-		WorkspaceDir:   "/repo/workspace",
-		MemoryDir:      filepath.Join(t.TempDir(), "memory"),
-		CodexTimeout:   time.Minute,
-		BotUserID:      "UBOT",
+		AllowedUserIDs:        []string{"U1"},
+		AllowedChannelIDs:     []string{"C1"},
+		SharedWriteChannelIDs: []string{"C1"},
+		WorkspaceDir:          "/repo/workspace",
+		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:          time.Minute,
+		BotUserID:             "UBOT",
 	}, nil)
 }
 
@@ -277,6 +326,7 @@ func messageReply(user, timestamp, text string) *slackevents.MessageEvent {
 
 func configureActiveSubscription(bot *Bot, store *fakeStore, now time.Time) {
 	bot.allowedChannels = makeSet([]string{"C1"})
+	bot.allowedUsers = makeSet([]string{"U1", "U2", "U3"})
 	bot.now = func() time.Time { return now }
 	if store.subscriptions == nil {
 		store.subscriptions = make(map[string]state.Subscription)
@@ -284,6 +334,57 @@ func configureActiveSubscription(bot *Bot, store *fakeStore, now time.Time) {
 	store.subscriptions["C1:100.1"] = state.Subscription{
 		StartedAt: now.Add(-time.Hour),
 		ExpiresAt: now.Add(time.Hour),
+	}
+}
+
+func TestAllowAllPublicChannelsMention(t *testing.T) {
+	tests := []struct {
+		name       string
+		channel    string
+		public     map[string]bool
+		channelErr error
+		wantAllow  bool
+		wantLookup int
+	}{
+		{name: "public channel", channel: "C1", public: map[string]bool{"C1": true}, wantAllow: true, wantLookup: 1},
+		{name: "private channel", channel: "C1", public: map[string]bool{"C1": false}, wantLookup: 1},
+		{name: "lookup error", channel: "C1", public: map[string]bool{"C1": true}, channelErr: errors.New("missing_scope"), wantLookup: 1},
+		{name: "DM", channel: "D1"},
+		{name: "group", channel: "G1"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &fakeStore{claim: true}
+			api := &fakeSlack{publicChannels: test.public, channelErr: test.channelErr}
+			bot := newTestBot(t, store, api, &fakeRunner{})
+			bot.config.AllowAllPublicChannels = true
+			bot.allowedChannels = makeSet([]string{"C2"})
+
+			if got := bot.mentionChannelAllowed(context.Background(), test.channel); got != test.wantAllow {
+				t.Fatalf("mentionChannelAllowed(%q) = %v, want %v", test.channel, got, test.wantAllow)
+			}
+			if api.channelCalls != test.wantLookup {
+				t.Fatalf("channel lookups = %d, want %d", api.channelCalls, test.wantLookup)
+			}
+		})
+	}
+}
+
+func TestAllowAllPublicChannelsRejectsMentionWithForbidden(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	bot := newTestBot(t, store, api, &fakeRunner{})
+	bot.config.AllowAllPublicChannels = true
+	event := mention()
+	event.Channel = "D1"
+
+	bot.HandleMention(context.Background(), event)
+
+	if store.claimCalls != 0 {
+		t.Fatalf("ClaimEvent called %d times, want 0", store.claimCalls)
+	}
+	if got := strings.Join(api.postTexts, "|"); got != "403 forbidden. @seiji に確認してください。" {
+		t.Fatalf("posts = %q, want forbidden response", got)
 	}
 }
 
@@ -335,6 +436,7 @@ func TestAllowedWorkflowMentionIsHandled(t *testing.T) {
 	}}}}
 	bot := newTestBot(t, store, api, runner)
 	bot.config.AllowWorkflows = true
+	bot.allowedWorkflows = makeSet([]string{"Wf0BSM19MCDT"})
 	event := mention()
 	event.User = "UWORKFLOW"
 	event.BotID = "BWORKFLOW"
@@ -391,6 +493,7 @@ func TestWorkflowAuthorizationBoundaries(t *testing.T) {
 		{name: "wrong prefix", enabled: true, workflowID: "Fx0BSM19MCDT", channel: "C1"},
 		{name: "invalid characters", enabled: true, workflowID: "WfBAD-id", channel: "C1"},
 		{name: "disallowed channel", enabled: true, workflowID: "Wf0BSM19MCDT", channel: "C2"},
+		{name: "workflow not in allowlist", enabled: true, workflowID: "Wf0OTHER123", channel: "C1"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -398,6 +501,7 @@ func TestWorkflowAuthorizationBoundaries(t *testing.T) {
 			api := &fakeSlack{}
 			bot := newTestBot(t, store, api, &fakeRunner{})
 			bot.config.AllowWorkflows = test.enabled
+			bot.allowedWorkflows = makeSet([]string{"Wf0BSM19MCDT"})
 			bot.allowedChannels = makeSet([]string{"C1"})
 			event := mention()
 			event.User = "UWORKFLOW"
@@ -761,6 +865,109 @@ func TestWebAPIHasReactionUsesReactionsGet(t *testing.T) {
 	}
 }
 
+func TestWebAPIPostMessageSendsMarkdownBlock(t *testing.T) {
+	const text = "#### 見出し\n\n**太字** と [ラベル](https://example.test/a.ts)"
+	var form url.Values
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/chat.postMessage" {
+			t.Errorf("request path = %q, want /chat.postMessage", r.URL.Path)
+		}
+		if err := r.ParseForm(); err != nil {
+			return nil, err
+		}
+		form = r.Form
+		return postMessageResponse(r, `{"ok":true,"ts":"100.2"}`), nil
+	})}
+
+	api := &webAPI{client: slack.New("token", slack.OptionAPIURL("https://slack.test/"), slack.OptionHTTPClient(httpClient))}
+	timestamp, err := api.PostMessage(context.Background(), "C1", "100.1", text)
+	if err != nil {
+		t.Fatalf("PostMessage() error = %v, want nil", err)
+	}
+	if timestamp != "100.2" {
+		t.Fatalf("PostMessage() timestamp = %q, want 100.2", timestamp)
+	}
+
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(form.Get("blocks")), &blocks); err != nil {
+		t.Fatalf("blocks field %q is not JSON: %v", form.Get("blocks"), err)
+	}
+	if len(blocks) != 1 || blocks[0].Type != "markdown" {
+		t.Fatalf("blocks = %+v, want a single markdown block", blocks)
+	}
+	if blocks[0].Text != text {
+		t.Fatalf("markdown block text = %q, want the Markdown unchanged", blocks[0].Text)
+	}
+	// Slack shows the text field in notification previews only, so it carries
+	// the same answer without the Markdown syntax.
+	if want := slackfmt.PlainText(text); form.Get("text") != want {
+		t.Fatalf("text field = %q, want the plain-text fallback %q", form.Get("text"), want)
+	}
+	if form.Get("thread_ts") != "100.1" {
+		t.Fatalf("thread_ts = %q, want 100.1", form.Get("thread_ts"))
+	}
+}
+
+func TestWebAPIPostMessageRetriesWithoutBlocksWhenSlackRejectsThem(t *testing.T) {
+	var forms []url.Values
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if err := r.ParseForm(); err != nil {
+			return nil, err
+		}
+		forms = append(forms, r.Form)
+		if len(forms) == 1 {
+			return postMessageResponse(r, `{"ok":false,"error":"invalid_blocks"}`), nil
+		}
+		return postMessageResponse(r, `{"ok":true,"ts":"100.2"}`), nil
+	})}
+
+	api := &webAPI{client: slack.New("token", slack.OptionAPIURL("https://slack.test/"), slack.OptionHTTPClient(httpClient))}
+	timestamp, err := api.PostMessage(context.Background(), "C1", "100.1", "# 見出し")
+	if err != nil {
+		t.Fatalf("PostMessage() error = %v, want the retry to succeed", err)
+	}
+	if timestamp != "100.2" {
+		t.Fatalf("PostMessage() timestamp = %q, want 100.2", timestamp)
+	}
+	if len(forms) != 2 {
+		t.Fatalf("requests = %d, want 2", len(forms))
+	}
+	if forms[1].Get("blocks") != "" {
+		t.Fatalf("retry sent blocks = %q, want none", forms[1].Get("blocks"))
+	}
+	if forms[1].Get("text") != "見出し" {
+		t.Fatalf("retry text = %q, want the plain-text fallback", forms[1].Get("text"))
+	}
+}
+
+func TestWebAPIPostMessageKeepsOtherErrors(t *testing.T) {
+	var requests int
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests++
+		return postMessageResponse(r, `{"ok":false,"error":"channel_not_found"}`), nil
+	})}
+
+	api := &webAPI{client: slack.New("token", slack.OptionAPIURL("https://slack.test/"), slack.OptionHTTPClient(httpClient))}
+	if _, err := api.PostMessage(context.Background(), "C1", "100.1", "hello"); err == nil {
+		t.Fatal("PostMessage() error = nil, want channel_not_found")
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1: only a rejected block payload is retried", requests)
+	}
+}
+
+func postMessageResponse(r *http.Request, body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    r,
+	}
+}
+
 func TestAllowedActiveMessageReplyRunsPlanningInSharedThreadSession(t *testing.T) {
 	now := time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
 	store := &fakeStore{claim: true}
@@ -774,7 +981,7 @@ func TestAllowedActiveMessageReplyRunsPlanningInSharedThreadSession(t *testing.T
 	if runner.calls != 1 {
 		t.Fatalf("runner calls = %d, want 1", runner.calls)
 	}
-	if got := store.threadKeys; !reflect.DeepEqual(got, []string{"v3:C1:100.1"}) {
+	if got := store.threadKeys; !reflect.DeepEqual(got, []string{"v4:C1:100.1"}) {
 		t.Fatalf("thread keys = %v, want v3 channel/thread session", got)
 	}
 	if len(runner.prompts) != 1 {
@@ -799,6 +1006,26 @@ func TestAllowedActiveMessageReplyRunsPlanningInSharedThreadSession(t *testing.T
 	wantSubscription := state.Subscription{StartedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour)}
 	if got, ok := store.GetSubscription("C1:100.1"); !ok || got != wantSubscription {
 		t.Fatalf("subscription after reply = (%+v, %v), want unchanged (%+v, true)", got, ok, wantSubscription)
+	}
+}
+
+func TestAllowAllPublicChannelsActiveMessageReplyRunsPlanning(t *testing.T) {
+	now := time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	runner := successfulPlanRunner()
+	bot := newTestBot(t, store, api, runner)
+	configureActiveSubscription(bot, store, now)
+	bot.allowedChannels = nil
+	bot.config.AllowAllPublicChannels = true
+
+	bot.HandleMessage(context.Background(), messageReply("U2", "200.2", "please continue"))
+
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want 1", runner.calls)
+	}
+	if api.channelCalls != 0 {
+		t.Fatalf("channel lookups = %d, want 0", api.channelCalls)
 	}
 }
 
@@ -834,7 +1061,7 @@ func TestMessageRepliesFromMultipleAuthorsShareOneSession(t *testing.T) {
 	bot.HandleMessage(context.Background(), messageReply("U2", "200.2", "first reply"))
 	bot.HandleMessage(context.Background(), messageReply("U3", "300.3", "second reply"))
 
-	if got := store.threadKeys; !reflect.DeepEqual(got, []string{"v3:C1:100.1", "v3:C1:100.1"}) {
+	if got := store.threadKeys; !reflect.DeepEqual(got, []string{"v4:C1:100.1", "v4:C1:100.1"}) {
 		t.Fatalf("thread keys = %v, want one shared Slack thread key", got)
 	}
 	if got := runner.threadIDs; !reflect.DeepEqual(got, []string{"", "plan-thread"}) {
@@ -947,7 +1174,7 @@ func TestExpiredMessageReplySubscriptionIsDeletedAndIgnored(t *testing.T) {
 	bot.allowedChannels = makeSet([]string{"C1"})
 	bot.now = func() time.Time { return now }
 
-	bot.HandleMessage(context.Background(), messageReply("U2", "200.2", "expired"))
+	bot.HandleMessage(context.Background(), messageReply("U1", "200.2", "expired"))
 
 	if !reflect.DeepEqual(store.subscriptionDeletes, []string{"C1:100.1"}) {
 		t.Fatalf("subscription deletes = %v, want expired thread", store.subscriptionDeletes)
@@ -997,6 +1224,7 @@ func TestMessageReplyExpiryCheckDoesNotDeleteConcurrentRenewal(t *testing.T) {
 	}()
 	runner := successfulPlanRunner()
 	bot := New(&fakeSlack{}, store, runner, Config{
+		AllowedUserIDs:    []string{"U2"},
 		AllowedChannelIDs: []string{"C1"},
 		WorkspaceDir:      "/repo/workspace",
 		MemoryDir:         filepath.Join(t.TempDir(), "memory"),
@@ -1272,7 +1500,7 @@ func TestPlanSessionsAreSharedBySlackThread(t *testing.T) {
 		User: "U2", Channel: "C1", TimeStamp: "200.2", ThreadTimeStamp: "100.1", Text: "<@UBOT> do it",
 	})
 
-	want := []string{"v3:C1:100.1", "v3:C1:100.1"}
+	want := []string{"v4:C1:100.1", "v4:C1:100.1"}
 	if !reflect.DeepEqual(store.threadKeys, want) {
 		t.Fatalf("thread keys = %v, want %v", store.threadKeys, want)
 	}
@@ -1322,7 +1550,7 @@ func TestFirstThreadMentionReceivesEarlierSlackMessages(t *testing.T) {
 func TestExistingPlanSessionSkipsSlackThreadFetch(t *testing.T) {
 	store := &fakeStore{
 		claim:     true,
-		threadIDs: map[string]string{"v3:C1:100.1": "existing-thread"},
+		threadIDs: map[string]string{"v4:C1:100.1": "existing-thread"},
 	}
 	api := &fakeSlack{threadErr: errors.New("must not be called")}
 	runner := &fakeRunner{responses: []runnerResponse{{result: &codex.TurnResult{
@@ -1425,13 +1653,17 @@ func TestWorkTurnReceivesWritableRootsAndPlanTurnDoesNot(t *testing.T) {
 		{result: &codex.TurnResult{Completed: true, Messages: []string{"Work completed."}}},
 	}}
 	roots := []string{"/extra/one", "/extra/two"}
+	playbooksDir := t.TempDir()
 	bot := New(api, store, runner, Config{
-		AllowedUserIDs: []string{"U1"},
-		WorkspaceDir:   "/repo/workspace",
-		MemoryDir:      filepath.Join(t.TempDir(), "memory"),
-		CodexTimeout:   time.Minute,
-		BotUserID:      "UBOT",
-		WritableRoots:  roots,
+		AllowedUserIDs:        []string{"U1"},
+		AllowedChannelIDs:     []string{"C1"},
+		SharedWriteChannelIDs: []string{"C1"},
+		WorkspaceDir:          "/repo/workspace",
+		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:          time.Minute,
+		BotUserID:             "UBOT",
+		WritableRoots:         roots,
+		PlaybooksDir:          playbooksDir,
 	}, nil)
 	// New must copy the slice, so later mutation by the caller is not observed.
 	roots[0] = "/mutated"
@@ -1449,7 +1681,7 @@ func TestWorkTurnReceivesWritableRootsAndPlanTurnDoesNot(t *testing.T) {
 	if got := runner.sandboxes[0]; got != "read-only-network" {
 		t.Errorf("plan turn sandbox = %q, want read-only-network", got)
 	}
-	want := []string{"/extra/one", "/extra/two"}
+	want := []string{"/extra/one", "/extra/two", playbooksDir}
 	if !reflect.DeepEqual(runner.roots[1], want) {
 		t.Errorf("work turn writable roots = %v, want %v", runner.roots[1], want)
 	}
@@ -1640,7 +1872,7 @@ type gatedRunner struct {
 	releaseOnce sync.Once
 }
 
-func (r *gatedRunner) Run(_ context.Context, _, _, _ string, _ []string, prompt string, callback func(string) error) (*codex.TurnResult, error) {
+func (r *gatedRunner) Run(_ context.Context, _, _, _ string, _, _ []string, prompt string, callback func(string) error) (*codex.TurnResult, error) {
 	if callback != nil {
 		if err := callback("plan-thread"); err != nil {
 			return nil, err
@@ -1673,11 +1905,13 @@ func TestPlanTurnRunsWhileWorkTurnIsBlocked(t *testing.T) {
 		release:     make(chan struct{}),
 	}
 	bot := New(&fakeSlack{}, &looseStore{threads: map[string]string{}}, runner, Config{
-		AllowedUserIDs: []string{"U1"},
-		WorkspaceDir:   "/repo/workspace",
-		MemoryDir:      filepath.Join(t.TempDir(), "memory"),
-		CodexTimeout:   time.Minute,
-		BotUserID:      "UBOT",
+		AllowedUserIDs:        []string{"U1"},
+		AllowedChannelIDs:     []string{"C1"},
+		SharedWriteChannelIDs: []string{"C1"},
+		WorkspaceDir:          "/repo/workspace",
+		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:          time.Minute,
+		BotUserID:             "UBOT",
 	}, nil)
 
 	ctx := context.Background()
@@ -1711,32 +1945,38 @@ func TestPlanTurnRunsWhileWorkTurnIsBlocked(t *testing.T) {
 	}
 }
 
-func TestSplitMessageUsesRuneBoundaries(t *testing.T) {
-	text := strings.Repeat("a", 3899) + "日" + "本"
-	chunks := splitMessage(text, maxSlackMessageRunes)
-	if len(chunks) != 2 {
-		t.Fatalf("chunks = %d, want 2", len(chunks))
-	}
-	if len([]rune(chunks[0])) != 3900 || chunks[0][len(chunks[0])-3:] != "日" {
-		t.Fatalf("first chunk has %d runes and suffix %q", len([]rune(chunks[0])), chunks[0][len(chunks[0])-3:])
-	}
-	if chunks[1] != "本" || strings.Join(chunks, "") != text {
-		t.Fatalf("split did not preserve UTF-8 text")
-	}
-}
-
 func TestPostSplitsLongMessage(t *testing.T) {
 	api := &fakeSlack{}
 	bot := newTestBot(t, &fakeStore{}, api, &fakeRunner{})
-	text := strings.Repeat("界", 3901)
+	text := strings.Repeat("界", maxSlackMessageRunes+1)
 	if err := bot.post(context.Background(), "C1", "1", text); err != nil {
 		t.Fatalf("post() error = %v", err)
 	}
 	if len(api.postTexts) != 2 {
 		t.Fatalf("post attempts = %d, want 2", len(api.postTexts))
 	}
-	if len([]rune(api.postTexts[0])) != 3900 || api.postTexts[1] != "界" {
+	if len([]rune(api.postTexts[0])) != maxSlackMessageRunes || api.postTexts[1] != "界" {
 		t.Fatalf("post chunks have rune lengths %d and %d", len([]rune(api.postTexts[0])), len([]rune(api.postTexts[1])))
+	}
+}
+
+func TestPostKeepsMarkdownStructureAcrossChunks(t *testing.T) {
+	api := &fakeSlack{}
+	bot := newTestBot(t, &fakeStore{}, api, &fakeRunner{})
+	heading := "#### " + strings.Repeat("見", 100)
+	text := strings.TrimSuffix(strings.Repeat(heading+"\n", 100), "\n")
+	if err := bot.post(context.Background(), "C1", "1", text); err != nil {
+		t.Fatalf("post() error = %v", err)
+	}
+	if len(api.postTexts) < 2 {
+		t.Fatalf("post attempts = %d, want at least 2", len(api.postTexts))
+	}
+	for i, chunk := range api.postTexts {
+		for _, line := range strings.Split(chunk, "\n") {
+			if line != heading {
+				t.Fatalf("chunk %d cut a heading: %q", i, line)
+			}
+		}
 	}
 }
 
@@ -1808,5 +2048,741 @@ func receiveDuration(t *testing.T, calls <-chan time.Duration) time.Duration {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for status refresh")
 		return 0
+	}
+}
+
+func TestPlaybooksReloadBetweenRequests(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	runner := &fakeRunner{}
+	bot := newTestBot(t, store, api, runner)
+	bot.config.PlaybooksDir = t.TempDir()
+	path := filepath.Join(bot.config.PlaybooksDir, "example.md")
+	for _, description := range []string{"first-version", "updated-version", ""} {
+		if description == "" {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.WriteFile(path, []byte("---\nname: example\ndescription: "+description+"\n---\nBody"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		runner.responses = append(runner.responses, runnerResponse{result: &codex.TurnResult{
+			Completed: true, Messages: []string{"## 方針\nDone.\n## 作業指示\nNONE"},
+		}})
+		bot.HandleMention(context.Background(), mention())
+		got := runner.prompts[len(runner.prompts)-1]
+		if description == "" {
+			if strings.Contains(got, "name: example") {
+				t.Fatal("removed playbook remains in prompt")
+			}
+		} else if !strings.Contains(got, description) {
+			t.Fatalf("prompt missing current description %q", description)
+		}
+		if description != "first-version" && strings.Contains(got, "first-version") {
+			t.Fatal("stale playbook remains in prompt")
+		}
+	}
+}
+
+// parallelRunner answers every plan with a work instruction and holds every
+// work turn open until release is closed, recording how many run at once.
+type parallelRunner struct {
+	mu          sync.Mutex
+	running     int
+	maxRunning  int
+	workCwds    []string
+	workRoots   [][]string
+	workPrompts []string
+	planCwds    []string
+	started     chan struct{}
+	release     chan struct{}
+}
+
+func newParallelRunner() *parallelRunner {
+	return &parallelRunner{started: make(chan struct{}, 16), release: make(chan struct{})}
+}
+
+func (r *parallelRunner) Run(ctx context.Context, _, sandbox, cwd string, roots, _ []string, prompt string, callback func(string) error) (*codex.TurnResult, error) {
+	if sandbox != "workspace-write" {
+		r.mu.Lock()
+		r.planCwds = append(r.planCwds, cwd)
+		r.mu.Unlock()
+		if callback != nil {
+			if err := callback("plan-thread"); err != nil {
+				return nil, err
+			}
+		}
+		return &codex.TurnResult{
+			Completed: true,
+			Messages:  []string{"## 方針\nWork on it.\n## 作業指示\nDo the work."},
+		}, nil
+	}
+	r.mu.Lock()
+	r.running++
+	r.maxRunning = max(r.maxRunning, r.running)
+	r.workCwds = append(r.workCwds, cwd)
+	r.workRoots = append(r.workRoots, roots)
+	r.workPrompts = append(r.workPrompts, prompt)
+	r.mu.Unlock()
+	r.started <- struct{}{}
+	defer func() {
+		r.mu.Lock()
+		r.running--
+		r.mu.Unlock()
+	}()
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return &codex.TurnResult{Completed: true, Messages: []string{"Work completed."}}, nil
+}
+
+func (r *parallelRunner) waitStarted(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("work turn did not start")
+	}
+}
+
+func (r *parallelRunner) assertNotStarted(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.started:
+		t.Fatal("work turn started while it should be waiting")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func newParallelBot(t *testing.T, api *fakeSlack, runner Runner, maxParallel int) *Bot {
+	t.Helper()
+	return New(api, &looseStore{threads: map[string]string{}}, runner, Config{
+		AllowedUserIDs:        []string{"U1"},
+		AllowedChannelIDs:     []string{"C1"},
+		SharedWriteChannelIDs: []string{"C1"},
+		WorkspaceDir:          "/repo/workspace",
+		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:          time.Minute,
+		BotUserID:             "UBOT",
+		MaxParallelWork:       maxParallel,
+	}, nil)
+}
+
+func mentionAt(timestamp, threadTS string) *slackevents.AppMentionEvent {
+	return &slackevents.AppMentionEvent{
+		User: "U1", Channel: "C1", TimeStamp: timestamp, ThreadTimeStamp: threadTS, Text: "<@UBOT> do it",
+	}
+}
+
+func handleAsync(bot *Bot, ctx context.Context, events ...*slackevents.AppMentionEvent) *sync.WaitGroup {
+	var wg sync.WaitGroup
+	for _, event := range events {
+		wg.Go(func() { bot.HandleMention(ctx, event) })
+	}
+	return &wg
+}
+
+func TestWorkTurnsForDifferentThreadsRunInParallel(t *testing.T) {
+	runner := newParallelRunner()
+	bot := newParallelBot(t, &fakeSlack{}, runner, 2)
+	wg := handleAsync(bot, context.Background(), mentionAt("100.1", ""), mentionAt("200.2", ""))
+	defer wg.Wait()
+	defer close(runner.release)
+
+	runner.waitStarted(t)
+	runner.waitStarted(t)
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if runner.maxRunning != 2 {
+		t.Fatalf("max concurrent work turns = %d, want 2", runner.maxRunning)
+	}
+}
+
+func TestWorkTurnsBeyondLimitWaitWithQueuedStatus(t *testing.T) {
+	runner := newParallelRunner()
+	api := &fakeSlack{}
+	bot := newParallelBot(t, api, runner, 1)
+	ctx := context.Background()
+	first := handleAsync(bot, ctx, mentionAt("100.1", ""))
+	runner.waitStarted(t)
+
+	second := handleAsync(bot, ctx, mentionAt("200.2", ""))
+	runner.assertNotStarted(t)
+	api.mu.Lock()
+	queued := false
+	for _, call := range api.calls {
+		queued = queued || (call.kind == "status" && call.text == queuedStatus)
+	}
+	api.mu.Unlock()
+	if !queued {
+		t.Error("waiting work turn did not show the queued status")
+	}
+
+	close(runner.release)
+	runner.waitStarted(t)
+	first.Wait()
+	second.Wait()
+	if runner.maxRunning != 1 {
+		t.Fatalf("max concurrent work turns = %d, want 1", runner.maxRunning)
+	}
+}
+
+func TestWorkTurnsInOneThreadRunInOrder(t *testing.T) {
+	runner := newParallelRunner()
+	bot := newParallelBot(t, &fakeSlack{}, runner, 2)
+	ctx := context.Background()
+	first := handleAsync(bot, ctx, mentionAt("100.1", ""))
+	runner.waitStarted(t)
+
+	second := handleAsync(bot, ctx, mentionAt("100.2", "100.1"))
+	runner.assertNotStarted(t)
+	close(runner.release)
+	runner.waitStarted(t)
+	first.Wait()
+	second.Wait()
+	if runner.maxRunning != 1 {
+		t.Fatalf("max concurrent work turns in one thread = %d, want 1", runner.maxRunning)
+	}
+}
+
+func TestCancelledWaitForWorkFailsWithoutRunningWork(t *testing.T) {
+	runner := newParallelRunner()
+	api := &fakeSlack{}
+	store := &fakeStore{claim: true}
+	bot := New(api, store, runner, Config{
+		AllowedUserIDs:        []string{"U1"},
+		AllowedChannelIDs:     []string{"C1"},
+		SharedWriteChannelIDs: []string{"C1"},
+		WorkspaceDir:          "/repo/workspace",
+		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:          time.Minute,
+		BotUserID:             "UBOT",
+		MaxParallelWork:       1,
+	}, nil)
+	// Occupy the only work slot.
+	bot.workSlots <- struct{}{}
+	defer func() { <-bot.workSlots }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := handleAsync(bot, ctx, mention())
+	runner.assertNotStarted(t)
+	cancel()
+	done.Wait()
+
+	assertTransitions(t, store.transitions, [][2]state.State{
+		{state.Received, state.Planning},
+		{state.Planning, state.PlanPosted},
+		{state.PlanPosted, state.Failed},
+	})
+	if len(api.postTexts) == 0 || api.postTexts[len(api.postTexts)-1] != workStartFailureMessage {
+		t.Fatalf("posts = %q, want work start failure", api.postTexts)
+	}
+}
+
+type fakeWorkspaces struct {
+	mu        sync.Mutex
+	threadIDs []string
+	acquired  []string
+	released  int
+	err       error
+}
+
+func (w *fakeWorkspaces) ThreadDir(threadID string) (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.threadIDs = append(w.threadIDs, threadID)
+	return "/home/workspace/" + threadID, nil
+}
+
+func (w *fakeWorkspaces) OtherThreadPaths(threadID string) ([]string, error) {
+	return []string{"/home/workspace/OTHER-" + threadID}, nil
+}
+
+func (w *fakeWorkspaces) Acquire(_ context.Context, threadID string) (*workspace.Lease, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.err != nil {
+		return nil, w.err
+	}
+	w.acquired = append(w.acquired, threadID)
+	checkoutPath := "/home/checkouts/" + threadID + "/app"
+	lease := workspace.NewLease(
+		"/home/workspace/"+threadID,
+		[]string{"/shared/plain", checkoutPath, checkoutPath + ".gitdir"},
+		[]workspace.Checkout{{Repo: "/src/app", Path: checkoutPath, Branch: "ebi-x/" + threadID}},
+		func() {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			w.released++
+		},
+	)
+	return lease, nil
+}
+
+func TestWorkUsesThreadWorkspaceAndCheckouts(t *testing.T) {
+	runner := newParallelRunner()
+	close(runner.release)
+	workspaces := &fakeWorkspaces{}
+	playbooksDir := t.TempDir()
+	bot := New(&fakeSlack{}, &fakeStore{claim: true}, runner, Config{
+		AllowedUserIDs:        []string{"U1"},
+		AllowedChannelIDs:     []string{"C1"},
+		SharedWriteChannelIDs: []string{"C1"},
+		WorkspaceDir:          "/repo/workspace",
+		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
+		PlaybooksDir:          playbooksDir,
+		CodexTimeout:          time.Minute,
+		BotUserID:             "UBOT",
+		WritableRoots:         []string{"/src/app", "/shared/plain"},
+		Workspaces:            workspaces,
+	}, nil)
+
+	bot.HandleMention(context.Background(), mention())
+
+	if want := []string{"/home/workspace/C1-100.1"}; !reflect.DeepEqual(runner.planCwds, want) {
+		t.Errorf("plan cwd = %v, want %v", runner.planCwds, want)
+	}
+	if want := []string{"/home/workspace/C1-100.1"}; !reflect.DeepEqual(runner.workCwds, want) {
+		t.Errorf("work cwd = %v, want %v", runner.workCwds, want)
+	}
+	wantRoots := []string{"/shared/plain", "/home/checkouts/C1-100.1/app", "/home/checkouts/C1-100.1/app.gitdir", playbooksDir}
+	if len(runner.workRoots) != 1 || !reflect.DeepEqual(runner.workRoots[0], wantRoots) {
+		t.Errorf("work roots = %v, want %v", runner.workRoots, wantRoots)
+	}
+	if !strings.Contains(runner.workPrompts[0], "/src/app → /home/checkouts/C1-100.1/app") {
+		t.Errorf("work prompt does not list the thread checkout:\n%s", runner.workPrompts[0])
+	}
+	if workspaces.released != 1 {
+		t.Errorf("lease released %d times, want 1", workspaces.released)
+	}
+}
+
+func TestWorkspacePreparationFailureDoesNotStartWork(t *testing.T) {
+	runner := newParallelRunner()
+	api := &fakeSlack{}
+	store := &fakeStore{claim: true}
+	bot := New(api, store, runner, Config{
+		AllowedUserIDs:        []string{"U1"},
+		AllowedChannelIDs:     []string{"C1"},
+		SharedWriteChannelIDs: []string{"C1"},
+		WorkspaceDir:          "/repo/workspace",
+		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:          time.Minute,
+		BotUserID:             "UBOT",
+		Workspaces:            &fakeWorkspaces{err: errors.New("git clone failed")},
+	}, nil)
+
+	bot.HandleMention(context.Background(), mention())
+
+	if len(runner.workCwds) != 0 {
+		t.Fatal("work turn ran without a prepared workspace")
+	}
+	assertTransitions(t, store.transitions, [][2]state.State{
+		{state.Received, state.Planning},
+		{state.Planning, state.PlanPosted},
+		{state.PlanPosted, state.Failed},
+	})
+}
+
+func TestUnauthorizedSubscribedMessageReplyIsIgnored(t *testing.T) {
+	now := time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	runner := successfulPlanRunner()
+	bot := newTestBot(t, store, api, runner)
+	configureActiveSubscription(bot, store, now)
+
+	bot.HandleMessage(context.Background(), messageReply("UOUTSIDER", "200.2", "run this for me"))
+
+	if store.claimCalls != 0 || runner.calls != 0 || len(api.postTexts) != 0 {
+		t.Fatalf("unauthorized reply caused claim=%d runner=%d posts=%q", store.claimCalls, runner.calls, api.postTexts)
+	}
+}
+
+func TestMentionWithoutChannelAllowlistIsForbidden(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	runner := successfulPlanRunner()
+	bot := newTestBot(t, store, api, runner)
+	bot.allowedChannels = nil
+	event := mention()
+	event.Channel = "D1"
+
+	bot.HandleMention(context.Background(), event)
+
+	if store.claimCalls != 0 || runner.calls != 0 {
+		t.Fatalf("mention without channel allowlist caused claim=%d runner=%d", store.claimCalls, runner.calls)
+	}
+}
+
+func TestChannelWithoutSharedWritesCannotChangePlaybooksOrGlobalMemory(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	runner := &fakeRunner{responses: []runnerResponse{
+		{result: &codex.TurnResult{
+			Completed: true,
+			Messages:  []string{"## 方針\nDo work.\n## 作業指示\nMake a change."},
+		}},
+		{result: &codex.TurnResult{
+			Completed: true,
+			Messages: []string{strings.Join([]string{
+				"Work completed.",
+				"## 全体メモリ追記", "全チャンネルに効く指示",
+				"## チャンネルメモリ追記", "このチャンネルの用語",
+			}, "\n")},
+		}},
+	}}
+	playbooksDir := t.TempDir()
+	bot := New(api, store, runner, Config{
+		AllowedUserIDs:    []string{"U1"},
+		AllowedChannelIDs: []string{"C1"},
+		WorkspaceDir:      "/repo/workspace",
+		MemoryDir:         filepath.Join(t.TempDir(), "memory"),
+		PlaybooksDir:      playbooksDir,
+		CodexTimeout:      time.Minute,
+		BotUserID:         "UBOT",
+	}, nil)
+
+	bot.HandleMention(context.Background(), mention())
+
+	if runner.calls != 2 {
+		t.Fatalf("runner calls = %d, want 2", runner.calls)
+	}
+	if slices.Contains(runner.roots[1], playbooksDir) {
+		t.Errorf("work roots = %v, must not include playbooks", runner.roots[1])
+	}
+	if strings.Contains(runner.prompts[1], "## 全体メモリ追記") {
+		t.Error("work prompt offers global memory to a channel without shared writes")
+	}
+	if _, err := os.Stat(filepath.Join(bot.config.MemoryDir, "MEMORY.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("global memory stat error = %v, want not exist", err)
+	}
+	data, err := os.ReadFile(filepath.Join(bot.config.MemoryDir, "channels", "C1", "MEMORY.md"))
+	if err != nil || !strings.Contains(string(data), "このチャンネルの用語") {
+		t.Errorf("channel memory = %q, %v; want channel entry", data, err)
+	}
+}
+
+func TestTurnsDenyOtherThreadPaths(t *testing.T) {
+	store := &fakeStore{claim: true}
+	runner := &fakeRunner{responses: []runnerResponse{
+		{result: &codex.TurnResult{
+			Completed: true,
+			Messages:  []string{"## 方針\nDo work.\n## 作業指示\nMake a change."},
+		}},
+		{result: &codex.TurnResult{Completed: true, Messages: []string{"Work completed."}}},
+	}}
+	bot := newTestBot(t, store, &fakeSlack{}, runner)
+	bot.config.Workspaces = &fakeWorkspaces{}
+
+	bot.HandleMention(context.Background(), mention())
+
+	want := []string{"/home/workspace/OTHER-C1-100.1"}
+	if len(runner.denied) != 2 || !reflect.DeepEqual(runner.denied[0], want) || !reflect.DeepEqual(runner.denied[1], want) {
+		t.Fatalf("denied paths = %v, want %v for both turns", runner.denied, want)
+	}
+}
+
+func TestPlanTurnWaitsForPlanSlot(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	runner := successfulPlanRunner()
+	bot := newTestBot(t, store, api, runner)
+	bot.planSlots <- struct{}{} // the only slot is taken
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	bot.HandleMention(ctx, mention())
+
+	if runner.calls != 0 {
+		t.Fatalf("runner calls = %d, want 0 while every plan slot is busy", runner.calls)
+	}
+	if store.current != state.Failed {
+		t.Fatalf("state = %q, want failed so the mention can be retried", store.current)
+	}
+}
+
+func TestNeutralizeBroadcasts(t *testing.T) {
+	got := neutralizeBroadcasts("hi <!channel> <!here|here> <!EVERYONE> <!subteam^S123|@team> <@U1> <!date^1|x>")
+	want := "hi @channel @here @EVERYONE @subteam^S123 <@U1> <!date^1|x>"
+	if got != want {
+		t.Fatalf("neutralizeBroadcasts() = %q, want %q", got, want)
+	}
+}
+
+func TestWebAPIPostMessageNeutralizesBroadcasts(t *testing.T) {
+	var form url.Values
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if err := r.ParseForm(); err != nil {
+			return nil, err
+		}
+		form = r.Form
+		return postMessageResponse(r, `{"ok":true,"ts":"100.2"}`), nil
+	})}
+	api := &webAPI{client: slack.New("token", slack.OptionAPIURL("https://slack.test/"), slack.OptionHTTPClient(httpClient))}
+
+	if _, err := api.PostMessage(context.Background(), "C1", "100.1", "完了 <!channel>"); err != nil {
+		t.Fatalf("PostMessage() error = %v, want nil", err)
+	}
+	for _, field := range []string{"blocks", "text"} {
+		if strings.Contains(form.Get(field), "<!channel>") {
+			t.Fatalf("%s field = %q, must not contain a broadcast mention", field, form.Get(field))
+		}
+	}
+}
+
+// dirWorkspaces gives each thread real directories so attachments can be
+// validated against the filesystem.
+type dirWorkspaces struct {
+	base string
+}
+
+func (w dirWorkspaces) ThreadDir(threadID string) (string, error) {
+	dir := filepath.Join(w.base, "workspace", threadID)
+	return dir, os.MkdirAll(dir, 0o700)
+}
+
+func (w dirWorkspaces) OtherThreadPaths(string) ([]string, error) { return nil, nil }
+
+func (w dirWorkspaces) Acquire(_ context.Context, threadID string) (*workspace.Lease, error) {
+	dir, err := w.ThreadDir(threadID)
+	if err != nil {
+		return nil, err
+	}
+	checkout := filepath.Join(w.base, "checkouts", threadID, "slides")
+	if err := os.MkdirAll(checkout, 0o700); err != nil {
+		return nil, err
+	}
+	return workspace.NewLease(dir, []string{checkout, checkout + ".gitdir"},
+		[]workspace.Checkout{{Repo: "/src/slides", Path: checkout, Branch: "ebi-x/" + threadID}}, func() {}), nil
+}
+
+func newAttachmentBot(t *testing.T, api *fakeSlack, store *fakeStore, workResult string) string {
+	t.Helper()
+	base := t.TempDir()
+	runner := &fakeRunner{responses: []runnerResponse{
+		{result: &codex.TurnResult{Completed: true, Messages: []string{"## 方針\nスライドを作る。\n## 作業指示\nプレビューを作る。"}}},
+		{result: &codex.TurnResult{Completed: true, Messages: []string{strings.ReplaceAll(workResult, "$BASE", base)}}},
+	}}
+	bot := New(api, store, runner, Config{
+		AllowedUserIDs:    []string{"U1"},
+		AllowedChannelIDs: []string{"C1"},
+		WorkspaceDir:      "/unused",
+		MemoryDir:         filepath.Join(base, "memory"),
+		CodexTimeout:      time.Minute,
+		BotUserID:         "UBOT",
+		Workspaces:        dirWorkspaces{base: base},
+	}, nil)
+	for path, content := range map[string]string{
+		"workspace/C1-100.1/preview.png":            "png-data",
+		"checkouts/C1-100.1/slides/out/deck.pdf":    "pdf-data",
+		"workspace/C1-200.1/other-thread-draft.pdf": "other",
+	} {
+		full := filepath.Join(base, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bot.HandleMention(context.Background(), mention())
+	return base
+}
+
+func TestWorkAttachmentsAreUploadedToThread(t *testing.T) {
+	api := &fakeSlack{}
+	store := &fakeStore{claim: true}
+	newAttachmentBot(t, api, store,
+		"v1のプレビューを添付します。\n\n## 添付ファイル\n- preview.png\n- $BASE/checkouts/C1-100.1/slides/out/deck.pdf\n\n## 全体メモリ追記\n学び")
+
+	want := []fakeUpload{
+		{channel: "C1", threadTS: "100.1", filename: "preview.png", content: "png-data"},
+		{channel: "C1", threadTS: "100.1", filename: "deck.pdf", content: "pdf-data"},
+	}
+	if !reflect.DeepEqual(api.uploads, want) {
+		t.Fatalf("uploads = %+v, want %+v", api.uploads, want)
+	}
+	if len(api.postTexts) != 1 || !strings.HasPrefix(api.postTexts[0], "v1のプレビューを添付します。") ||
+		strings.Contains(api.postTexts[0], "添付ファイル") || strings.Contains(api.postTexts[0], "⚠️") {
+		t.Fatalf("posts = %q, want the body without the attachment section or a warning", api.postTexts)
+	}
+	// Files are uploaded before the result so a failure can be reported in it.
+	var order []string
+	for _, call := range api.calls {
+		if call.kind == "upload" || call.kind == "post" {
+			order = append(order, call.kind)
+		}
+	}
+	if strings.Join(order, ",") != "upload,upload,post" {
+		t.Fatalf("call order = %v, want uploads before the result post", order)
+	}
+	assertTransitions(t, store.transitions, [][2]state.State{
+		{state.Received, state.Planning},
+		{state.Planning, state.PlanPosted},
+		{state.PlanPosted, state.Working},
+		{state.Working, state.Done},
+	})
+	assertFinalReactionOrder(t, api.calls, "white_check_mark")
+}
+
+func TestFailedAttachmentIsReportedAndFileKept(t *testing.T) {
+	api := &fakeSlack{uploadErrs: []error{errors.New("upload refused")}}
+	store := &fakeStore{claim: true}
+	base := newAttachmentBot(t, api, store, "プレビューを添付します。\n## 添付ファイル\n- preview.png")
+
+	if len(api.uploads) != 0 {
+		t.Fatalf("uploads = %+v, want none", api.uploads)
+	}
+	if len(api.postTexts) != 1 || !strings.Contains(api.postTexts[0], "添付できませんでした") ||
+		!strings.Contains(api.postTexts[0], "preview.png") || !strings.Contains(api.postTexts[0], "添付を再送して") {
+		t.Fatalf("posts = %q, want a failure notice naming the file", api.postTexts)
+	}
+	if _, err := os.Stat(filepath.Join(base, "workspace", "C1-100.1", "preview.png")); err != nil {
+		t.Fatalf("generated file was not kept: %v", err)
+	}
+	assertTransitions(t, store.transitions, [][2]state.State{
+		{state.Received, state.Planning},
+		{state.Planning, state.PlanPosted},
+		{state.PlanPosted, state.Working},
+		{state.Working, state.Interrupted},
+	})
+	assertFinalReactionOrder(t, api.calls, "x")
+}
+
+func TestAttachmentFromAnotherThreadIsNotUploaded(t *testing.T) {
+	api := &fakeSlack{}
+	store := &fakeStore{claim: true}
+	newAttachmentBot(t, api, store,
+		"添付します。\n## 添付ファイル\n- preview.png\n- ../C1-200.1/other-thread-draft.pdf\n- $BASE/workspace/C1-200.1/other-thread-draft.pdf")
+
+	if len(api.uploads) != 1 || api.uploads[0].filename != "preview.png" {
+		t.Fatalf("uploads = %+v, want only this thread's preview", api.uploads)
+	}
+	if !strings.Contains(api.postTexts[0], "作業領域外") {
+		t.Fatalf("post = %q, want the rejected file reported", api.postTexts[0])
+	}
+	assertFinalReactionOrder(t, api.calls, "x")
+}
+
+func TestMalformedAttachmentSectionUploadsNothing(t *testing.T) {
+	api := &fakeSlack{}
+	store := &fakeStore{claim: true}
+	newAttachmentBot(t, api, store, "添付します。\n## 添付ファイル\npreview.png を送ってください")
+
+	if len(api.uploads) != 0 {
+		t.Fatalf("uploads = %+v, want none", api.uploads)
+	}
+	if len(api.postTexts) != 1 || !strings.Contains(api.postTexts[0], "添付ファイルの指定を読み取れなかった") ||
+		strings.Contains(api.postTexts[0], "## 添付ファイル") {
+		t.Fatalf("posts = %q, want the notice without the attachment heading", api.postTexts)
+	}
+	assertFinalReactionOrder(t, api.calls, "x")
+}
+
+func TestWebAPIUploadFileUsesExternalUpload(t *testing.T) {
+	var paths []string
+	var uploaded string
+	var completeForm url.Values
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		paths = append(paths, r.URL.Path)
+		var body string
+		switch r.URL.Path {
+		case "/files.getUploadURLExternal":
+			if err := r.ParseForm(); err != nil {
+				return nil, err
+			}
+			if r.Form.Get("filename") != "deck.pdf" || r.Form.Get("length") != "8" {
+				t.Errorf("getUploadURLExternal form = %v", r.Form)
+			}
+			body = `{"ok":true,"upload_url":"https://files.slack.test/upload/1","file_id":"F1"}`
+		case "/upload/1":
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				return nil, err
+			}
+			uploaded = string(data)
+			body = "OK"
+		case "/files.completeUploadExternal":
+			if err := r.ParseForm(); err != nil {
+				return nil, err
+			}
+			completeForm = r.Form
+			body = `{"ok":true,"files":[{"id":"F1","title":"deck.pdf"}]}`
+		default:
+			t.Errorf("unexpected request %s", r.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})}
+
+	api := &webAPI{client: slack.New("token", slack.OptionAPIURL("https://slack.test/"), slack.OptionHTTPClient(httpClient))}
+	if err := api.UploadFile(context.Background(), "C1", "100.1", "deck.pdf", 8, strings.NewReader("pdf-data")); err != nil {
+		t.Fatalf("UploadFile() error = %v", err)
+	}
+	if strings.Join(paths, ",") != "/files.getUploadURLExternal,/upload/1,/files.completeUploadExternal" {
+		t.Fatalf("requests = %v", paths)
+	}
+	if !strings.Contains(uploaded, "pdf-data") {
+		t.Fatalf("uploaded body = %q, want the file content", uploaded)
+	}
+	if completeForm.Get("channel_id") != "C1" || completeForm.Get("thread_ts") != "100.1" {
+		t.Fatalf("completeUploadExternal form = %v, want the thread", completeForm)
+	}
+}
+
+func TestSharedWorkspaceFilesAreNotAttached(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "report.pdf"), []byte("pdf"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeSlack{}
+	runner := &fakeRunner{responses: []runnerResponse{
+		{result: &codex.TurnResult{Completed: true, Messages: []string{"## 方針\n送る。\n## 作業指示\n添付する。"}}},
+		{result: &codex.TurnResult{Completed: true, Messages: []string{"添付します。\n## 添付ファイル\n- report.pdf"}}},
+	}}
+	New(api, &fakeStore{claim: true}, runner, Config{
+		AllowedUserIDs:    []string{"U1"},
+		AllowedChannelIDs: []string{"C1"},
+		WorkspaceDir:      dir,
+		MemoryDir:         filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:      time.Minute,
+		BotUserID:         "UBOT",
+	}, nil).HandleMention(context.Background(), mention())
+
+	if len(api.uploads) != 0 {
+		t.Fatalf("uploads = %+v, want none from a directory every thread shares", api.uploads)
+	}
+	if !strings.Contains(api.postTexts[0], "作業領域外") {
+		t.Fatalf("post = %q, want the rejection reported", api.postTexts[0])
+	}
+}
+
+func TestUploadRetriesOnlyRateLimits(t *testing.T) {
+	tests := []struct {
+		name        string
+		errs        []error
+		wantUploads int
+		wantCalls   int
+	}{
+		{name: "rate limited", errs: []error{&slack.RateLimitedError{RetryAfter: time.Millisecond}}, wantUploads: 1, wantCalls: 2},
+		{name: "server error", errs: []error{slack.StatusCodeError{Code: 502, Status: "502 Bad Gateway"}}, wantUploads: 0, wantCalls: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			api := &fakeSlack{uploadErrs: test.errs}
+			newAttachmentBot(t, api, &fakeStore{claim: true}, "添付します。\n## 添付ファイル\n- preview.png")
+			calls := 0
+			for _, call := range api.calls {
+				if call.kind == "upload" {
+					calls++
+				}
+			}
+			if len(api.uploads) != test.wantUploads || calls != test.wantCalls {
+				t.Fatalf("uploads = %d, calls = %d; want %d and %d", len(api.uploads), calls, test.wantUploads, test.wantCalls)
+			}
+		})
 	}
 }

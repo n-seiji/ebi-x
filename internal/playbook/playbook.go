@@ -1,4 +1,4 @@
-// Package playbook discovers the playbooks available to ebiii.
+// Package playbook discovers the playbooks available to ebi-x.
 package playbook
 
 import (
