@@ -58,6 +58,7 @@ func main() {
 		WorkModel:             cfg.CodexWorkModel,
 		ConfigPath:            filepath.Join(cfg.EBIXHome, ".codex", "config.toml"),
 		DeniedReadPaths:       cfg.ProtectedPaths,
+		CodexHome:             cfg.CodexHome,
 		DeveloperInstructions: policy.Instructions(),
 	}
 	bot := slackbot.New(nil, store, runner, slackbot.Config{

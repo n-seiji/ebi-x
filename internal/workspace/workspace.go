@@ -168,9 +168,11 @@ func (m *Manager) ThreadDir(threadID string) (string, error) {
 	return dir, nil
 }
 
-// OtherThreadPaths returns the workspace and checkout directories of every
-// thread other than threadID. Each turn denies them so a request in one
-// conversation cannot read files produced for another, such as a DM.
+// OtherThreadPaths returns every entry of the workspace and checkout
+// directories except threadID's own. Each turn denies them so a request in
+// one conversation cannot read files produced for another, such as a DM.
+// Entries that are not thread directories, such as leftovers of the former
+// shared workspace, are denied too.
 func (m *Manager) OtherThreadPaths(threadID string) ([]string, error) {
 	var paths []string
 	for _, base := range []string{m.workspaceDir, m.checkoutsDir} {
@@ -182,7 +184,7 @@ func (m *Manager) OtherThreadPaths(threadID string) ([]string, error) {
 			return nil, fmt.Errorf("list thread directories: %w", err)
 		}
 		for _, entry := range entries {
-			if !entry.IsDir() || entry.Name() == threadID || !validThreadID(entry.Name()) {
+			if entry.Name() == threadID {
 				continue
 			}
 			paths = append(paths, filepath.Join(base, entry.Name()))

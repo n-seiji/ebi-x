@@ -649,3 +649,28 @@ func TestRunRejectsOversizedDenyList(t *testing.T) {
 		t.Fatalf("Run() error = %v, want oversized argument error", err)
 	}
 }
+
+func TestCodexHomeDeniedKeepsOnlyVisibleEntries(t *testing.T) {
+	home := t.TempDir()
+	for _, name := range []string{"auth.json", "codex.sqlite", "config.toml", "sessions", "skills", "tmp", "shell_snapshots"} {
+		if err := os.WriteFile(filepath.Join(home, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := codexHomeDenied(home)
+	if err != nil {
+		t.Fatalf("codexHomeDenied() error = %v", err)
+	}
+	want := []string{
+		filepath.Join(home, "auth.json"),
+		filepath.Join(home, "codex.sqlite"),
+		filepath.Join(home, "config.toml"),
+		filepath.Join(home, "sessions"),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("codexHomeDenied() = %v, want %v", got, want)
+	}
+	if got, err := codexHomeDenied(filepath.Join(home, "missing")); err != nil || got != nil {
+		t.Fatalf("codexHomeDenied(missing) = %v, %v; want nil, nil", got, err)
+	}
+}

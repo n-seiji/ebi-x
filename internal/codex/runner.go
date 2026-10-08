@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,6 +50,9 @@ type Runner struct {
 	// commands must not read or write. They are enforced with a Codex
 	// permission profile, independently of prompt instructions.
 	DeniedReadPaths []string
+	// CodexHome holds Codex credentials, configuration, and the history of
+	// every thread. Each turn denies everything in it except codexHomeVisible.
+	CodexHome string
 	// DeveloperInstructions is injected into each session with the
 	// "developer" role, which outranks user messages and AGENTS.md in the
 	// model's chain of command. Codex stores it once per thread, so passing
@@ -76,7 +80,11 @@ func (r *Runner) Run(
 	if err != nil {
 		return nil, err
 	}
-	denied := append(append([]string(nil), r.DeniedReadPaths...), deniedPaths...)
+	homeDenied, err := codexHomeDenied(r.CodexHome)
+	if err != nil {
+		return nil, err
+	}
+	denied := append(append(append([]string(nil), r.DeniedReadPaths...), homeDenied...), deniedPaths...)
 	args := buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, denied, r.modelFor(sandbox), r.DeveloperInstructions, configOverrides)
 	for _, arg := range args {
 		if len(arg) > maxArgBytes {
@@ -128,6 +136,40 @@ func (r *Runner) Run(
 
 	truncateFinalMessage(result)
 	return result, nil
+}
+
+// codexHomeVisible are the Codex home entries sandboxed commands must still
+// read: skills and plugins the model opens itself, the helper binaries Codex
+// puts on PATH, and the shell snapshots it sources.
+var codexHomeVisible = map[string]struct{}{
+	"skills":          {},
+	"plugins":         {},
+	"tmp":             {},
+	".tmp":            {},
+	"shell_snapshots": {},
+}
+
+// codexHomeDenied lists the entries of home to hide. Codex adds state files
+// across versions, so everything not known to be needed is denied rather
+// than naming the sensitive ones.
+func codexHomeDenied(home string) ([]string, error) {
+	if home == "" {
+		return nil, nil
+	}
+	entries, err := os.ReadDir(home)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("codex exec: list Codex home: %w", err)
+	}
+	var denied []string
+	for _, entry := range entries {
+		if _, visible := codexHomeVisible[entry.Name()]; !visible {
+			denied = append(denied, filepath.Join(home, entry.Name()))
+		}
+	}
+	return denied, nil
 }
 
 // filterEnv returns env without the Slack credentials.

@@ -203,12 +203,13 @@ func TestLoad(t *testing.T) {
 					filepath.Join(workingDir, ".codex"),
 					filepath.Join(workingDir, "data", "memory"),
 					filepath.Join(workingDir, "data", "state"),
-					filepath.Join(workingDir, "codex-home", "auth.json"),
-					filepath.Join(workingDir, "codex-home", "sessions"),
 				} {
 					if !slices.Contains(cfg.ProtectedPaths, want) {
 						t.Errorf("ProtectedPaths = %v, want to contain %q", cfg.ProtectedPaths, want)
 					}
+				}
+				if want := filepath.Join(workingDir, "codex-home"); cfg.CodexHome != want {
+					t.Errorf("CodexHome = %q, want %q", cfg.CodexHome, want)
 				}
 				assertPaths(t, cfg, workingDir)
 			},
@@ -745,5 +746,28 @@ func TestLoadIncludesOperatorDeniedPaths(t *testing.T) {
 	}
 	if !slices.Contains(cfg.ProtectedPaths, filepath.Join(want, "ssh")) {
 		t.Fatalf("ProtectedPaths = %v, want operator path", cfg.ProtectedPaths)
+	}
+}
+
+func TestLoadRejectsWritableRootOverlappingBotDirectories(t *testing.T) {
+	for _, dir := range []string{"playbooks", "workspace", "checkouts"} {
+		t.Run(dir, func(t *testing.T) {
+			workingDir, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			withWorkingDir(t, workingDir)
+			clearConfigEnv(t)
+			setRequiredEnv(t)
+			root := filepath.Join(workingDir, "data", dir)
+			if err := os.MkdirAll(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("EBIX_WRITABLE_ROOTS", root)
+
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected path") {
+				t.Fatalf("Load() error = %v, want bot directory overlap", err)
+			}
+		})
 	}
 }

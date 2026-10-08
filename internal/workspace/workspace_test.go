@@ -297,7 +297,11 @@ func TestOtherThreadPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OtherThreadPaths() error = %v", err)
 	}
-	want := []string{filepath.Join(workspaceDir, "C1-2.2"), filepath.Join(checkoutsDir, "D9-3.3")}
+	want := []string{
+		filepath.Join(workspaceDir, "C1-2.2"),
+		filepath.Join(workspaceDir, "not-a-thread"),
+		filepath.Join(checkoutsDir, "D9-3.3"),
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("OtherThreadPaths() = %v, want %v", got, want)
 	}

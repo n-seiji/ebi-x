@@ -87,8 +87,8 @@ type Runner interface {
 type Workspaces interface {
 	ThreadDir(threadID string) (string, error)
 	Acquire(ctx context.Context, threadID string) (*workspace.Lease, error)
-	// OtherThreadPaths lists the workspace and checkout directories of every
-	// thread except threadID, so one thread's turn cannot read another's.
+	// OtherThreadPaths lists every workspace and checkout entry except
+	// threadID's own, so one thread's turn cannot read another's.
 	OtherThreadPaths(threadID string) ([]string, error)
 }
 
@@ -335,13 +335,6 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		return
 	}
 
-	otherThreads, err := b.config.Workspaces.OtherThreadPaths(workspaceID)
-	if err != nil {
-		log.Printf("slackbot: list other thread workspaces %q: %v", eventKey, err)
-		b.fail(ctx, eventKey, state.Planning, state.Failed, channel, threadTS, timestamp, planFailureMessage)
-		return
-	}
-
 	lock := b.keyedLock(b.threadLocks, threadKey)
 	lock.Lock()
 	threadID, hasThread := b.store.GetThread(threadKey)
@@ -385,6 +378,16 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	case <-ctx.Done():
 		lock.Unlock()
 		log.Printf("slackbot: wait for plan slot %q: %v", eventKey, ctx.Err())
+		b.fail(ctx, eventKey, state.Planning, state.Failed, channel, threadTS, timestamp, planFailureMessage)
+		return
+	}
+	// List other threads last, so threads created while this one waited are
+	// denied too.
+	otherThreads, err := b.config.Workspaces.OtherThreadPaths(workspaceID)
+	if err != nil {
+		<-b.planSlots
+		lock.Unlock()
+		log.Printf("slackbot: list other thread workspaces %q: %v", eventKey, err)
 		b.fail(ctx, eventKey, state.Planning, state.Failed, channel, threadTS, timestamp, planFailureMessage)
 		return
 	}

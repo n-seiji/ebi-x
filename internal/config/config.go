@@ -69,6 +69,9 @@ type Config struct {
 	// must neither read nor write: memory, bot state, secrets, and Codex
 	// credentials and session history.
 	ProtectedPaths []string
+	// CodexHome is the canonical Codex home. Its credentials, state, and
+	// session history are hidden from model-generated commands.
+	CodexHome string
 }
 
 // Load reads configuration from the environment and a local .env file.
@@ -211,12 +214,24 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("resolve playbooks directory: %w", err)
 	}
 	stateDir := filepath.Join(home, "data", "state")
+	codexHome, err := resolveCodexHome()
+	if err != nil {
+		return nil, err
+	}
 	protectedPaths, err := resolveProtectedPaths(home, memoryDir, stateDir, os.Getenv("EBIX_DENIED_READ_PATHS"))
 	if err != nil {
 		return nil, err
 	}
-	isolationRoots := append(append([]string(nil), writableRoots...), workspaceDir, playbooksDir, checkoutsDir)
-	if err := validateIsolation(isolationRoots, protectedPaths); err != nil {
+	// Nothing the agent can write may reach a protected path or the Codex
+	// home. The bot-managed directories are reserved as well: the bot grants
+	// playbooks only to shared-write channels and each thread only its own
+	// workspace and checkouts, which an operator-supplied root would bypass.
+	botDirs := []string{workspaceDir, playbooksDir, checkoutsDir}
+	reserved := append(append([]string(nil), protectedPaths...), codexHome)
+	if err := validateIsolation(botDirs, reserved); err != nil {
+		return nil, err
+	}
+	if err := validateIsolation(writableRoots, append(reserved, botDirs...)); err != nil {
 		return nil, err
 	}
 
@@ -247,31 +262,39 @@ func Load() (*Config, error) {
 		StateDir:                   stateDir,
 		WritableRoots:              writableRoots,
 		ProtectedPaths:             protectedPaths,
+		CodexHome:                  codexHome,
 	}, nil
 }
 
-// resolveProtectedPaths returns the paths ebi-x always hides from the agent:
-// memory and bot state, the .env file holding the Slack tokens, the local
-// Codex config, the Codex credentials and session history, which hold every
-// other thread's conversation, and the operator's extra denied paths.
-func resolveProtectedPaths(home, memoryDir, stateDir, extraDenied string) ([]string, error) {
+// resolveCodexHome returns the canonical Codex home: CODEX_HOME, or
+// ~/.codex when it is unset.
+func resolveCodexHome() (string, error) {
 	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
 	if codexHome == "" {
 		codexHome = "~/.codex"
 	}
 	codexHome, err := expandHome(codexHome)
 	if err != nil {
-		return nil, fmt.Errorf("CODEX_HOME: %w", err)
+		return "", fmt.Errorf("CODEX_HOME: %w", err)
 	}
+	codexHome, err = canonicalPath(codexHome)
+	if err != nil {
+		return "", fmt.Errorf("resolve CODEX_HOME: %w", err)
+	}
+	return codexHome, nil
+}
+
+// resolveProtectedPaths returns the paths ebi-x always hides from the agent:
+// memory and bot state, the .env file holding the Slack tokens, the local
+// Codex config, and the operator's extra denied paths. The Codex home is
+// handled by the runner, which lists it on every turn.
+func resolveProtectedPaths(home, memoryDir, stateDir, extraDenied string) ([]string, error) {
 	candidates := []string{
 		memoryDir,
 		stateDir,
 		".env",
 		filepath.Join(home, ".env"),
 		filepath.Join(home, ".codex"),
-	}
-	for _, name := range []string{"auth.json", "sessions", "archived_sessions", "history.jsonl"} {
-		candidates = append(candidates, filepath.Join(codexHome, name))
 	}
 	for _, item := range splitList(extraDenied) {
 		expanded, err := expandHome(item)
