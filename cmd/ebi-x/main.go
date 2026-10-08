@@ -83,7 +83,6 @@ func main() {
 		ThreadSubscriptionTTL:      cfg.ThreadSubscriptionTTL,
 		WritableRoots:              cfg.WritableRoots,
 		MaxParallelWork:            cfg.MaxParallelWork,
-		MaxParallelPlan:            cfg.MaxParallelPlan,
 		SharedWriteChannelIDs:      cfg.SharedWriteChannelIDs,
 		Workspaces:                 workspaces,
 	}, playbooks)

@@ -19,7 +19,6 @@ const (
 	defaultThreadSubscriptionReaction = "thread-subete"
 	defaultThreadSubscriptionTTL      = 336 * time.Hour
 	defaultMaxParallelWork            = 3
-	defaultMaxParallelPlan            = 3
 	defaultCheckoutIdleTTL            = 120 * time.Hour
 )
 
@@ -41,15 +40,12 @@ type Config struct {
 	AdminUserID        string
 	CodexCommand       string
 	CodexModel         string
-	// CodexWorkModel overrides CodexModel for work turns; empty uses CodexModel.
+	// CodexWorkModel is a legacy override for the entire execution turn.
 	CodexWorkModel string
 	CodexTimeout   time.Duration
 	// MaxParallelWork is how many work turns for different Slack threads may
 	// run at once.
 	MaxParallelWork int
-	// MaxParallelPlan is how many planning turns for different Slack threads
-	// may run at once.
-	MaxParallelPlan int
 	// SharedWriteChannelIDs are the channels whose work turns may change state
 	// shared by every channel: playbooks and global memory.
 	SharedWriteChannelIDs []string
@@ -177,10 +173,6 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	maxParallelPlan, err := positiveIntEnv("CODEX_MAX_PARALLEL_PLAN", defaultMaxParallelPlan)
-	if err != nil {
-		return nil, err
-	}
 	sharedWriteChannelIDs := splitList(os.Getenv("EBIX_SHARED_WRITE_CHANNEL_IDS"))
 	for _, channelID := range sharedWriteChannelIDs {
 		if !strings.HasPrefix(channelID, "C") {
@@ -270,7 +262,6 @@ func Load() (*Config, error) {
 		CodexWorkModel:             strings.TrimSpace(os.Getenv("CODEX_WORK_MODEL")),
 		CodexTimeout:               codexTimeout,
 		MaxParallelWork:            maxParallelWork,
-		MaxParallelPlan:            maxParallelPlan,
 		SharedWriteChannelIDs:      sharedWriteChannelIDs,
 		CheckoutIdleTTL:            checkoutIdleTTL,
 		ThreadSubscriptionReaction: threadSubscriptionReaction,

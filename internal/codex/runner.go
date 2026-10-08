@@ -40,8 +40,8 @@ var secretEnvNames = map[string]struct{}{
 type Runner struct {
 	Command string
 	Model   string
-	// WorkModel, when set, replaces Model for workspace-write turns so work
-	// can run on a cheaper model than planning.
+	// WorkModel is the legacy model override for workspace-write turns.
+	// The single-turn flow uses it for the entire request when set.
 	WorkModel string
 	// ConfigPath is a local project config whose values are forwarded as CLI
 	// overrides while the global user config remains disabled.

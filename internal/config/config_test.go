@@ -66,9 +66,6 @@ func TestLoad(t *testing.T) {
 				if !reflect.DeepEqual(cfg.AllowedWorkflowIDs, []string{"Wf0BSM19MCDT"}) {
 					t.Errorf("AllowedWorkflowIDs = %v, want [Wf0BSM19MCDT]", cfg.AllowedWorkflowIDs)
 				}
-				if cfg.MaxParallelPlan != 2 {
-					t.Errorf("MaxParallelPlan = %d, want 2", cfg.MaxParallelPlan)
-				}
 				if !reflect.DeepEqual(cfg.SharedWriteChannelIDs, []string{"C123"}) {
 					t.Errorf("SharedWriteChannelIDs = %v, want [C123]", cfg.SharedWriteChannelIDs)
 				}
@@ -191,9 +188,6 @@ func TestLoad(t *testing.T) {
 				}
 				if cfg.ThreadSubscriptionTTL != 336*time.Hour {
 					t.Errorf("ThreadSubscriptionTTL = %v, want %v", cfg.ThreadSubscriptionTTL, 336*time.Hour)
-				}
-				if cfg.MaxParallelPlan != 3 {
-					t.Errorf("MaxParallelPlan = %d, want 3", cfg.MaxParallelPlan)
 				}
 				if len(cfg.SharedWriteChannelIDs) != 0 {
 					t.Errorf("SharedWriteChannelIDs = %v, want none", cfg.SharedWriteChannelIDs)
@@ -328,14 +322,14 @@ func TestLoad(t *testing.T) {
 			wantErr: `SLACK_ALLOWED_WORKFLOW_IDS: invalid workflow ID "Wf-bad"`,
 		},
 		{
-			name: "zero parallel plan",
+			name: "obsolete parallel plan is ignored",
 			env: map[string]string{
 				"SLACK_BOT_TOKEN":         "xoxb-test",
 				"SLACK_APP_TOKEN":         "xapp-test",
 				"SLACK_ALLOWED_USER_IDS":  "U123",
 				"CODEX_MAX_PARALLEL_PLAN": "0",
 			},
-			wantErr: "CODEX_MAX_PARALLEL_PLAN",
+			check: func(t *testing.T, cfg *Config, workingDir string) {},
 		},
 		{
 			name: "invalid shared write channel",

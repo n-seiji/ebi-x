@@ -74,7 +74,9 @@ func TestTransition(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "allowed", from: Received, to: Planning, wantErr: false},
-		{name: "disallowed skip to working", from: Received, to: Working, wantErr: true},
+		{name: "single turn", from: Received, to: Working, wantErr: false},
+		{name: "pre-execution failure", from: Received, to: Failed, wantErr: false},
+		{name: "disallowed skip to done", from: Received, to: Done, wantErr: true},
 	}
 
 	for _, tt := range tests {
