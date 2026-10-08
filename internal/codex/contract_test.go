@@ -328,3 +328,74 @@ func TestSanitizeSlackOutput(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitAttachments(t *testing.T) {
+	tests := []struct {
+		name      string
+		text      string
+		wantRest  string
+		wantPaths []string
+		wantValid bool
+	}{
+		{
+			name:      "none",
+			text:      "完了しました。",
+			wantRest:  "完了しました。",
+			wantValid: true,
+		},
+		{
+			name:      "trailing section",
+			text:      "v2を添付します。\n\n## 添付ファイル\n- /w/preview.png\n- `/w/deck v2.pdf`\n",
+			wantRest:  "v2を添付します。",
+			wantPaths: []string{"/w/preview.png", "/w/deck v2.pdf"},
+			wantValid: true,
+		},
+		{
+			name:      "before memory sections",
+			text:      "本文\n## 添付ファイル\n- /w/a.pdf\n## 全体メモリ追記\n学び",
+			wantRest:  "本文\n## 全体メモリ追記\n学び",
+			wantPaths: []string{"/w/a.pdf"},
+			wantValid: true,
+		},
+		{
+			name:      "after memory sections",
+			text:      "本文\n## チャンネルメモリ追記\n用語\n## 添付ファイル\n- /w/a.pdf",
+			wantRest:  "本文\n## チャンネルメモリ追記\n用語",
+			wantPaths: []string{"/w/a.pdf"},
+			wantValid: true,
+		},
+		{
+			name:      "heading inside fence is body",
+			text:      "例:\n```\n## 添付ファイル\n- /etc/passwd\n```",
+			wantRest:  "例:\n```\n## 添付ファイル\n- /etc/passwd\n```",
+			wantValid: true,
+		},
+		{
+			name:      "duplicate section",
+			text:      "本文\n## 添付ファイル\n- /w/a.pdf\n## 添付ファイル\n- /w/b.pdf",
+			wantRest:  "本文",
+			wantValid: false,
+		},
+		{
+			name:      "prose line",
+			text:      "本文\n## 添付ファイル\n/w/a.pdf を送ってください",
+			wantRest:  "本文",
+			wantValid: false,
+		},
+		{
+			name:      "unclosed backtick",
+			text:      "本文\n## 添付ファイル\n- `/w/a.pdf",
+			wantRest:  "本文",
+			wantValid: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rest, paths, valid := SplitAttachments(test.text)
+			if rest != test.wantRest || valid != test.wantValid || strings.Join(paths, "|") != strings.Join(test.wantPaths, "|") {
+				t.Fatalf("SplitAttachments() = %q, %q, %v; want %q, %q, %v",
+					rest, paths, valid, test.wantRest, test.wantPaths, test.wantValid)
+			}
+		})
+	}
+}

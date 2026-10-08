@@ -5,7 +5,7 @@ ebi-x は、Slack の mention を受けて Codex が方針を検討し、必要�
 ## Slack App の準備
 
 1. Slack App を作成し、Socket Mode を有効にします。
-2. Bot Token Scopes に `app_mentions:read`、`chat:write`、`reactions:write`、`reactions:read`、`channels:history` を追加します。scopeを追加・変更した場合は、workspaceへアプリを再インストールしてください。
+2. Bot Token Scopes に `app_mentions:read`、`chat:write`、`reactions:write`、`reactions:read`、`channels:history`、`files:write` を追加します。`files:write` は成果物の添付（後述）に使います。scopeを追加・変更した場合は、workspaceへアプリを再インストールしてください。
 3. Event Subscriptions で `app_mention` と `message.channels` を購読します。`message.groups` は追加しません（プライベートチャンネルはサポートしません）。
 4. Workspace に App をインストールして Bot Token (`xoxb-...`) を取得します。
 5. Socket Mode 用の App Token (`xapp-...`) を取得します。
@@ -62,6 +62,59 @@ Codexの応答はMarkdownのまま、Block Kit の markdown ブロックとし�
 - Slackがブロックを拒否した場合（`invalid_blocks` / `msg_too_long`）は、同じ内容をテキストのみで1回だけ投稿し直します。書式の問題で回答そのものを失わないためです。
 - 1メッセージは8,000文字で分割します（markdownブロックの上限は12,000文字）。分割は行単位で行い、コードブロックの途中で切れる場合は閉じてから次のメッセージで開き直します。
 - 読みやすさのため、Slackに投稿される本文の書式規約（結論を先頭に3行、全体1800字以内、表は3列以内、リンクは末尾にまとめる）をプロンプトで指定しています。
+
+## 成果物の添付
+
+作業ターンが作成したPDF・画像・pptxを、botが依頼元のスレッドへアップロードします。CodexにはSlackの認証情報を渡しません。
+
+### 有効にする手順
+
+1. Slack App の **OAuth & Permissions** で Bot Token Scopes に `files:write` を追加します。
+2. 画面上部の案内に従って workspace へアプリを再インストールします。scopeの追加は再インストールするまで反映されません。Bot Token が変わった場合は `.env` の `SLACK_BOT_TOKEN` も更新してください。
+3. ebi-x を再起動します。
+
+### 出力契約
+
+作業ターンは、最終応答に次の見出しを1回だけ置いて添付するファイルを指定します。見出しはSlackに投稿される本文から取り除かれます。メモリ追記の見出しの前後どちらにも置けます。
+
+```markdown
+## 添付ファイル
+- /abs/path/to/data/workspace/C123-1700000000.000100/previews/v2/overview.png
+- /abs/path/to/data/workspace/C123-1700000000.000100/previews/v2/deck.pdf
+```
+
+- 各行は `- ` で始まるパス1つです（バッククォートで囲んでも構いません）。相対パスはスレッドのcwdからの相対パスとして扱います。それ以外の行が含まれる、見出しが複数あるなど書式が不正な場合は何も添付せず、その旨を本文の後に表示します。
+- 添付できるのは、そのスレッドのcwd（`data/workspace/{channel ID}-{thread ts}/`）とスレッド専用クローン（`data/checkouts/{channel ID}-{thread ts}/...`）の中の通常のファイルだけです。共有のwritable root、`data/playbooks`、別スレッドの作業領域は対象外です。
+- シンボリックリンクを経由するパス、`..` で作業領域の外へ出るパスは拒否します。検証後にファイルが差し替えられた場合もアップロードしません。
+- 種類はPDF・PNG・JPEG・GIF・WebP・pptxのみ、1ファイル100MBまで、1ターン10件までです。
+
+### 投稿の順序と失敗時の扱い
+
+- ファイルを先にアップロードし、その後に本文を投稿します。アップロードは同じスレッドの次の作業ターンが始まる前に終わらせるため、送信中のファイルが書き換わることはありません。
+- 1件でも拒否・アップロード失敗があった場合は、本文の後に失敗したファイルと理由を添え、mentionに❌を付けます（状態は `interrupted`）。成功として報告しません。
+- 生成済みのファイルは作業領域に残ります。スライド生成全体を自動でやり直すことはしません。同じスレッドで「添付を再送して」と依頼すると、作業ターンが既存のファイルを指定し直します。
+
+## スライドの作成・修正・納品（slides）
+
+`examples/playbooks/slides.md` を `data/playbooks/` にコピーすると、[miive-project/slides](https://github.com/miive-project/slides) を使って、Slackのスレッド上でスライドを作成・修正・納品できます。
+
+### 準備
+
+- 運用マシンにslidesをcloneし、そのパスを `EBIX_WRITABLE_ROOTS` に追加します。作業はスレッドごとのクローン（ブランチ `ebi-x/{channel ID}-{thread ts}`）で行うため、スレッド間で原稿・成果物・承認状態は混ざりません。
+- slidesのビルドに必要な Node / pnpm / Python / Chrome / LibreOffice / 日本語フォントを用意し、cloneしたslidesで `pnpm install` を済ませておきます。
+- Slack App に `files:write` を追加します（前述）。
+- 同じスレッドで返信だけで修正を続けたい場合は、スレッド親メッセージに購読リアクション（既定 `thread-subete`）を付けます。付けない場合は、返信のたびにmentionしてください。
+
+### 使い方
+
+1. `@ebi ○○社向けの提案スライドを作って` と依頼します。原稿を作成し、下書きのプレビュー（ページ一覧画像と全ページPDF）が版番号（v1）付きで同じスレッドに添付されます。
+2. `3ページ目を短くして` のように修正を返信します。既存の原稿を引き継いで修正し、v2, v3 … のプレビューが届きます。
+3. `v2でOK、確定して` と明示的に承認します。承認した版から編集可能なpptxを生成し、レイアウトを確認してから同じスレッドに添付します。
+
+- 承認前に通常ビルドのpptxは作りません。生成・添付の完了やリアクションは承認として扱いません。
+- 版と承認対象は、スレッドのcwdにある `slides-state.md` と、版ごとの作業用ブランチへのコミットで対応付けます。承認後に修正した場合は新しい版として再確認します。
+- 個社提案は、承認後に原稿を `status: approved` にして通常のビルドを行います。slidesの承認ゲートは迂回しません。
+- mainへのpush・merge、Google Slidesへの公開は行いません。
 
 ## Slackからplaybookを作成・更新する
 

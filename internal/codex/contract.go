@@ -12,6 +12,7 @@ const (
 	globalMemoryHeading        = "## 全体メモリ追記"
 	channelMemoryHeading       = "## チャンネルメモリ追記"
 	forbiddenUserMemoryHeading = "## ユーザーメモリ追記"
+	attachmentsHeading         = "## 添付ファイル"
 )
 
 // MemoryAppends contains optional entries proposed by a work turn. The bot
@@ -168,6 +169,76 @@ func SplitMemoryAppend(text string) (rest, entry string) {
 		return text, ""
 	}
 	return rest, appends.Global
+}
+
+// SplitAttachments removes the attachment section from a work response. The
+// section runs from its heading to the next level-2 heading or the end, so it
+// may sit before or after the memory sections, and lists one file path per
+// bullet line. It must occur at most once. Malformed output yields no
+// attachments and reports valid as false, so the bot can tell the user
+// instead of guessing which files were meant.
+func SplitAttachments(text string) (rest string, paths []string, valid bool) {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	start, end := -1, len(lines)
+	sections := 0
+	inFence := false
+	var fence byte
+	var fenceLen int
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if marker, length, ok := fenceMarker(trimmed); ok {
+			if !inFence {
+				inFence = true
+				fence = marker
+				fenceLen = length
+			} else if marker == fence && length >= fenceLen {
+				inFence = false
+			}
+			continue
+		}
+		if inFence {
+			continue
+		}
+		if trimmed == attachmentsHeading {
+			sections++
+			if start == -1 {
+				start = i
+			}
+		} else if start != -1 && end == len(lines) && strings.HasPrefix(trimmed, "## ") {
+			end = i
+		}
+	}
+
+	if sections == 0 {
+		return text, nil, true
+	}
+	kept := append(append([]string(nil), lines[:start]...), lines[end:]...)
+	rest = strings.TrimSpace(strings.Join(kept, "\n"))
+	if sections > 1 {
+		return rest, nil, false
+	}
+	for _, line := range lines[start+1 : end] {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		item, ok := strings.CutPrefix(trimmed, "- ")
+		if !ok {
+			return rest, nil, false
+		}
+		item = strings.TrimSpace(item)
+		if unquoted, ok := strings.CutPrefix(item, "`"); ok {
+			if item, ok = strings.CutSuffix(unquoted, "`"); !ok {
+				return rest, nil, false
+			}
+		}
+		if item == "" {
+			return rest, nil, false
+		}
+		paths = append(paths, item)
+	}
+	return rest, paths, true
 }
 
 // fenceMarker reports the fence character and the number of times it is
