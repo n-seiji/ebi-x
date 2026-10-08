@@ -186,6 +186,42 @@ func TestLoad(t *testing.T) {
 			},
 		},
 		{
+			name: "allow all public channels",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":                 "xoxb-test",
+				"SLACK_APP_TOKEN":                 "xapp-test",
+				"SLACK_ALLOWED_USER_IDS":          "U123",
+				"SLACK_ALLOW_ALL_PUBLIC_CHANNELS": "true",
+			},
+			check: func(t *testing.T, cfg *Config, _ string) {
+				t.Helper()
+				if !cfg.AllowAllPublicChannels {
+					t.Error("AllowAllPublicChannels = false, want true")
+				}
+			},
+		},
+		{
+			name: "allow all public channels with channel IDs",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":                 "xoxb-test",
+				"SLACK_APP_TOKEN":                 "xapp-test",
+				"SLACK_ALLOWED_USER_IDS":          "U123",
+				"SLACK_ALLOWED_CHANNEL_IDS":       "C123",
+				"SLACK_ALLOW_ALL_PUBLIC_CHANNELS": "true",
+			},
+			wantErr: "SLACK_ALLOW_ALL_PUBLIC_CHANNELS",
+		},
+		{
+			name: "invalid allow all public channels",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":                 "xoxb-test",
+				"SLACK_APP_TOKEN":                 "xapp-test",
+				"SLACK_ALLOWED_USER_IDS":          "U123",
+				"SLACK_ALLOW_ALL_PUBLIC_CHANNELS": "sometimes",
+			},
+			wantErr: "SLACK_ALLOW_ALL_PUBLIC_CHANNELS",
+		},
+		{
 			name: "invalid timeout",
 			env: map[string]string{
 				"SLACK_BOT_TOKEN":        "xoxb-test",
@@ -509,6 +545,7 @@ func clearConfigEnv(t *testing.T) {
 		"SLACK_APP_TOKEN",
 		"SLACK_ALLOWED_USER_IDS",
 		"SLACK_ALLOWED_CHANNEL_IDS",
+		"SLACK_ALLOW_ALL_PUBLIC_CHANNELS",
 		"SLACK_ALLOW_WORKFLOWS",
 		"SLACK_ADMIN_USER_ID",
 		"SLACK_THREAD_SUBSCRIPTION_REACTION",
