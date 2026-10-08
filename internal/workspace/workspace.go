@@ -64,6 +64,16 @@ func NewLease(dir string, writableRoots []string, checkouts []Checkout, release 
 	return &Lease{Dir: dir, WritableRoots: writableRoots, Checkouts: checkouts, release: release}
 }
 
+// ThreadAreas returns the directories that belong to this thread alone: its
+// workspace directory and checkouts. Shared writable roots are excluded.
+func (l *Lease) ThreadAreas() []string {
+	areas := []string{l.Dir}
+	for _, checkout := range l.Checkouts {
+		areas = append(areas, checkout.Path)
+	}
+	return areas
+}
+
 // Release returns the lease. It is safe to call more than once.
 func (l *Lease) Release() {
 	l.once.Do(l.release)

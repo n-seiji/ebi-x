@@ -26,25 +26,13 @@ type MemoryAppends struct {
 func ParsePlan(text string) (string, string, error) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	var policyIndexes, instructionIndexes []int
-	inFence := false
-	var fence byte
-	var fenceLen int
+	prose := proseLines(lines)
 
 	for i, line := range lines {
+		if !prose[i] {
+			continue
+		}
 		trimmed := strings.TrimSpace(line)
-		if marker, length, ok := fenceMarker(trimmed); ok {
-			if !inFence {
-				inFence = true
-				fence = marker
-				fenceLen = length
-			} else if marker == fence && length >= fenceLen {
-				inFence = false
-			}
-			continue
-		}
-		if inFence {
-			continue
-		}
 		switch trimmed {
 		case policyHeading:
 			policyIndexes = append(policyIndexes, i)
@@ -100,25 +88,13 @@ func SplitMemoryAppends(text string) (rest string, appends MemoryAppends, valid 
 	}
 	var sections []section
 	firstMemoryIndex := -1
-	inFence := false
-	var fence byte
-	var fenceLen int
+	prose := proseLines(lines)
 
 	for i, line := range lines {
+		if !prose[i] {
+			continue
+		}
 		trimmed := strings.TrimSpace(line)
-		if marker, length, ok := fenceMarker(trimmed); ok {
-			if !inFence {
-				inFence = true
-				fence = marker
-				fenceLen = length
-			} else if marker == fence && length >= fenceLen {
-				inFence = false
-			}
-			continue
-		}
-		if inFence {
-			continue
-		}
 		scope := -1
 		switch trimmed {
 		case memoryHeading, globalMemoryHeading:
@@ -181,25 +157,13 @@ func SplitAttachments(text string) (rest string, paths []string, valid bool) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	start, end := -1, len(lines)
 	sections := 0
-	inFence := false
-	var fence byte
-	var fenceLen int
+	prose := proseLines(lines)
 
 	for i, line := range lines {
+		if !prose[i] {
+			continue
+		}
 		trimmed := strings.TrimSpace(line)
-		if marker, length, ok := fenceMarker(trimmed); ok {
-			if !inFence {
-				inFence = true
-				fence = marker
-				fenceLen = length
-			} else if marker == fence && length >= fenceLen {
-				inFence = false
-			}
-			continue
-		}
-		if inFence {
-			continue
-		}
 		if trimmed == attachmentsHeading {
 			sections++
 			if start == -1 {
@@ -239,6 +203,30 @@ func SplitAttachments(text string) (rest string, paths []string, valid bool) {
 		paths = append(paths, item)
 	}
 	return rest, paths, true
+}
+
+// proseLines reports, for each line, whether it is outside fenced code
+// blocks and is not a fence line itself, so headings quoted in code are not
+// taken as output-contract sections.
+func proseLines(lines []string) []bool {
+	prose := make([]bool, len(lines))
+	inFence := false
+	var fence byte
+	var fenceLen int
+	for i, line := range lines {
+		if marker, length, ok := fenceMarker(strings.TrimSpace(line)); ok {
+			if !inFence {
+				inFence = true
+				fence = marker
+				fenceLen = length
+			} else if marker == fence && length >= fenceLen {
+				inFence = false
+			}
+			continue
+		}
+		prose[i] = !inFence
+	}
+	return prose
 }
 
 // fenceMarker reports the fence character and the number of times it is

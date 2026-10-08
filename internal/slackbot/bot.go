@@ -412,29 +412,24 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	if len(output.memoryScopes) > 0 {
 		resultText += "\n\n📝 " + strings.Join(output.memoryScopes, "・") + "メモリを更新しました。"
 	}
+	// The deliverable that did not reach Slack must not look successful. The
+	// files stay in the work area for a resend request.
+	final := state.Done
 	if notice := output.attachmentNotice(); notice != "" {
 		resultText += "\n\n" + notice
+		final = state.Interrupted
 	}
 	if err := b.post(ctx, channel, threadTS, resultText); err != nil {
 		log.Printf("slackbot: post work result %q: %v", eventKey, err)
 		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, workFailureMessage)
 		return
 	}
-	if output.attachmentFailed() {
-		// The deliverable did not reach Slack, so the event must not look
-		// successful. The files stay in the work area for a resend request.
-		if err := b.store.Transition(eventKey, state.Working, state.Interrupted); err != nil {
-			log.Printf("slackbot: record attachment failure %q: %v", eventKey, err)
-		}
-		b.finalReaction(ctx, channel, timestamp, false)
-		return
-	}
-	if err := b.store.Transition(eventKey, state.Working, state.Done); err != nil {
+	if err := b.store.Transition(eventKey, state.Working, final); err != nil {
 		log.Printf("slackbot: finish work %q: %v", eventKey, err)
 		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, workFailureMessage)
 		return
 	}
-	b.finalReaction(ctx, channel, timestamp, true)
+	b.finalReaction(ctx, channel, timestamp, final == state.Done)
 }
 
 // workOutput is what a completed work turn hands back for posting.
@@ -446,10 +441,6 @@ type workOutput struct {
 	attachmentOutputInvalid bool
 	// failedAttachments lists files that were rejected or failed to upload.
 	failedAttachments []attachment.Rejection
-}
-
-func (o workOutput) attachmentFailed() bool {
-	return o.attachmentOutputInvalid || len(o.failedAttachments) > 0
 }
 
 // attachmentNotice tells the user which files did not reach Slack, so the
@@ -568,11 +559,7 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 // Only files in the thread's own workspace directory and checkouts qualify;
 // shared writable roots and the playbooks directory are other threads' too.
 func (b *Bot) uploadAttachments(ctx context.Context, eventKey, channel, threadTS string, lease *workspace.Lease, paths []string) []attachment.Rejection {
-	areas := []string{lease.Dir}
-	for _, checkout := range lease.Checkouts {
-		areas = append(areas, checkout.Path)
-	}
-	files, failed := attachment.Resolve(areas, lease.Dir, paths)
+	files, failed := attachment.Resolve(lease.ThreadAreas(), lease.Dir, paths)
 	for _, rejection := range failed {
 		log.Printf("slackbot: reject attachment %q for %q: %s", rejection.Path, eventKey, rejection.Reason)
 	}
@@ -583,7 +570,7 @@ func (b *Bot) uploadAttachments(ctx context.Context, eventKey, channel, threadTS
 				return err
 			}
 			defer content.Close()
-			return b.api.UploadFile(ctx, channel, threadTS, file.Name, file.Size, content)
+			return b.api.UploadFile(ctx, channel, threadTS, file.Name(), file.Size(), content)
 		})
 		if err != nil {
 			log.Printf("slackbot: upload attachment %q for %q: %v", file.Path, eventKey, err)

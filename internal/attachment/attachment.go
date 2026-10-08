@@ -35,13 +35,20 @@ var allowedExtensions = map[string]struct{}{
 
 // File is a validated attachment.
 type File struct {
-	// Path is the absolute path the work turn listed.
+	// Path is the file's real absolute path.
 	Path string
-	// Name is the file name shown in Slack.
-	Name string
-	Size int64
 	info fs.FileInfo
 }
+
+// Name is the file name shown in Slack.
+func (f File) Name() string { return filepath.Base(f.Path) }
+
+// Size is the file size in bytes at validation.
+func (f File) Size() int64 { return f.info.Size() }
+
+// area is a work area root, both as configured and with symbolic links
+// resolved.
+type area struct{ lexical, real string }
 
 // Rejection explains why a listed path will not be uploaded.
 type Rejection struct {
@@ -54,7 +61,6 @@ type Rejection struct {
 // symbolic link below that root. Duplicates are attached once, and paths past
 // MaxFiles are rejected.
 func Resolve(roots []string, cwd string, paths []string) ([]File, []Rejection) {
-	type area struct{ lexical, real string }
 	var areas []area
 	for _, root := range roots {
 		if root == "" || !filepath.IsAbs(root) {
@@ -83,20 +89,7 @@ func Resolve(roots []string, cwd string, paths []string) ([]File, []Rejection) {
 			rejections = append(rejections, Rejection{Path: path, Reason: fmt.Sprintf("1回の添付は%d件までです", MaxFiles)})
 			continue
 		}
-		file, err := resolveOne(path, func(path, real string) bool {
-			for _, area := range areas {
-				lexicalRel, ok := within(area.lexical, path)
-				if !ok {
-					continue
-				}
-				// The real path must match the lexical one below the root, so
-				// no symbolic link inside the work area redirects the file.
-				if realRel, ok := within(area.real, real); ok && realRel == lexicalRel {
-					return true
-				}
-			}
-			return false
-		})
+		file, err := resolveOne(path, areas)
 		if err != nil {
 			rejections = append(rejections, Rejection{Path: path, Reason: err.Error()})
 			continue
@@ -106,7 +99,7 @@ func Resolve(roots []string, cwd string, paths []string) ([]File, []Rejection) {
 	return files, rejections
 }
 
-func resolveOne(path string, inArea func(path, real string) bool) (File, error) {
+func resolveOne(path string, areas []area) (File, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	if _, ok := allowedExtensions[ext]; !ok {
 		return File{}, errors.New("添付できない種類のファイルです")
@@ -117,7 +110,7 @@ func resolveOne(path string, inArea func(path, real string) bool) (File, error) 
 	} else if err != nil {
 		return File{}, errors.New("ファイルを確認できません")
 	}
-	if !inArea(path, real) {
+	if !inAreas(areas, path, real) {
 		return File{}, errors.New("このスレッドの作業領域外のファイルです")
 	}
 	info, err := os.Lstat(real)
@@ -133,7 +126,23 @@ func resolveOne(path string, inArea func(path, real string) bool) (File, error) 
 	if info.Size() > MaxSize {
 		return File{}, fmt.Errorf("%dMBを超えています", MaxSize>>20)
 	}
-	return File{Path: real, Name: filepath.Base(real), Size: info.Size(), info: info}, nil
+	return File{Path: real, info: info}, nil
+}
+
+// inAreas reports whether path lies in one of areas. The real path must match
+// the lexical one below the root, so no symbolic link inside the work area
+// redirects the file.
+func inAreas(areas []area, path, real string) bool {
+	for _, area := range areas {
+		lexicalRel, ok := within(area.lexical, path)
+		if !ok {
+			continue
+		}
+		if realRel, ok := within(area.real, real); ok && realRel == lexicalRel {
+			return true
+		}
+	}
+	return false
 }
 
 // Open opens a validated file and checks it is still the file that was
@@ -148,8 +157,8 @@ func (f File) Open() (*os.File, error) {
 		file.Close()
 		return nil, err
 	}
-	if f.info == nil || !os.SameFile(info, f.info) || !info.Mode().IsRegular() ||
-		info.Size() != f.Size || !info.ModTime().Equal(f.info.ModTime()) {
+	if !os.SameFile(info, f.info) || !info.Mode().IsRegular() ||
+		info.Size() != f.info.Size() || !info.ModTime().Equal(f.info.ModTime()) {
 		file.Close()
 		return nil, errors.New("検証後にファイルが変更されました")
 	}

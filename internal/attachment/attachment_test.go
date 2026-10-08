@@ -33,7 +33,7 @@ func TestResolveAcceptsFilesInThreadAreas(t *testing.T) {
 	if len(rejections) != 0 {
 		t.Fatalf("rejections = %+v, want none", rejections)
 	}
-	if len(files) != 2 || files[0].Name != "preview.png" || files[1].Name != "deck.PPTX" || files[1].Size != 4 {
+	if len(files) != 2 || files[0].Name() != "preview.png" || files[1].Name() != "deck.PPTX" || files[1].Size() != 4 {
 		t.Fatalf("files = %+v, want preview.png and deck.PPTX once each", files)
 	}
 	content, err := files[1].Open()
