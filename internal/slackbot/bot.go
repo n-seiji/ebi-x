@@ -1,4 +1,4 @@
-// Package slackbot connects Slack mentions to Codex planning and work turns.
+// Package slackbot connects Slack mentions to persistent Codex sessions.
 package slackbot
 
 import (
@@ -33,15 +33,12 @@ const (
 	maxSlackMessageRunes    = 8000
 	maxThreadContextRunes   = 12000
 	claimFailureMessage     = "受付に失敗しました。お手数ですが、もう一度 mention してください。"
-	failClosedMessage       = "作業指示を確定できなかったため、作業は開始していません。指示を明確にして、もう一度 mention してください。"
-	planFailureMessage      = "⚠️ 方針の検討または投稿に失敗しました。もう一度 mention してください。"
 	threadFailureMessage    = "⚠️ スレッドの読み込みに失敗したため、作業は開始していません。もう一度 mention してください。"
 	workStartFailureMessage = "⚠️ 作業を開始できなかったため、作業は行っていません。もう一度 mention してください。"
 	workFailureMessage      = "⚠️ 作業が完了したことを確認できませんでした。状況を確認し、新しい mention で依頼し直してください。"
 	forbiddenMessage        = "403 forbidden. %s に確認してください。"
 	attachmentFailureNotice = "⚠️ 次のファイルを添付できませんでした。生成済みのファイルは作業領域に残しています。再送する場合は「添付を再送して」と依頼してください。"
 	attachmentOutputNotice  = "⚠️ 添付ファイルの指定を読み取れなかったため、ファイルは添付していません。再送する場合は「添付を再送して」と依頼してください。"
-	planningStatus          = "が方針を考えています…"
 	workingStatus           = "が作業を進めています…"
 	queuedStatus            = "が作業の順番を待っています…"
 	statusRefreshDelay      = 80 * time.Second
@@ -58,7 +55,7 @@ type SlackAPI interface {
 	UploadFile(ctx context.Context, channel, threadTS, filename string, size int64, content io.Reader) error
 }
 
-// ThreadMessage is the Slack thread data supplied to a first planning turn.
+// ThreadMessage is the Slack thread data supplied to a first turn.
 type ThreadMessage struct {
 	AuthorID  string
 	Timestamp string
@@ -85,7 +82,10 @@ type Runner interface {
 // Workspaces provides per-thread working directories and git checkouts.
 type Workspaces interface {
 	ThreadDir(threadID string) (string, error)
-	Acquire(ctx context.Context, threadID string) (*workspace.Lease, error)
+	// Acquire leases the thread's workspace. Missing checkouts are created
+	// only when createCheckouts is set; otherwise they are reported in
+	// Lease.PendingRepos.
+	Acquire(ctx context.Context, threadID string, createCheckouts bool) (*workspace.Lease, error)
 	// OtherThreadPaths lists every workspace and checkout entry except
 	// threadID's own, so one thread's turn cannot read another's.
 	OtherThreadPaths(threadID string) ([]string, error)
@@ -120,9 +120,6 @@ type Config struct {
 	// MaxParallelWork is how many work turns for different Slack threads may
 	// run at once. Values below 1 mean 1.
 	MaxParallelWork int
-	// MaxParallelPlan is how many planning turns may run at once. Values
-	// below 1 mean 1.
-	MaxParallelPlan int
 	// SharedWriteChannelIDs are the channels whose work turns may write
 	// playbooks and global memory, which every channel reads.
 	SharedWriteChannelIDs []string
@@ -145,7 +142,6 @@ type Bot struct {
 	approvers           map[string]struct{}
 	sharedWriteChannels map[string]struct{}
 	workSlots           chan struct{}
-	planSlots           chan struct{}
 	memoryMu            sync.RWMutex
 	threadMu            sync.Mutex
 	threadLocks         map[string]*sync.Mutex
@@ -189,7 +185,6 @@ func New(api SlackAPI, store Store, runner Runner, config Config, playbooks []pl
 		approvers:           makeSet(config.ApproverUserIDs),
 		sharedWriteChannels: makeSet(config.SharedWriteChannelIDs),
 		workSlots:           make(chan struct{}, max(config.MaxParallelWork, 1)),
-		planSlots:           make(chan struct{}, max(config.MaxParallelPlan, 1)),
 		threadLocks:         make(map[string]*sync.Mutex),
 		workLocks:           make(map[string]*sync.Mutex),
 		now:                 time.Now,
@@ -313,9 +308,6 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	threadTS := trigger.threadTS
 
 	eventKey := channel + ":" + timestamp
-	// v4 prevents sessions created before per-thread workspaces from being
-	// resumed in the shared workspace.
-	threadKey := "v4:" + channel + ":" + threadTS
 
 	claimed, err := b.store.ClaimEvent(eventKey)
 	if err != nil {
@@ -333,133 +325,41 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	}
 	b.addReaction(ctx, channel, timestamp, "eyes")
 
-	if err := b.store.Transition(eventKey, state.Received, state.Planning); err != nil {
-		log.Printf("slackbot: start planning %q: %v", eventKey, err)
-		if postErr := b.post(ctx, channel, threadTS, planFailureMessage); postErr != nil {
-			log.Printf("slackbot: post planning transition failure %q: %v", eventKey, postErr)
-		}
-		b.finalReaction(ctx, channel, timestamp, false)
-		return
-	}
-	b.setStatus(ctx, channel, threadTS, planningStatus)
-	defer b.clearStatus(ctx, channel, threadTS)
-
-	workspaceID, cwd, err := b.threadWorkspace(channel, threadTS)
+	workspaceID, _, err := b.threadWorkspace(channel, threadTS)
 	if err != nil {
 		log.Printf("slackbot: prepare thread workspace %q: %v", eventKey, err)
-		b.fail(ctx, eventKey, state.Planning, state.Failed, channel, threadTS, timestamp, planFailureMessage)
+		b.fail(ctx, eventKey, state.Received, state.Failed, channel, threadTS, timestamp, workStartFailureMessage)
 		return
 	}
 
+	// A Slack thread owns one Codex session. Hold the lock through execution
+	// and delivery so replies see the preceding result and never resume a
+	// session concurrently.
+	// Do not resume older sessions carrying the retired planning contract.
+	threadKey := "v5:" + channel + ":" + threadTS
 	lock := b.keyedLock(b.threadLocks, threadKey)
 	lock.Lock()
+	defer lock.Unlock()
+	if err := ctx.Err(); err != nil {
+		b.fail(ctx, eventKey, state.Received, state.Failed, channel, threadTS, timestamp, workStartFailureMessage)
+		return
+	}
+	defer b.clearStatus(ctx, channel, threadTS)
 	threadID, hasThread := b.store.GetThread(threadKey)
 	var slackThread string
 	if !hasThread && trigger.threadReply {
 		threadMessages, err := b.api.GetThreadMessages(ctx, channel, threadTS, timestamp)
 		if err != nil {
-			lock.Unlock()
 			log.Printf("slackbot: read thread context %q: %v", eventKey, err)
-			b.fail(ctx, eventKey, state.Planning, state.Failed, channel, threadTS, timestamp, threadFailureMessage)
+			b.fail(ctx, eventKey, state.Received, state.Failed, channel, threadTS, timestamp, threadFailureMessage)
 			return
 		}
 		slackThread = formatThreadContext(threadMessages, timestamp)
 	}
-	b.memoryMu.RLock()
-	memoryContext, memErr := memory.ReadContext(b.config.MemoryDir, channel)
-	b.memoryMu.RUnlock()
-	if memErr != nil {
-		log.Printf("slackbot: read memory: %v", memErr)
-	}
-	// Read a fresh, local snapshot so concurrent turns never mutate the catalog.
-	currentPlaybooks := b.playbooks
-	if b.config.PlaybooksDir != "" {
-		var err error
-		currentPlaybooks, err = playbook.List(b.config.PlaybooksDir)
-		if err != nil {
-			log.Printf("slackbot: reload playbooks: %v", err)
-			currentPlaybooks = nil
-		}
-	}
-	var planPrompt string
-	if trigger.source == messageTrigger {
-		planPrompt = prompt.BuildMessagePlanPrompt(memoryContext, currentPlaybooks, slackThread, trigger.authorID, trigger.message)
-	} else {
-		planPrompt = prompt.BuildPlanPrompt(memoryContext, currentPlaybooks, slackThread, trigger.message)
-	}
-	// The plan slot covers only the Codex turn, so slow Slack calls above do
-	// not hold back other threads' planning.
-	select {
-	case b.planSlots <- struct{}{}:
-	case <-ctx.Done():
-		lock.Unlock()
-		log.Printf("slackbot: wait for plan slot %q: %v", eventKey, ctx.Err())
-		b.fail(ctx, eventKey, state.Planning, state.Failed, channel, threadTS, timestamp, planFailureMessage)
-		return
-	}
-	// List other threads last, so threads created while this one waited are
-	// denied too.
-	otherThreads, err := b.config.Workspaces.OtherThreadPaths(workspaceID)
-	if err != nil {
-		<-b.planSlots
-		lock.Unlock()
-		log.Printf("slackbot: list other thread workspaces %q: %v", eventKey, err)
-		b.fail(ctx, eventKey, state.Planning, state.Failed, channel, threadTS, timestamp, planFailureMessage)
-		return
-	}
-	planResult, runErr := b.runTurn(ctx, threadID, "read-only-network", cwd, nil, otherThreads, planPrompt, func(id string) error {
-		if err := b.store.SetThread(threadKey, id); err != nil {
-			return fmt.Errorf("persist plan thread: %w", err)
-		}
-		return nil
-	})
-	<-b.planSlots
-	lock.Unlock()
-
-	if runErr != nil || planResult == nil || !planResult.Completed {
-		if runErr != nil {
-			log.Printf("slackbot: plan turn %q: %v", eventKey, runErr)
-		} else if planResult != nil {
-			log.Printf("slackbot: plan turn %q incomplete: %s", eventKey, planResult.Err)
-		}
-		b.fail(ctx, eventKey, state.Planning, state.Failed, channel, threadTS, timestamp, planFailureMessage)
-		return
-	}
-	if len(planResult.Messages) == 0 {
-		b.finishFailClosed(ctx, eventKey, channel, threadTS, timestamp, failClosedMessage)
-		return
-	}
-
-	planText := codex.SanitizeSlackOutput(planResult.Messages[len(planResult.Messages)-1])
-	policy, instruction, err := codex.ParsePlan(planText)
-	if err != nil {
-		log.Printf("slackbot: parse plan %q: %v", eventKey, err)
-		b.finishFailClosed(ctx, eventKey, channel, threadTS, timestamp, planText+"\n\n"+failClosedMessage)
-		return
-	}
-	if err := b.store.Transition(eventKey, state.Planning, state.PlanPosted); err != nil {
-		log.Printf("slackbot: persist posted plan %q: %v", eventKey, err)
-		b.fail(ctx, eventKey, state.Planning, state.Failed, channel, threadTS, timestamp, planFailureMessage)
-		return
-	}
-	if instruction == "" {
-		if err := b.post(ctx, channel, threadTS, policy); err != nil {
-			log.Printf("slackbot: post policy %q: %v", eventKey, err)
-			b.fail(ctx, eventKey, state.PlanPosted, state.Failed, channel, threadTS, timestamp, planFailureMessage)
-			return
-		}
-		if err := b.store.Transition(eventKey, state.PlanPosted, state.Done); err != nil {
-			log.Printf("slackbot: finish NONE %q: %v", eventKey, err)
-			b.fail(ctx, eventKey, state.PlanPosted, state.Failed, channel, threadTS, timestamp, planFailureMessage)
-			return
-		}
-		b.finalReaction(ctx, channel, timestamp, true)
-		return
-	}
-	output, started, workErr := b.work(ctx, eventKey, channel, threadTS, threadKey, workspaceID, instruction)
+	output, started, workErr := b.work(ctx, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread, trigger)
 	if !started {
 		log.Printf("slackbot: start work %q: %v", eventKey, workErr)
-		b.fail(ctx, eventKey, state.PlanPosted, state.Failed, channel, threadTS, timestamp, workStartFailureMessage)
+		b.fail(ctx, eventKey, state.Received, state.Failed, channel, threadTS, timestamp, workStartFailureMessage)
 		return
 	}
 	if workErr != nil {
@@ -522,21 +422,23 @@ func (o workOutput) attachmentNotice() string {
 	return builder.String()
 }
 
-// work runs the work turn for instruction. started reports whether the event
+// work runs one complete request in the Slack thread's Codex session. started reports whether the event
 // reached the working state; when it did not, nothing was run and the event
 // may be retried.
-func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, workspaceID, instruction string) (output workOutput, started bool, err error) {
+func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread string, trigger processingTrigger) (output workOutput, started bool, err error) {
 	release, err := b.acquireWork(ctx, threadKey, channel, threadTS)
 	if err != nil {
 		return workOutput{}, false, err
 	}
 	defer release()
 
-	lease, err := b.config.Workspaces.Acquire(ctx, workspaceID)
+	// Checkouts are cloned only when the turn asks for them, so a request
+	// that only reads code or answers a question does not create any.
+	lease, err := b.config.Workspaces.Acquire(ctx, workspaceID, false)
 	if err != nil {
 		return workOutput{}, false, fmt.Errorf("prepare workspace: %w", err)
 	}
-	defer lease.Release()
+	defer func() { lease.Release() }()
 	otherThreads, err := b.config.Workspaces.OtherThreadPaths(workspaceID)
 	if err != nil {
 		return workOutput{}, false, fmt.Errorf("list other thread workspaces: %w", err)
@@ -544,42 +446,75 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 	// Playbooks and global memory reach every channel, so only trusted
 	// channels may change them.
 	_, sharedWritable := b.sharedWriteChannels[channel]
-	roots := append([]string(nil), lease.WritableRoots...)
-	if b.config.PlaybooksDir != "" && sharedWritable {
-		roots = append(roots, b.config.PlaybooksDir)
+
+	// A new session receives the memory, playbook catalog, and rules once;
+	// a resumed session already holds them, so only the request is sent.
+	var turnPrompt string
+	if threadID == "" {
+		currentPlaybooks := b.playbooks
+		if b.config.PlaybooksDir != "" {
+			currentPlaybooks, err = playbook.List(b.config.PlaybooksDir)
+			if err != nil {
+				return workOutput{}, false, fmt.Errorf("reload playbooks: %w", err)
+			}
+		}
+		// memoryMu is only held around the memory access itself, so other
+		// turns can read memory while this one runs. The memory directory is
+		// intentionally not a writable root: the agent proposes memory
+		// entries through the output contract and the bot writes them.
+		b.memoryMu.RLock()
+		memoryContext, memErr := memory.ReadContext(b.config.MemoryDir, channel)
+		b.memoryMu.RUnlock()
+		if memErr != nil {
+			log.Printf("slackbot: read memory: %v", memErr)
+		}
+		turnPrompt = prompt.BuildTurnPrompt(memoryContext, currentPlaybooks, slackThread, trigger.authorID, trigger.message, lease.Checkouts, lease.PendingRepos, sharedWritable)
+	} else {
+		turnPrompt = prompt.BuildResumePrompt(trigger.authorID, trigger.message, lease.Checkouts, lease.PendingRepos)
 	}
 
-	if err := b.store.Transition(eventKey, state.PlanPosted, state.Working); err != nil {
+	if err := b.store.Transition(eventKey, state.Received, state.Working); err != nil {
 		return workOutput{}, false, err
 	}
-	// A work plan is intentionally not posted: Slack would clear the progress
-	// status when processing that reply. Refresh the status until work completes.
+	// Keep the status visible throughout the execution turn.
 	stopWorkingStatus := b.keepStatus(ctx, channel, threadTS, workingStatus)
 	defer stopWorkingStatus()
 
-	// memoryMu is only held around the memory access itself, so other turns
-	// can read memory while this one runs. The memory directory is
-	// intentionally not a writable root: the agent proposes memory entries
-	// through the output contract and the bot writes them.
-	b.memoryMu.RLock()
-	workMemoryContext, memErr := memory.ReadContext(b.config.MemoryDir, channel)
-	b.memoryMu.RUnlock()
-	if memErr != nil {
-		log.Printf("slackbot: refresh memory before work: %v", memErr)
-	}
-	workPrompt := prompt.BuildWorkPrompt(instruction, workMemoryContext, lease.Checkouts, sharedWritable)
-	workResult, workErr := b.runTurn(ctx, "", "workspace-write", lease.Dir, roots, otherThreads, workPrompt, nil)
-	if workErr != nil {
-		return workOutput{}, true, workErr
-	}
-	if workResult == nil || !workResult.Completed || len(workResult.Messages) == 0 {
-		if workResult != nil && workResult.Err != "" {
-			return workOutput{}, true, fmt.Errorf("work turn incomplete: %s", workResult.Err)
+	// sessionID is the session a checkout request continues in.
+	sessionID := threadID
+	persistThread := func(id string) error {
+		sessionID = id
+		if err := b.store.SetThread(threadKey, id); err != nil {
+			return fmt.Errorf("persist thread: %w", err)
 		}
-		return workOutput{}, true, errors.New("work turn incomplete")
+		return nil
+	}
+	finalText, err := b.runWorkTurn(ctx, threadID, lease, sharedWritable, otherThreads, turnPrompt, persistThread)
+	if err != nil {
+		return workOutput{}, true, err
+	}
+	finalText, checkoutsRequested := codex.SplitCheckoutRequest(finalText)
+	if checkoutsRequested && len(lease.PendingRepos) > 0 {
+		if sessionID == "" {
+			return workOutput{}, true, errors.New("checkout request without a session to continue")
+		}
+		// Release is idempotent, so the deferred call is a no-op for this
+		// lease if acquiring the next one fails.
+		lease.Release()
+		next, err := b.config.Workspaces.Acquire(ctx, workspaceID, true)
+		if err != nil {
+			return workOutput{}, true, fmt.Errorf("prepare requested checkouts: %w", err)
+		}
+		lease = next
+		finalText, err = b.runWorkTurn(ctx, sessionID, lease, sharedWritable, otherThreads, prompt.BuildCheckoutsReadyPrompt(lease.Checkouts), persistThread)
+		if err != nil {
+			return workOutput{}, true, err
+		}
+		// A second request has nothing more to prepare.
+		finalText, _ = codex.SplitCheckoutRequest(finalText)
 	}
 
-	resultText, attachmentPaths, attachmentOutputValid := codex.SplitAttachments(workResult.Messages[len(workResult.Messages)-1])
+	resultText, attachmentPaths, attachmentOutputValid := codex.SplitAttachments(finalText)
 	if !attachmentOutputValid {
 		log.Printf("slackbot: ignore malformed attachment output %q", eventKey)
 		output.attachmentOutputInvalid = true
@@ -626,6 +561,26 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 		output.failedAttachments = b.uploadAttachments(ctx, eventKey, channel, threadTS, lease, attachmentPaths)
 	}
 	return output, true, nil
+}
+
+// runWorkTurn runs one workspace-write turn in lease and returns its final
+// message.
+func (b *Bot) runWorkTurn(ctx context.Context, threadID string, lease *workspace.Lease, sharedWritable bool, otherThreads []string, text string, onThreadStarted func(string) error) (string, error) {
+	roots := append([]string(nil), lease.WritableRoots...)
+	if b.config.PlaybooksDir != "" && sharedWritable {
+		roots = append(roots, b.config.PlaybooksDir)
+	}
+	result, err := b.runTurn(ctx, threadID, "workspace-write", lease.Dir, roots, otherThreads, text, onThreadStarted)
+	if err != nil {
+		return "", err
+	}
+	if result == nil || !result.Completed || len(result.Messages) == 0 {
+		if result != nil && result.Err != "" {
+			return "", fmt.Errorf("work turn incomplete: %s", result.Err)
+		}
+		return "", errors.New("work turn incomplete")
+	}
+	return result.Messages[len(result.Messages)-1], nil
 }
 
 // uploadAttachments sends the files a work turn listed to the Slack thread.
@@ -698,7 +653,7 @@ func (b *Bot) acquireWork(ctx context.Context, threadKey, channel, threadTS stri
 	}
 }
 
-// threadWorkspace returns the workspace identifier and plan cwd for a Slack
+// threadWorkspace returns the workspace identifier and cwd for a Slack
 // thread.
 func (b *Bot) threadWorkspace(channel, threadTS string) (string, string, error) {
 	id, err := workspace.ThreadID(channel, threadTS)
@@ -721,7 +676,7 @@ type sharedWorkspaces struct {
 
 func (w sharedWorkspaces) ThreadDir(string) (string, error) { return w.dir, nil }
 
-func (w sharedWorkspaces) Acquire(context.Context, string) (*workspace.Lease, error) {
+func (w sharedWorkspaces) Acquire(context.Context, string, bool) (*workspace.Lease, error) {
 	lease := workspace.NewLease(w.dir, w.roots, nil, func() {})
 	lease.Shared = true
 	return lease, nil
@@ -785,20 +740,6 @@ func (b *Bot) runTurn(ctx context.Context, threadID, sandbox, cwd string, roots,
 	return b.runner.Run(turnCtx, threadID, sandbox, cwd, roots, denied, text, callback)
 }
 
-func (b *Bot) finishFailClosed(ctx context.Context, eventKey, channel, threadTS, timestamp, text string) {
-	if err := b.post(ctx, channel, threadTS, text); err != nil {
-		log.Printf("slackbot: post fail-closed plan %q: %v", eventKey, err)
-		b.fail(ctx, eventKey, state.Planning, state.Failed, channel, threadTS, timestamp, planFailureMessage)
-		return
-	}
-	if err := b.store.Transition(eventKey, state.Planning, state.Done); err != nil {
-		log.Printf("slackbot: finish fail-closed %q: %v", eventKey, err)
-		b.fail(ctx, eventKey, state.Planning, state.Failed, channel, threadTS, timestamp, planFailureMessage)
-		return
-	}
-	b.finalReaction(ctx, channel, timestamp, true)
-}
-
 func (b *Bot) fail(ctx context.Context, eventKey string, from, to state.State, channel, threadTS, timestamp, message string) {
 	if err := b.store.Transition(eventKey, from, to); err != nil {
 		log.Printf("slackbot: transition %q to %s: %v", eventKey, to, err)
@@ -809,7 +750,7 @@ func (b *Bot) fail(ctx context.Context, eventKey string, from, to state.State, c
 	b.finalReaction(ctx, channel, timestamp, false)
 }
 
-// All done outcomes, including fail-closed and NONE, receive ✅. Only failed
+// Completed requests receive ✅. Only failed
 // and interrupted outcomes receive ❌.
 func (b *Bot) finalReaction(ctx context.Context, channel, timestamp string, success bool) {
 	name := "x"

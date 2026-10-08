@@ -31,7 +31,6 @@ func TestLoad(t *testing.T) {
 				"SLACK_ADMIN_USER_ID":                "UADMIN",
 				"CODEX_COMMAND":                      "/usr/local/bin/codex",
 				"CODEX_MODEL":                        "gpt-test",
-				"CODEX_WORK_MODEL":                   "gpt-work",
 				"CODEX_TIMEOUT":                      "45s",
 				"CODEX_MAX_PARALLEL_WORK":            "5",
 				"EBIX_CHECKOUT_IDLE_TTL":             "24h",
@@ -60,14 +59,8 @@ func TestLoad(t *testing.T) {
 				if cfg.CodexModel != "gpt-test" {
 					t.Errorf("CodexModel = %q, want %q", cfg.CodexModel, "gpt-test")
 				}
-				if cfg.CodexWorkModel != "gpt-work" {
-					t.Errorf("CodexWorkModel = %q, want %q", cfg.CodexWorkModel, "gpt-work")
-				}
 				if !reflect.DeepEqual(cfg.AllowedWorkflowIDs, []string{"Wf0BSM19MCDT"}) {
 					t.Errorf("AllowedWorkflowIDs = %v, want [Wf0BSM19MCDT]", cfg.AllowedWorkflowIDs)
-				}
-				if cfg.MaxParallelPlan != 2 {
-					t.Errorf("MaxParallelPlan = %d, want 2", cfg.MaxParallelPlan)
 				}
 				if !reflect.DeepEqual(cfg.SharedWriteChannelIDs, []string{"C123"}) {
 					t.Errorf("SharedWriteChannelIDs = %v, want [C123]", cfg.SharedWriteChannelIDs)
@@ -174,9 +167,6 @@ func TestLoad(t *testing.T) {
 				if cfg.CodexCommand != "codex" {
 					t.Errorf("CodexCommand = %q, want %q", cfg.CodexCommand, "codex")
 				}
-				if cfg.CodexWorkModel != "" {
-					t.Errorf("CodexWorkModel = %q, want empty", cfg.CodexWorkModel)
-				}
 				if cfg.MaxParallelWork != 3 {
 					t.Errorf("MaxParallelWork = %d, want 3", cfg.MaxParallelWork)
 				}
@@ -191,9 +181,6 @@ func TestLoad(t *testing.T) {
 				}
 				if cfg.ThreadSubscriptionTTL != 336*time.Hour {
 					t.Errorf("ThreadSubscriptionTTL = %v, want %v", cfg.ThreadSubscriptionTTL, 336*time.Hour)
-				}
-				if cfg.MaxParallelPlan != 3 {
-					t.Errorf("MaxParallelPlan = %d, want 3", cfg.MaxParallelPlan)
 				}
 				if len(cfg.SharedWriteChannelIDs) != 0 {
 					t.Errorf("SharedWriteChannelIDs = %v, want none", cfg.SharedWriteChannelIDs)
@@ -328,14 +315,30 @@ func TestLoad(t *testing.T) {
 			wantErr: `SLACK_ALLOWED_WORKFLOW_IDS: invalid workflow ID "Wf-bad"`,
 		},
 		{
-			name: "zero parallel plan",
+			name: "obsolete parallel plan is ignored",
 			env: map[string]string{
 				"SLACK_BOT_TOKEN":         "xoxb-test",
 				"SLACK_APP_TOKEN":         "xapp-test",
 				"SLACK_ALLOWED_USER_IDS":  "U123",
 				"CODEX_MAX_PARALLEL_PLAN": "0",
 			},
-			wantErr: "CODEX_MAX_PARALLEL_PLAN",
+			check: func(t *testing.T, cfg *Config, workingDir string) {},
+		},
+		{
+			name: "obsolete work model is ignored",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":        "xoxb-test",
+				"SLACK_APP_TOKEN":        "xapp-test",
+				"SLACK_ALLOWED_USER_IDS": "U123",
+				"CODEX_MODEL":            "gpt-test",
+				"CODEX_WORK_MODEL":       "gpt-work",
+			},
+			check: func(t *testing.T, cfg *Config, workingDir string) {
+				t.Helper()
+				if cfg.CodexModel != "gpt-test" {
+					t.Errorf("CodexModel = %q, want gpt-test", cfg.CodexModel)
+				}
+			},
 		},
 		{
 			name: "invalid shared write channel",

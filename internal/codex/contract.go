@@ -1,18 +1,18 @@
 package codex
 
 import (
-	"errors"
 	"strings"
 )
 
 const (
-	policyHeading              = "## 方針"
-	instructionHeading         = "## 作業指示"
 	memoryHeading              = "## メモリ追記"
 	globalMemoryHeading        = "## 全体メモリ追記"
 	channelMemoryHeading       = "## チャンネルメモリ追記"
 	forbiddenUserMemoryHeading = "## ユーザーメモリ追記"
 	attachmentsHeading         = "## 添付ファイル"
+	// CheckoutRequestHeading asks the bot to prepare the thread's checkouts
+	// and continue the same session in them.
+	CheckoutRequestHeading = "## 作業用クローン要求"
 )
 
 // MemoryAppends contains optional entries proposed by a work turn. The bot
@@ -20,45 +20,6 @@ const (
 type MemoryAppends struct {
 	Global  string
 	Channel string
-}
-
-// ParsePlan extracts the policy and work instruction from a plan response.
-func ParsePlan(text string) (string, string, error) {
-	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
-	var policyIndexes, instructionIndexes []int
-	prose := proseLines(lines)
-
-	for i, line := range lines {
-		if !prose[i] {
-			continue
-		}
-		trimmed := strings.TrimSpace(line)
-		switch trimmed {
-		case policyHeading:
-			policyIndexes = append(policyIndexes, i)
-		case instructionHeading:
-			instructionIndexes = append(instructionIndexes, i)
-		}
-	}
-
-	if len(policyIndexes) != 1 || len(instructionIndexes) != 1 {
-		return "", "", errors.New("plan must contain exactly one policy and one instruction heading")
-	}
-	policyIndex := policyIndexes[0]
-	instructionIndex := instructionIndexes[0]
-	if policyIndex >= instructionIndex {
-		return "", "", errors.New("policy heading must precede instruction heading")
-	}
-
-	policy := strings.TrimSpace(strings.Join(lines[policyIndex+1:instructionIndex], "\n"))
-	instruction := strings.TrimSpace(strings.Join(lines[instructionIndex+1:], "\n"))
-	if policy == "" || instruction == "" {
-		return "", "", errors.New("plan sections must not be empty")
-	}
-	if instruction == "NONE" {
-		instruction = ""
-	}
-	return policy, instruction, nil
 }
 
 // SanitizeSlackOutput removes the retired user-memory section and everything
@@ -145,6 +106,25 @@ func SplitMemoryAppend(text string) (rest, entry string) {
 		return text, ""
 	}
 	return rest, appends.Global
+}
+
+// SplitCheckoutRequest removes every checkout request heading outside code
+// blocks and reports whether there was one.
+func SplitCheckoutRequest(text string) (rest string, requested bool) {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	prose := proseLines(lines)
+	kept := make([]string, 0, len(lines))
+	for i, line := range lines {
+		if prose[i] && strings.TrimSpace(line) == CheckoutRequestHeading {
+			requested = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !requested {
+		return text, false
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n")), true
 }
 
 // SplitAttachments removes the attachment section from a work response. The

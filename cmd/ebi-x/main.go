@@ -60,7 +60,6 @@ func main() {
 	runner := &codex.Runner{
 		Command:               cfg.CodexCommand,
 		Model:                 cfg.CodexModel,
-		WorkModel:             cfg.CodexWorkModel,
 		ConfigPath:            filepath.Join(cfg.EBIXHome, ".codex", "config.toml"),
 		DeniedReadPaths:       cfg.ProtectedPaths,
 		CodexHome:             cfg.CodexHome,
@@ -83,7 +82,6 @@ func main() {
 		ThreadSubscriptionTTL:      cfg.ThreadSubscriptionTTL,
 		WritableRoots:              cfg.WritableRoots,
 		MaxParallelWork:            cfg.MaxParallelWork,
-		MaxParallelPlan:            cfg.MaxParallelPlan,
 		SharedWriteChannelIDs:      cfg.SharedWriteChannelIDs,
 		Workspaces:                 workspaces,
 	}, playbooks)

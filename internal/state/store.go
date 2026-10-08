@@ -24,11 +24,11 @@ const (
 type State string
 
 const (
-	// Received means the event has been claimed but planning has not started.
+	// Received means the event has been claimed but execution has not started.
 	Received State = "received"
-	// Planning means the plan turn is in progress.
+	// Planning is a legacy pre-execution state recovered from older versions.
 	Planning State = "planning"
-	// PlanPosted means the plan was posted and work has not started.
+	// PlanPosted is a legacy pre-execution state recovered from older versions.
 	PlanPosted State = "plan_posted"
 	// Working means the work turn may have started making changes.
 	Working State = "working"
@@ -397,7 +397,7 @@ func atomicWriteJSON(path string, value any) error {
 func allowedTransition(from, to State) bool {
 	switch from {
 	case Received:
-		return to == Planning
+		return to == Planning || to == Working || to == Failed
 	case Planning:
 		return to == PlanPosted || to == Done || to == Failed
 	case PlanPosted:

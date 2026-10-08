@@ -166,7 +166,7 @@ func TestFailedApprovalPostIsRolledBack(t *testing.T) {
 }
 
 func TestApproveInRequestThreadAllowsUser(t *testing.T) {
-	runner := successfulPlanRunner()
+	runner := successfulTurnRunner()
 	bot, api, _, approvals := newApprovalBot(t, runner)
 	event := mention()
 	event.User = "U2"
@@ -287,7 +287,7 @@ func TestWorkflowMentionInApprovalChannelIsIgnored(t *testing.T) {
 	}
 }
 func TestApprovedUserAndChannelAreHandled(t *testing.T) {
-	runner := successfulPlanRunner()
+	runner := successfulTurnRunner()
 	bot, api, _, _ := newApprovalBot(t, runner)
 	event := mention()
 	event.User = "U2"
@@ -367,7 +367,7 @@ func TestConcurrentApprovalsAreAllKept(t *testing.T) {
 }
 func TestApprovedUserMayReplyInSubscribedThread(t *testing.T) {
 	now := time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
-	runner := successfulPlanRunner()
+	runner := successfulTurnRunner()
 	bot, _, store, approvals := newApprovalBot(t, runner)
 	configureActiveSubscription(bot, store, now)
 	bot.allowedUsers = makeSet([]string{"U1"})
