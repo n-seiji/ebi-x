@@ -272,3 +272,37 @@ func TestSubdirectoryOfRepositoryIsAPlainRoot(t *testing.T) {
 		t.Fatalf("lease = %+v", lease)
 	}
 }
+
+func TestOtherThreadPaths(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "workspace")
+	checkoutsDir := filepath.Join(base, "checkouts")
+	for _, dir := range []string{
+		filepath.Join(workspaceDir, "C1-1.1"),
+		filepath.Join(workspaceDir, "C1-2.2"),
+		filepath.Join(workspaceDir, "not-a-thread"),
+		filepath.Join(checkoutsDir, "C1-1.1"),
+		filepath.Join(checkoutsDir, "D9-3.3"),
+	} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager, err := New(context.Background(), workspaceDir, checkoutsDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := manager.OtherThreadPaths("C1-1.1")
+	if err != nil {
+		t.Fatalf("OtherThreadPaths() error = %v", err)
+	}
+	want := []string{
+		filepath.Join(workspaceDir, "C1-2.2"),
+		filepath.Join(workspaceDir, "not-a-thread"),
+		filepath.Join(checkoutsDir, "D9-3.3"),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("OtherThreadPaths() = %v, want %v", got, want)
+	}
+}

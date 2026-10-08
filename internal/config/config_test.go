@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,9 @@ func TestLoad(t *testing.T) {
 				"SLACK_ALLOWED_USER_IDS":             " U123, ,U456 ",
 				"SLACK_ALLOWED_CHANNEL_IDS":          " C123, ,C456 ",
 				"SLACK_ALLOW_WORKFLOWS":              "true",
+				"SLACK_ALLOWED_WORKFLOW_IDS":         "Wf0BSM19MCDT",
+				"CODEX_MAX_PARALLEL_PLAN":            "2",
+				"EBIX_SHARED_WRITE_CHANNEL_IDS":      "C123",
 				"SLACK_ADMIN_USER_ID":                "UADMIN",
 				"CODEX_COMMAND":                      "/usr/local/bin/codex",
 				"CODEX_MODEL":                        "gpt-test",
@@ -58,6 +62,15 @@ func TestLoad(t *testing.T) {
 				}
 				if cfg.CodexWorkModel != "gpt-work" {
 					t.Errorf("CodexWorkModel = %q, want %q", cfg.CodexWorkModel, "gpt-work")
+				}
+				if !reflect.DeepEqual(cfg.AllowedWorkflowIDs, []string{"Wf0BSM19MCDT"}) {
+					t.Errorf("AllowedWorkflowIDs = %v, want [Wf0BSM19MCDT]", cfg.AllowedWorkflowIDs)
+				}
+				if cfg.MaxParallelPlan != 2 {
+					t.Errorf("MaxParallelPlan = %d, want 2", cfg.MaxParallelPlan)
+				}
+				if !reflect.DeepEqual(cfg.SharedWriteChannelIDs, []string{"C123"}) {
+					t.Errorf("SharedWriteChannelIDs = %v, want [C123]", cfg.SharedWriteChannelIDs)
 				}
 				if cfg.MaxParallelWork != 5 {
 					t.Errorf("MaxParallelWork = %d, want 5", cfg.MaxParallelWork)
@@ -179,8 +192,24 @@ func TestLoad(t *testing.T) {
 				if cfg.ThreadSubscriptionTTL != 336*time.Hour {
 					t.Errorf("ThreadSubscriptionTTL = %v, want %v", cfg.ThreadSubscriptionTTL, 336*time.Hour)
 				}
-				if len(cfg.AllowedChannelIDs) != 0 {
-					t.Errorf("AllowedChannelIDs = %v, want %v", cfg.AllowedChannelIDs, []string(nil))
+				if cfg.MaxParallelPlan != 3 {
+					t.Errorf("MaxParallelPlan = %d, want 3", cfg.MaxParallelPlan)
+				}
+				if len(cfg.SharedWriteChannelIDs) != 0 {
+					t.Errorf("SharedWriteChannelIDs = %v, want none", cfg.SharedWriteChannelIDs)
+				}
+				for _, want := range []string{
+					filepath.Join(workingDir, ".env"),
+					filepath.Join(workingDir, ".codex"),
+					filepath.Join(workingDir, "data", "memory"),
+					filepath.Join(workingDir, "data", "state"),
+				} {
+					if !slices.Contains(cfg.ProtectedPaths, want) {
+						t.Errorf("ProtectedPaths = %v, want to contain %q", cfg.ProtectedPaths, want)
+					}
+				}
+				if want := filepath.Join(workingDir, "codex-home"); cfg.CodexHome != want {
+					t.Errorf("CodexHome = %q, want %q", cfg.CodexHome, want)
 				}
 				assertPaths(t, cfg, workingDir)
 			},
@@ -199,6 +228,57 @@ func TestLoad(t *testing.T) {
 					t.Error("AllowAllPublicChannels = false, want true")
 				}
 			},
+		},
+		{
+			name: "no channel restriction",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":           "xoxb-test",
+				"SLACK_APP_TOKEN":           "xapp-test",
+				"SLACK_ALLOWED_USER_IDS":    "U123",
+				"SLACK_ALLOWED_CHANNEL_IDS": " , ",
+			},
+			wantErr: "SLACK_ALLOWED_CHANNEL_IDS",
+		},
+		{
+			name: "workflows without allowlist",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":        "xoxb-test",
+				"SLACK_APP_TOKEN":        "xapp-test",
+				"SLACK_ALLOWED_USER_IDS": "U123",
+				"SLACK_ALLOW_WORKFLOWS":  "true",
+			},
+			wantErr: "SLACK_ALLOWED_WORKFLOW_IDS",
+		},
+		{
+			name: "invalid workflow ID",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":            "xoxb-test",
+				"SLACK_APP_TOKEN":            "xapp-test",
+				"SLACK_ALLOWED_USER_IDS":     "U123",
+				"SLACK_ALLOW_WORKFLOWS":      "true",
+				"SLACK_ALLOWED_WORKFLOW_IDS": "Wf-bad",
+			},
+			wantErr: `SLACK_ALLOWED_WORKFLOW_IDS: invalid workflow ID "Wf-bad"`,
+		},
+		{
+			name: "zero parallel plan",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":         "xoxb-test",
+				"SLACK_APP_TOKEN":         "xapp-test",
+				"SLACK_ALLOWED_USER_IDS":  "U123",
+				"CODEX_MAX_PARALLEL_PLAN": "0",
+			},
+			wantErr: "CODEX_MAX_PARALLEL_PLAN",
+		},
+		{
+			name: "invalid shared write channel",
+			env: map[string]string{
+				"SLACK_BOT_TOKEN":               "xoxb-test",
+				"SLACK_APP_TOKEN":               "xapp-test",
+				"SLACK_ALLOWED_USER_IDS":        "U123",
+				"EBIX_SHARED_WRITE_CHANNEL_IDS": "D123",
+			},
+			wantErr: "EBIX_SHARED_WRITE_CHANNEL_IDS",
 		},
 		{
 			name: "allow all public channels with channel IDs",
@@ -311,6 +391,11 @@ func TestLoad(t *testing.T) {
 				t.Fatalf("filepath.Abs() error = %v, want nil", err)
 			}
 			clearConfigEnv(t)
+			_, hasChannels := tt.env["SLACK_ALLOWED_CHANNEL_IDS"]
+			_, allowsAll := tt.env["SLACK_ALLOW_ALL_PUBLIC_CHANNELS"]
+			if !hasChannels && !allowsAll {
+				t.Setenv("SLACK_ALLOWED_CHANNEL_IDS", "C999")
+			}
 			for key, value := range tt.env {
 				t.Setenv(key, value)
 			}
@@ -407,9 +492,7 @@ func TestLoadWritableRoots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvalSymlinks() error = %v, want nil", err)
 	}
-	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
-	t.Setenv("SLACK_APP_TOKEN", "xapp-test")
-	t.Setenv("SLACK_ALLOWED_USER_IDS", "U123")
+	setRequiredEnv(t)
 	t.Setenv("EBIX_WRITABLE_ROOTS", root)
 
 	cfg, err := Load()
@@ -456,13 +539,11 @@ func TestLoadRejectsMemoryOverlappingWritableRoots(t *testing.T) {
 					t.Fatalf("MkdirAll(%q) error = %v", dir, err)
 				}
 			}
-			t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
-			t.Setenv("SLACK_APP_TOKEN", "xapp-test")
-			t.Setenv("SLACK_ALLOWED_USER_IDS", "U123")
+			setRequiredEnv(t)
 			t.Setenv("EBIX_HOME", home)
 			t.Setenv("EBIX_WRITABLE_ROOTS", tt.rootPath(home))
 
-			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected memory directory") {
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected path") {
 				t.Fatalf("Load() error = %v, want protected memory overlap", err)
 			}
 		})
@@ -482,13 +563,11 @@ func TestLoadRejectsSymlinkedMemoryWritableRoot(t *testing.T) {
 	if err := os.Symlink(memoryDir, link); err != nil {
 		t.Fatalf("Symlink(%q) error = %v", link, err)
 	}
-	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
-	t.Setenv("SLACK_APP_TOKEN", "xapp-test")
-	t.Setenv("SLACK_ALLOWED_USER_IDS", "U123")
+	setRequiredEnv(t)
 	t.Setenv("EBIX_HOME", home)
 	t.Setenv("EBIX_WRITABLE_ROOTS", link)
 
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected memory directory") {
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected path") {
 		t.Fatalf("Load() error = %v, want protected memory overlap", err)
 	}
 }
@@ -498,6 +577,7 @@ func TestLoadDotEnv(t *testing.T) {
 	withWorkingDir(t, workingDir)
 	clearConfigEnv(t)
 	t.Setenv("SLACK_BOT_TOKEN", "from-environment")
+	t.Setenv("SLACK_ALLOWED_CHANNEL_IDS", "C999")
 
 	content := "SLACK_BOT_TOKEN=from-file\n" +
 		"SLACK_APP_TOKEN='xapp-file'\n" +
@@ -558,6 +638,11 @@ func clearConfigEnv(t *testing.T) {
 		"EBIX_CHECKOUT_IDLE_TTL",
 		"EBIX_HOME",
 		"EBIX_WRITABLE_ROOTS",
+		"SLACK_ALLOWED_WORKFLOW_IDS",
+		"CODEX_MAX_PARALLEL_PLAN",
+		"EBIX_SHARED_WRITE_CHANNEL_IDS",
+		"EBIX_DENIED_READ_PATHS",
+		"CODEX_HOME",
 	} {
 		value, exists := os.LookupEnv(key)
 		if err := os.Unsetenv(key); err != nil {
@@ -571,6 +656,17 @@ func clearConfigEnv(t *testing.T) {
 			_ = os.Unsetenv(key)
 		})
 	}
+	// Keep the real Codex home out of tests; relative to the working directory.
+	t.Setenv("CODEX_HOME", "codex-home")
+}
+
+// setRequiredEnv sets the minimal valid configuration.
+func setRequiredEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
+	t.Setenv("SLACK_APP_TOKEN", "xapp-test")
+	t.Setenv("SLACK_ALLOWED_USER_IDS", "U123")
+	t.Setenv("SLACK_ALLOWED_CHANNEL_IDS", "C999")
 }
 
 func withWorkingDir(t *testing.T, dir string) {
@@ -591,9 +687,7 @@ func TestLoadRejectsPlaybooksSymlinkToMemory(t *testing.T) {
 	workingDir := t.TempDir()
 	withWorkingDir(t, workingDir)
 	clearConfigEnv(t)
-	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
-	t.Setenv("SLACK_APP_TOKEN", "xapp-test")
-	t.Setenv("SLACK_ALLOWED_USER_IDS", "U123")
+	setRequiredEnv(t)
 	memoryDir := filepath.Join(workingDir, "data", "memory")
 	if err := os.MkdirAll(memoryDir, 0700); err != nil {
 		t.Fatal(err)
@@ -601,7 +695,79 @@ func TestLoadRejectsPlaybooksSymlinkToMemory(t *testing.T) {
 	if err := os.Symlink(memoryDir, filepath.Join(workingDir, "data", "playbooks")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected memory") {
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected path") {
 		t.Fatalf("Load() error = %v, want memory isolation error", err)
+	}
+}
+
+func TestLoadRejectsWritableRootOverlappingProtectedPaths(t *testing.T) {
+	tests := map[string]func(t *testing.T, root string){
+		"codex home credentials": func(t *testing.T, root string) {
+			t.Setenv("CODEX_HOME", filepath.Join(root, "codex"))
+		},
+		"operator denied path": func(t *testing.T, root string) {
+			t.Setenv("EBIX_DENIED_READ_PATHS", filepath.Join(root, "secrets"))
+		},
+	}
+	for name, configure := range tests {
+		t.Run(name, func(t *testing.T) {
+			workingDir := t.TempDir()
+			withWorkingDir(t, workingDir)
+			clearConfigEnv(t)
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			setRequiredEnv(t)
+			t.Setenv("EBIX_WRITABLE_ROOTS", root)
+			configure(t, root)
+
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected path") {
+				t.Fatalf("Load() error = %v, want protected path overlap", err)
+			}
+		})
+	}
+}
+
+func TestLoadIncludesOperatorDeniedPaths(t *testing.T) {
+	workingDir := t.TempDir()
+	withWorkingDir(t, workingDir)
+	clearConfigEnv(t)
+	setRequiredEnv(t)
+	t.Setenv("EBIX_DENIED_READ_PATHS", filepath.Join(workingDir, "ssh"))
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v, want nil", err)
+	}
+	want, err := filepath.EvalSymlinks(workingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(cfg.ProtectedPaths, filepath.Join(want, "ssh")) {
+		t.Fatalf("ProtectedPaths = %v, want operator path", cfg.ProtectedPaths)
+	}
+}
+
+func TestLoadRejectsWritableRootOverlappingBotDirectories(t *testing.T) {
+	for _, dir := range []string{"playbooks", "workspace", "checkouts"} {
+		t.Run(dir, func(t *testing.T) {
+			workingDir, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			withWorkingDir(t, workingDir)
+			clearConfigEnv(t)
+			setRequiredEnv(t)
+			root := filepath.Join(workingDir, "data", dir)
+			if err := os.MkdirAll(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("EBIX_WRITABLE_ROOTS", root)
+
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected path") {
+				t.Fatalf("Load() error = %v, want bot directory overlap", err)
+			}
+		})
 	}
 }

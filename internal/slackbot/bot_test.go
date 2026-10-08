@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -261,11 +262,12 @@ type fakeRunner struct {
 	sandboxes []string
 	cwds      []string
 	roots     [][]string
+	denied    [][]string
 	prompts   []string
 	onRun     func(call int)
 }
 
-func (r *fakeRunner) Run(_ context.Context, threadID, sandbox, cwd string, roots []string, prompt string, callback func(string) error) (*codex.TurnResult, error) {
+func (r *fakeRunner) Run(_ context.Context, threadID, sandbox, cwd string, roots, denied []string, prompt string, callback func(string) error) (*codex.TurnResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
@@ -276,6 +278,7 @@ func (r *fakeRunner) Run(_ context.Context, threadID, sandbox, cwd string, roots
 	r.sandboxes = append(r.sandboxes, sandbox)
 	r.cwds = append(r.cwds, cwd)
 	r.roots = append(r.roots, roots)
+	r.denied = append(r.denied, denied)
 	r.prompts = append(r.prompts, prompt)
 	if callback != nil {
 		if err := callback("plan-thread"); err != nil {
@@ -290,11 +293,13 @@ func (r *fakeRunner) Run(_ context.Context, threadID, sandbox, cwd string, roots
 func newTestBot(t *testing.T, store *fakeStore, api *fakeSlack, runner *fakeRunner) *Bot {
 	t.Helper()
 	return New(api, store, runner, Config{
-		AllowedUserIDs: []string{"U1"},
-		WorkspaceDir:   "/repo/workspace",
-		MemoryDir:      filepath.Join(t.TempDir(), "memory"),
-		CodexTimeout:   time.Minute,
-		BotUserID:      "UBOT",
+		AllowedUserIDs:        []string{"U1"},
+		AllowedChannelIDs:     []string{"C1"},
+		SharedWriteChannelIDs: []string{"C1"},
+		WorkspaceDir:          "/repo/workspace",
+		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:          time.Minute,
+		BotUserID:             "UBOT",
 	}, nil)
 }
 
@@ -321,6 +326,7 @@ func messageReply(user, timestamp, text string) *slackevents.MessageEvent {
 
 func configureActiveSubscription(bot *Bot, store *fakeStore, now time.Time) {
 	bot.allowedChannels = makeSet([]string{"C1"})
+	bot.allowedUsers = makeSet([]string{"U1", "U2", "U3"})
 	bot.now = func() time.Time { return now }
 	if store.subscriptions == nil {
 		store.subscriptions = make(map[string]state.Subscription)
@@ -430,6 +436,7 @@ func TestAllowedWorkflowMentionIsHandled(t *testing.T) {
 	}}}}
 	bot := newTestBot(t, store, api, runner)
 	bot.config.AllowWorkflows = true
+	bot.allowedWorkflows = makeSet([]string{"Wf0BSM19MCDT"})
 	event := mention()
 	event.User = "UWORKFLOW"
 	event.BotID = "BWORKFLOW"
@@ -486,6 +493,7 @@ func TestWorkflowAuthorizationBoundaries(t *testing.T) {
 		{name: "wrong prefix", enabled: true, workflowID: "Fx0BSM19MCDT", channel: "C1"},
 		{name: "invalid characters", enabled: true, workflowID: "WfBAD-id", channel: "C1"},
 		{name: "disallowed channel", enabled: true, workflowID: "Wf0BSM19MCDT", channel: "C2"},
+		{name: "workflow not in allowlist", enabled: true, workflowID: "Wf0OTHER123", channel: "C1"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -493,6 +501,7 @@ func TestWorkflowAuthorizationBoundaries(t *testing.T) {
 			api := &fakeSlack{}
 			bot := newTestBot(t, store, api, &fakeRunner{})
 			bot.config.AllowWorkflows = test.enabled
+			bot.allowedWorkflows = makeSet([]string{"Wf0BSM19MCDT"})
 			bot.allowedChannels = makeSet([]string{"C1"})
 			event := mention()
 			event.User = "UWORKFLOW"
@@ -1165,7 +1174,7 @@ func TestExpiredMessageReplySubscriptionIsDeletedAndIgnored(t *testing.T) {
 	bot.allowedChannels = makeSet([]string{"C1"})
 	bot.now = func() time.Time { return now }
 
-	bot.HandleMessage(context.Background(), messageReply("U2", "200.2", "expired"))
+	bot.HandleMessage(context.Background(), messageReply("U1", "200.2", "expired"))
 
 	if !reflect.DeepEqual(store.subscriptionDeletes, []string{"C1:100.1"}) {
 		t.Fatalf("subscription deletes = %v, want expired thread", store.subscriptionDeletes)
@@ -1215,6 +1224,7 @@ func TestMessageReplyExpiryCheckDoesNotDeleteConcurrentRenewal(t *testing.T) {
 	}()
 	runner := successfulPlanRunner()
 	bot := New(&fakeSlack{}, store, runner, Config{
+		AllowedUserIDs:    []string{"U2"},
 		AllowedChannelIDs: []string{"C1"},
 		WorkspaceDir:      "/repo/workspace",
 		MemoryDir:         filepath.Join(t.TempDir(), "memory"),
@@ -1645,13 +1655,15 @@ func TestWorkTurnReceivesWritableRootsAndPlanTurnDoesNot(t *testing.T) {
 	roots := []string{"/extra/one", "/extra/two"}
 	playbooksDir := t.TempDir()
 	bot := New(api, store, runner, Config{
-		AllowedUserIDs: []string{"U1"},
-		WorkspaceDir:   "/repo/workspace",
-		MemoryDir:      filepath.Join(t.TempDir(), "memory"),
-		CodexTimeout:   time.Minute,
-		BotUserID:      "UBOT",
-		WritableRoots:  roots,
-		PlaybooksDir:   playbooksDir,
+		AllowedUserIDs:        []string{"U1"},
+		AllowedChannelIDs:     []string{"C1"},
+		SharedWriteChannelIDs: []string{"C1"},
+		WorkspaceDir:          "/repo/workspace",
+		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:          time.Minute,
+		BotUserID:             "UBOT",
+		WritableRoots:         roots,
+		PlaybooksDir:          playbooksDir,
 	}, nil)
 	// New must copy the slice, so later mutation by the caller is not observed.
 	roots[0] = "/mutated"
@@ -1860,7 +1872,7 @@ type gatedRunner struct {
 	releaseOnce sync.Once
 }
 
-func (r *gatedRunner) Run(_ context.Context, _, _, _ string, _ []string, prompt string, callback func(string) error) (*codex.TurnResult, error) {
+func (r *gatedRunner) Run(_ context.Context, _, _, _ string, _, _ []string, prompt string, callback func(string) error) (*codex.TurnResult, error) {
 	if callback != nil {
 		if err := callback("plan-thread"); err != nil {
 			return nil, err
@@ -1893,11 +1905,13 @@ func TestPlanTurnRunsWhileWorkTurnIsBlocked(t *testing.T) {
 		release:     make(chan struct{}),
 	}
 	bot := New(&fakeSlack{}, &looseStore{threads: map[string]string{}}, runner, Config{
-		AllowedUserIDs: []string{"U1"},
-		WorkspaceDir:   "/repo/workspace",
-		MemoryDir:      filepath.Join(t.TempDir(), "memory"),
-		CodexTimeout:   time.Minute,
-		BotUserID:      "UBOT",
+		AllowedUserIDs:        []string{"U1"},
+		AllowedChannelIDs:     []string{"C1"},
+		SharedWriteChannelIDs: []string{"C1"},
+		WorkspaceDir:          "/repo/workspace",
+		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:          time.Minute,
+		BotUserID:             "UBOT",
 	}, nil)
 
 	ctx := context.Background()
@@ -2088,7 +2102,7 @@ func newParallelRunner() *parallelRunner {
 	return &parallelRunner{started: make(chan struct{}, 16), release: make(chan struct{})}
 }
 
-func (r *parallelRunner) Run(ctx context.Context, _, sandbox, cwd string, roots []string, prompt string, callback func(string) error) (*codex.TurnResult, error) {
+func (r *parallelRunner) Run(ctx context.Context, _, sandbox, cwd string, roots, _ []string, prompt string, callback func(string) error) (*codex.TurnResult, error) {
 	if sandbox != "workspace-write" {
 		r.mu.Lock()
 		r.planCwds = append(r.planCwds, cwd)
@@ -2145,12 +2159,14 @@ func (r *parallelRunner) assertNotStarted(t *testing.T) {
 func newParallelBot(t *testing.T, api *fakeSlack, runner Runner, maxParallel int) *Bot {
 	t.Helper()
 	return New(api, &looseStore{threads: map[string]string{}}, runner, Config{
-		AllowedUserIDs:  []string{"U1"},
-		WorkspaceDir:    "/repo/workspace",
-		MemoryDir:       filepath.Join(t.TempDir(), "memory"),
-		CodexTimeout:    time.Minute,
-		BotUserID:       "UBOT",
-		MaxParallelWork: maxParallel,
+		AllowedUserIDs:        []string{"U1"},
+		AllowedChannelIDs:     []string{"C1"},
+		SharedWriteChannelIDs: []string{"C1"},
+		WorkspaceDir:          "/repo/workspace",
+		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:          time.Minute,
+		BotUserID:             "UBOT",
+		MaxParallelWork:       maxParallel,
 	}, nil)
 }
 
@@ -2236,12 +2252,14 @@ func TestCancelledWaitForWorkFailsWithoutRunningWork(t *testing.T) {
 	api := &fakeSlack{}
 	store := &fakeStore{claim: true}
 	bot := New(api, store, runner, Config{
-		AllowedUserIDs:  []string{"U1"},
-		WorkspaceDir:    "/repo/workspace",
-		MemoryDir:       filepath.Join(t.TempDir(), "memory"),
-		CodexTimeout:    time.Minute,
-		BotUserID:       "UBOT",
-		MaxParallelWork: 1,
+		AllowedUserIDs:        []string{"U1"},
+		AllowedChannelIDs:     []string{"C1"},
+		SharedWriteChannelIDs: []string{"C1"},
+		WorkspaceDir:          "/repo/workspace",
+		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:          time.Minute,
+		BotUserID:             "UBOT",
+		MaxParallelWork:       1,
 	}, nil)
 	// Occupy the only work slot.
 	bot.workSlots <- struct{}{}
@@ -2278,6 +2296,10 @@ func (w *fakeWorkspaces) ThreadDir(threadID string) (string, error) {
 	return "/home/workspace/" + threadID, nil
 }
 
+func (w *fakeWorkspaces) OtherThreadPaths(threadID string) ([]string, error) {
+	return []string{"/home/workspace/OTHER-" + threadID}, nil
+}
+
 func (w *fakeWorkspaces) Acquire(_ context.Context, threadID string) (*workspace.Lease, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -2305,14 +2327,16 @@ func TestWorkUsesThreadWorkspaceAndCheckouts(t *testing.T) {
 	workspaces := &fakeWorkspaces{}
 	playbooksDir := t.TempDir()
 	bot := New(&fakeSlack{}, &fakeStore{claim: true}, runner, Config{
-		AllowedUserIDs: []string{"U1"},
-		WorkspaceDir:   "/repo/workspace",
-		MemoryDir:      filepath.Join(t.TempDir(), "memory"),
-		PlaybooksDir:   playbooksDir,
-		CodexTimeout:   time.Minute,
-		BotUserID:      "UBOT",
-		WritableRoots:  []string{"/src/app", "/shared/plain"},
-		Workspaces:     workspaces,
+		AllowedUserIDs:        []string{"U1"},
+		AllowedChannelIDs:     []string{"C1"},
+		SharedWriteChannelIDs: []string{"C1"},
+		WorkspaceDir:          "/repo/workspace",
+		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
+		PlaybooksDir:          playbooksDir,
+		CodexTimeout:          time.Minute,
+		BotUserID:             "UBOT",
+		WritableRoots:         []string{"/src/app", "/shared/plain"},
+		Workspaces:            workspaces,
 	}, nil)
 
 	bot.HandleMention(context.Background(), mention())
@@ -2340,12 +2364,14 @@ func TestWorkspacePreparationFailureDoesNotStartWork(t *testing.T) {
 	api := &fakeSlack{}
 	store := &fakeStore{claim: true}
 	bot := New(api, store, runner, Config{
-		AllowedUserIDs: []string{"U1"},
-		WorkspaceDir:   "/repo/workspace",
-		MemoryDir:      filepath.Join(t.TempDir(), "memory"),
-		CodexTimeout:   time.Minute,
-		BotUserID:      "UBOT",
-		Workspaces:     &fakeWorkspaces{err: errors.New("git clone failed")},
+		AllowedUserIDs:        []string{"U1"},
+		AllowedChannelIDs:     []string{"C1"},
+		SharedWriteChannelIDs: []string{"C1"},
+		WorkspaceDir:          "/repo/workspace",
+		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:          time.Minute,
+		BotUserID:             "UBOT",
+		Workspaces:            &fakeWorkspaces{err: errors.New("git clone failed")},
 	}, nil)
 
 	bot.HandleMention(context.Background(), mention())
@@ -2360,6 +2386,153 @@ func TestWorkspacePreparationFailureDoesNotStartWork(t *testing.T) {
 	})
 }
 
+func TestUnauthorizedSubscribedMessageReplyIsIgnored(t *testing.T) {
+	now := time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	runner := successfulPlanRunner()
+	bot := newTestBot(t, store, api, runner)
+	configureActiveSubscription(bot, store, now)
+
+	bot.HandleMessage(context.Background(), messageReply("UOUTSIDER", "200.2", "run this for me"))
+
+	if store.claimCalls != 0 || runner.calls != 0 || len(api.postTexts) != 0 {
+		t.Fatalf("unauthorized reply caused claim=%d runner=%d posts=%q", store.claimCalls, runner.calls, api.postTexts)
+	}
+}
+
+func TestMentionWithoutChannelAllowlistIsForbidden(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	runner := successfulPlanRunner()
+	bot := newTestBot(t, store, api, runner)
+	bot.allowedChannels = nil
+	event := mention()
+	event.Channel = "D1"
+
+	bot.HandleMention(context.Background(), event)
+
+	if store.claimCalls != 0 || runner.calls != 0 {
+		t.Fatalf("mention without channel allowlist caused claim=%d runner=%d", store.claimCalls, runner.calls)
+	}
+}
+
+func TestChannelWithoutSharedWritesCannotChangePlaybooksOrGlobalMemory(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	runner := &fakeRunner{responses: []runnerResponse{
+		{result: &codex.TurnResult{
+			Completed: true,
+			Messages:  []string{"## 方針\nDo work.\n## 作業指示\nMake a change."},
+		}},
+		{result: &codex.TurnResult{
+			Completed: true,
+			Messages: []string{strings.Join([]string{
+				"Work completed.",
+				"## 全体メモリ追記", "全チャンネルに効く指示",
+				"## チャンネルメモリ追記", "このチャンネルの用語",
+			}, "\n")},
+		}},
+	}}
+	playbooksDir := t.TempDir()
+	bot := New(api, store, runner, Config{
+		AllowedUserIDs:    []string{"U1"},
+		AllowedChannelIDs: []string{"C1"},
+		WorkspaceDir:      "/repo/workspace",
+		MemoryDir:         filepath.Join(t.TempDir(), "memory"),
+		PlaybooksDir:      playbooksDir,
+		CodexTimeout:      time.Minute,
+		BotUserID:         "UBOT",
+	}, nil)
+
+	bot.HandleMention(context.Background(), mention())
+
+	if runner.calls != 2 {
+		t.Fatalf("runner calls = %d, want 2", runner.calls)
+	}
+	if slices.Contains(runner.roots[1], playbooksDir) {
+		t.Errorf("work roots = %v, must not include playbooks", runner.roots[1])
+	}
+	if strings.Contains(runner.prompts[1], "## 全体メモリ追記") {
+		t.Error("work prompt offers global memory to a channel without shared writes")
+	}
+	if _, err := os.Stat(filepath.Join(bot.config.MemoryDir, "MEMORY.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("global memory stat error = %v, want not exist", err)
+	}
+	data, err := os.ReadFile(filepath.Join(bot.config.MemoryDir, "channels", "C1", "MEMORY.md"))
+	if err != nil || !strings.Contains(string(data), "このチャンネルの用語") {
+		t.Errorf("channel memory = %q, %v; want channel entry", data, err)
+	}
+}
+
+func TestTurnsDenyOtherThreadPaths(t *testing.T) {
+	store := &fakeStore{claim: true}
+	runner := &fakeRunner{responses: []runnerResponse{
+		{result: &codex.TurnResult{
+			Completed: true,
+			Messages:  []string{"## 方針\nDo work.\n## 作業指示\nMake a change."},
+		}},
+		{result: &codex.TurnResult{Completed: true, Messages: []string{"Work completed."}}},
+	}}
+	bot := newTestBot(t, store, &fakeSlack{}, runner)
+	bot.config.Workspaces = &fakeWorkspaces{}
+
+	bot.HandleMention(context.Background(), mention())
+
+	want := []string{"/home/workspace/OTHER-C1-100.1"}
+	if len(runner.denied) != 2 || !reflect.DeepEqual(runner.denied[0], want) || !reflect.DeepEqual(runner.denied[1], want) {
+		t.Fatalf("denied paths = %v, want %v for both turns", runner.denied, want)
+	}
+}
+
+func TestPlanTurnWaitsForPlanSlot(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	runner := successfulPlanRunner()
+	bot := newTestBot(t, store, api, runner)
+	bot.planSlots <- struct{}{} // the only slot is taken
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	bot.HandleMention(ctx, mention())
+
+	if runner.calls != 0 {
+		t.Fatalf("runner calls = %d, want 0 while every plan slot is busy", runner.calls)
+	}
+	if store.current != state.Failed {
+		t.Fatalf("state = %q, want failed so the mention can be retried", store.current)
+	}
+}
+
+func TestNeutralizeBroadcasts(t *testing.T) {
+	got := neutralizeBroadcasts("hi <!channel> <!here|here> <!EVERYONE> <!subteam^S123|@team> <@U1> <!date^1|x>")
+	want := "hi @channel @here @EVERYONE @subteam^S123 <@U1> <!date^1|x>"
+	if got != want {
+		t.Fatalf("neutralizeBroadcasts() = %q, want %q", got, want)
+	}
+}
+
+func TestWebAPIPostMessageNeutralizesBroadcasts(t *testing.T) {
+	var form url.Values
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if err := r.ParseForm(); err != nil {
+			return nil, err
+		}
+		form = r.Form
+		return postMessageResponse(r, `{"ok":true,"ts":"100.2"}`), nil
+	})}
+	api := &webAPI{client: slack.New("token", slack.OptionAPIURL("https://slack.test/"), slack.OptionHTTPClient(httpClient))}
+
+	if _, err := api.PostMessage(context.Background(), "C1", "100.1", "完了 <!channel>"); err != nil {
+		t.Fatalf("PostMessage() error = %v, want nil", err)
+	}
+	for _, field := range []string{"blocks", "text"} {
+		if strings.Contains(form.Get(field), "<!channel>") {
+			t.Fatalf("%s field = %q, must not contain a broadcast mention", field, form.Get(field))
+		}
+	}
+}
+
 // dirWorkspaces gives each thread real directories so attachments can be
 // validated against the filesystem.
 type dirWorkspaces struct {
@@ -2370,6 +2543,8 @@ func (w dirWorkspaces) ThreadDir(threadID string) (string, error) {
 	dir := filepath.Join(w.base, "workspace", threadID)
 	return dir, os.MkdirAll(dir, 0o700)
 }
+
+func (w dirWorkspaces) OtherThreadPaths(string) ([]string, error) { return nil, nil }
 
 func (w dirWorkspaces) Acquire(_ context.Context, threadID string) (*workspace.Lease, error) {
 	dir, err := w.ThreadDir(threadID)
@@ -2392,12 +2567,13 @@ func newAttachmentBot(t *testing.T, api *fakeSlack, store *fakeStore, workResult
 		{result: &codex.TurnResult{Completed: true, Messages: []string{strings.ReplaceAll(workResult, "$BASE", base)}}},
 	}}
 	bot := New(api, store, runner, Config{
-		AllowedUserIDs: []string{"U1"},
-		WorkspaceDir:   "/unused",
-		MemoryDir:      filepath.Join(base, "memory"),
-		CodexTimeout:   time.Minute,
-		BotUserID:      "UBOT",
-		Workspaces:     dirWorkspaces{base: base},
+		AllowedUserIDs:    []string{"U1"},
+		AllowedChannelIDs: []string{"C1"},
+		WorkspaceDir:      "/unused",
+		MemoryDir:         filepath.Join(base, "memory"),
+		CodexTimeout:      time.Minute,
+		BotUserID:         "UBOT",
+		Workspaces:        dirWorkspaces{base: base},
 	}, nil)
 	for path, content := range map[string]string{
 		"workspace/C1-100.1/preview.png":            "png-data",
@@ -2568,11 +2744,12 @@ func TestSharedWorkspaceFilesAreNotAttached(t *testing.T) {
 		{result: &codex.TurnResult{Completed: true, Messages: []string{"添付します。\n## 添付ファイル\n- report.pdf"}}},
 	}}
 	New(api, &fakeStore{claim: true}, runner, Config{
-		AllowedUserIDs: []string{"U1"},
-		WorkspaceDir:   dir,
-		MemoryDir:      filepath.Join(t.TempDir(), "memory"),
-		CodexTimeout:   time.Minute,
-		BotUserID:      "UBOT",
+		AllowedUserIDs:    []string{"U1"},
+		AllowedChannelIDs: []string{"C1"},
+		WorkspaceDir:      dir,
+		MemoryDir:         filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:      time.Minute,
+		BotUserID:         "UBOT",
 	}, nil).HandleMention(context.Background(), mention())
 
 	if len(api.uploads) != 0 {

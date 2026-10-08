@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -76,15 +77,19 @@ type Store interface {
 	DeleteSubscriptionIfExpired(threadKey string, now time.Time) (bool, error)
 }
 
-// Runner executes one Codex turn.
+// Runner executes one Codex turn. deniedPaths are hidden from the turn in
+// addition to the runner's own protected paths.
 type Runner interface {
-	Run(ctx context.Context, threadID, sandbox, cwd string, writableRoots []string, text string, onThreadStarted func(string) error) (*codex.TurnResult, error)
+	Run(ctx context.Context, threadID, sandbox, cwd string, writableRoots, deniedPaths []string, text string, onThreadStarted func(string) error) (*codex.TurnResult, error)
 }
 
 // Workspaces provides per-thread working directories and git checkouts.
 type Workspaces interface {
 	ThreadDir(threadID string) (string, error)
 	Acquire(ctx context.Context, threadID string) (*workspace.Lease, error)
+	// OtherThreadPaths lists every workspace and checkout entry except
+	// threadID's own, so one thread's turn cannot read another's.
+	OtherThreadPaths(threadID string) ([]string, error)
 }
 
 // Config contains paths, allowlists, and timeout settings needed by Bot.
@@ -93,8 +98,11 @@ type Config struct {
 	AllowedChannelIDs []string
 	// AllowAllPublicChannels accepts every public channel and ignores
 	// AllowedChannelIDs. DMs and private channels are always rejected.
-	AllowAllPublicChannels     bool
-	AllowWorkflows             bool
+	AllowAllPublicChannels bool
+	AllowWorkflows         bool
+	// AllowedWorkflowIDs are the only workflows accepted when AllowWorkflows
+	// is set.
+	AllowedWorkflowIDs         []string
 	AdminUserID                string
 	WorkspaceDir               string
 	MemoryDir                  string
@@ -108,6 +116,12 @@ type Config struct {
 	// MaxParallelWork is how many work turns for different Slack threads may
 	// run at once. Values below 1 mean 1.
 	MaxParallelWork int
+	// MaxParallelPlan is how many planning turns may run at once. Values
+	// below 1 mean 1.
+	MaxParallelPlan int
+	// SharedWriteChannelIDs are the channels whose work turns may write
+	// playbooks and global memory, which every channel reads.
+	SharedWriteChannelIDs []string
 	// Workspaces gives each Slack thread its cwd and writable roots. When
 	// nil, every thread shares WorkspaceDir and WritableRoots.
 	Workspaces Workspaces
@@ -121,15 +135,18 @@ type Bot struct {
 	config    Config
 	playbooks []playbook.Playbook
 
-	allowedUsers    map[string]struct{}
-	allowedChannels map[string]struct{}
-	workSlots       chan struct{}
-	memoryMu        sync.RWMutex
-	threadMu        sync.Mutex
-	threadLocks     map[string]*sync.Mutex
-	workLocks       map[string]*sync.Mutex
-	now             func() time.Time
-	sleep           func(context.Context, time.Duration) error
+	allowedUsers        map[string]struct{}
+	allowedChannels     map[string]struct{}
+	allowedWorkflows    map[string]struct{}
+	sharedWriteChannels map[string]struct{}
+	workSlots           chan struct{}
+	planSlots           chan struct{}
+	memoryMu            sync.RWMutex
+	threadMu            sync.Mutex
+	threadLocks         map[string]*sync.Mutex
+	workLocks           map[string]*sync.Mutex
+	now                 func() time.Time
+	sleep               func(context.Context, time.Duration) error
 }
 
 type triggerSource uint8
@@ -156,18 +173,21 @@ func New(api SlackAPI, store Store, runner Runner, config Config, playbooks []pl
 		config.Workspaces = sharedWorkspaces{dir: config.WorkspaceDir, roots: config.WritableRoots}
 	}
 	b := &Bot{
-		api:             api,
-		store:           store,
-		runner:          runner,
-		config:          config,
-		playbooks:       append([]playbook.Playbook(nil), playbooks...),
-		allowedUsers:    makeSet(config.AllowedUserIDs),
-		allowedChannels: makeSet(config.AllowedChannelIDs),
-		workSlots:       make(chan struct{}, max(config.MaxParallelWork, 1)),
-		threadLocks:     make(map[string]*sync.Mutex),
-		workLocks:       make(map[string]*sync.Mutex),
-		now:             time.Now,
-		sleep:           sleepContext,
+		api:                 api,
+		store:               store,
+		runner:              runner,
+		config:              config,
+		playbooks:           append([]playbook.Playbook(nil), playbooks...),
+		allowedUsers:        makeSet(config.AllowedUserIDs),
+		allowedChannels:     makeSet(config.AllowedChannelIDs),
+		allowedWorkflows:    makeSet(config.AllowedWorkflowIDs),
+		sharedWriteChannels: makeSet(config.SharedWriteChannelIDs),
+		workSlots:           make(chan struct{}, max(config.MaxParallelWork, 1)),
+		planSlots:           make(chan struct{}, max(config.MaxParallelPlan, 1)),
+		threadLocks:         make(map[string]*sync.Mutex),
+		workLocks:           make(map[string]*sync.Mutex),
+		now:                 time.Now,
+		sleep:               sleepContext,
 	}
 	return b
 }
@@ -187,7 +207,7 @@ func (b *Bot) handleMention(ctx context.Context, event *slackevents.AppMentionEv
 			b.forbidden(ctx, event)
 			return
 		}
-	} else if !b.config.AllowWorkflows || !validWorkflowID(workflowID) {
+	} else if !b.workflowAllowed(workflowID) {
 		log.Printf("slackbot: rejecting bot %q with workflow %q", event.BotID, workflowID)
 		b.forbidden(ctx, event)
 		return
@@ -234,6 +254,11 @@ func (b *Bot) HandleMessage(ctx context.Context, event *slackevents.MessageEvent
 	}
 	// ChannelType "channel" already guarantees a public channel.
 	if _, ok := b.allowedChannels[event.Channel]; !ok && !b.config.AllowAllPublicChannels {
+		return
+	}
+	// A subscription lets allowed users talk without mentioning the bot; it
+	// does not extend the bot to everyone who can reply in the thread.
+	if _, ok := b.allowedUsers[event.User]; !ok {
 		return
 	}
 	if b.config.BotUserID != "" && strings.Contains(event.Text, "<@"+b.config.BotUserID+">") {
@@ -346,12 +371,33 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	} else {
 		planPrompt = prompt.BuildPlanPrompt(memoryContext, currentPlaybooks, slackThread, trigger.message)
 	}
-	planResult, runErr := b.runTurn(ctx, threadID, "read-only-network", cwd, nil, planPrompt, func(id string) error {
+	// The plan slot covers only the Codex turn, so slow Slack calls above do
+	// not hold back other threads' planning.
+	select {
+	case b.planSlots <- struct{}{}:
+	case <-ctx.Done():
+		lock.Unlock()
+		log.Printf("slackbot: wait for plan slot %q: %v", eventKey, ctx.Err())
+		b.fail(ctx, eventKey, state.Planning, state.Failed, channel, threadTS, timestamp, planFailureMessage)
+		return
+	}
+	// List other threads last, so threads created while this one waited are
+	// denied too.
+	otherThreads, err := b.config.Workspaces.OtherThreadPaths(workspaceID)
+	if err != nil {
+		<-b.planSlots
+		lock.Unlock()
+		log.Printf("slackbot: list other thread workspaces %q: %v", eventKey, err)
+		b.fail(ctx, eventKey, state.Planning, state.Failed, channel, threadTS, timestamp, planFailureMessage)
+		return
+	}
+	planResult, runErr := b.runTurn(ctx, threadID, "read-only-network", cwd, nil, otherThreads, planPrompt, func(id string) error {
 		if err := b.store.SetThread(threadKey, id); err != nil {
 			return fmt.Errorf("persist plan thread: %w", err)
 		}
 		return nil
 	})
+	<-b.planSlots
 	lock.Unlock()
 
 	if runErr != nil || planResult == nil || !planResult.Completed {
@@ -475,8 +521,15 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 		return workOutput{}, false, fmt.Errorf("prepare workspace: %w", err)
 	}
 	defer lease.Release()
+	otherThreads, err := b.config.Workspaces.OtherThreadPaths(workspaceID)
+	if err != nil {
+		return workOutput{}, false, fmt.Errorf("list other thread workspaces: %w", err)
+	}
+	// Playbooks and global memory reach every channel, so only trusted
+	// channels may change them.
+	_, sharedWritable := b.sharedWriteChannels[channel]
 	roots := append([]string(nil), lease.WritableRoots...)
-	if b.config.PlaybooksDir != "" {
+	if b.config.PlaybooksDir != "" && sharedWritable {
 		roots = append(roots, b.config.PlaybooksDir)
 	}
 
@@ -498,8 +551,8 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 	if memErr != nil {
 		log.Printf("slackbot: refresh memory before work: %v", memErr)
 	}
-	workPrompt := prompt.BuildWorkPrompt(instruction, workMemoryContext, lease.Checkouts)
-	workResult, workErr := b.runTurn(ctx, "", "workspace-write", lease.Dir, roots, workPrompt, nil)
+	workPrompt := prompt.BuildWorkPrompt(instruction, workMemoryContext, lease.Checkouts, sharedWritable)
+	workResult, workErr := b.runTurn(ctx, "", "workspace-write", lease.Dir, roots, otherThreads, workPrompt, nil)
 	if workErr != nil {
 		return workOutput{}, true, workErr
 	}
@@ -519,6 +572,10 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 	output.text = codex.SanitizeSlackOutput(resultText)
 	if !memoryOutputValid {
 		log.Printf("slackbot: ignore malformed scoped memory output %q", eventKey)
+	}
+	if memoryAppends.Global != "" && !sharedWritable {
+		log.Printf("slackbot: ignore global memory proposal from channel without shared writes %q", eventKey)
+		memoryAppends.Global = ""
 	}
 	if memoryAppends != (codex.MemoryAppends{}) {
 		targets := []struct {
@@ -654,14 +711,13 @@ func (w sharedWorkspaces) Acquire(context.Context, string) (*workspace.Lease, er
 	return lease, nil
 }
 
+func (w sharedWorkspaces) OtherThreadPaths(string) ([]string, error) { return nil, nil }
+
 // mentionChannelAllowed reports whether a mention in channel may be
 // processed. App mention events carry no channel type, so the all-public mode
 // asks Slack and rejects the channel when that lookup fails.
 func (b *Bot) mentionChannelAllowed(ctx context.Context, channel string) bool {
 	if !b.config.AllowAllPublicChannels {
-		if len(b.allowedChannels) == 0 {
-			return true
-		}
 		_, ok := b.allowedChannels[channel]
 		return ok
 	}
@@ -691,16 +747,11 @@ func (b *Bot) forbidden(ctx context.Context, event *slackevents.AppMentionEvent)
 	}
 }
 
-func validWorkflowID(id string) bool {
-	if len(id) <= 2 || !strings.HasPrefix(id, "Wf") {
-		return false
-	}
-	for _, char := range id[2:] {
-		if (char < 'A' || char > 'Z') && (char < '0' || char > '9') {
-			return false
-		}
-	}
-	return true
+// workflowAllowed reports whether a bot-authored mention comes from an
+// explicitly allowed Slack workflow. The configuration validates the IDs.
+func (b *Bot) workflowAllowed(id string) bool {
+	_, ok := b.allowedWorkflows[id]
+	return b.config.AllowWorkflows && ok
 }
 
 func workflowIDFromPayload(payload json.RawMessage) string {
@@ -739,10 +790,10 @@ func (b *Bot) startThreadSubscription(ctx context.Context, channel, threadTS str
 	}
 }
 
-func (b *Bot) runTurn(ctx context.Context, threadID, sandbox, cwd string, roots []string, text string, callback func(string) error) (*codex.TurnResult, error) {
+func (b *Bot) runTurn(ctx context.Context, threadID, sandbox, cwd string, roots, denied []string, text string, callback func(string) error) (*codex.TurnResult, error) {
 	turnCtx, cancel := context.WithTimeout(ctx, b.config.CodexTimeout)
 	defer cancel()
-	return b.runner.Run(turnCtx, threadID, sandbox, cwd, roots, text, callback)
+	return b.runner.Run(turnCtx, threadID, sandbox, cwd, roots, denied, text, callback)
 }
 
 func (b *Bot) finishFailClosed(ctx context.Context, eventKey, channel, threadTS, timestamp, text string) {
@@ -824,6 +875,15 @@ func (b *Bot) clearStatus(ctx context.Context, channel, threadTS string) {
 	clearCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	b.setStatus(clearCtx, channel, threadTS, "")
+}
+
+// broadcastMention matches Slack's special mentions that notify a whole
+// channel or user group.
+var broadcastMention = regexp.MustCompile(`(?i)<!(channel|here|everyone|subteam\^[^>|]*)(\|[^>]*)?>`)
+
+// neutralizeBroadcasts keeps model output from notifying everyone in a channel.
+func neutralizeBroadcasts(text string) string {
+	return broadcastMention.ReplaceAllString(text, "@$1")
 }
 
 func (b *Bot) post(ctx context.Context, channel, threadTS, text string) error {
@@ -932,10 +992,13 @@ type webAPI struct {
 // option is not a second copy of the body: Slack shows it in notification
 // previews and in clients that cannot render blocks.
 func (w *webAPI) PostMessage(ctx context.Context, channel, threadTS, text string) (string, error) {
+	text = neutralizeBroadcasts(text)
 	fallback := slackfmt.PlainText(text)
+	// Escape the plain text so model output cannot form Slack control
+	// sequences such as <!channel> in it.
 	_, timestamp, err := w.client.PostMessageContext(ctx, channel,
 		slack.MsgOptionBlocks(slack.NewMarkdownBlock("", text)),
-		slack.MsgOptionText(fallback, false),
+		slack.MsgOptionText(fallback, true),
 		slack.MsgOptionTS(threadTS))
 	if err == nil || !rejectedBlocks(err) {
 		return timestamp, err
@@ -943,7 +1006,7 @@ func (w *webAPI) PostMessage(ctx context.Context, channel, threadTS, text string
 	// A formatting fault must not swallow the answer itself.
 	log.Printf("slackbot: post markdown block: %v; retrying as plain text", err)
 	_, timestamp, err = w.client.PostMessageContext(ctx, channel,
-		slack.MsgOptionText(fallback, false), slack.MsgOptionTS(threadTS))
+		slack.MsgOptionText(fallback, true), slack.MsgOptionTS(threadTS))
 	return timestamp, err
 }
 
