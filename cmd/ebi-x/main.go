@@ -28,6 +28,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("load configuration: %v", err)
 	}
+	releaseLock, err := state.LockDir(cfg.StateDir)
+	if err != nil {
+		log.Fatalf("lock state directory: %v", err)
+	}
+	defer releaseLock()
 	store, err := state.NewStore(cfg.StateDir)
 	if err != nil {
 		log.Fatalf("open state store: %v", err)
@@ -64,7 +69,8 @@ func main() {
 	bot := slackbot.New(nil, store, runner, slackbot.Config{
 		AllowedUserIDs:             cfg.AllowedUserIDs,
 		AllowedChannelIDs:          cfg.AllowedChannelIDs,
-		AllowAllPublicChannels:     cfg.AllowAllPublicChannels,
+		ApprovalChannelID:          cfg.ApprovalChannelID,
+		Approvals:                  store,
 		AllowWorkflows:             cfg.AllowWorkflows,
 		AllowedWorkflowIDs:         cfg.AllowedWorkflowIDs,
 		AdminUserID:                cfg.AdminUserID,

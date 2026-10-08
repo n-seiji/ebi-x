@@ -1,4 +1,5 @@
-// Package state persists Codex sessions and Slack event processing states.
+// Package state persists Codex sessions, Slack event processing states, and
+// access approvals.
 package state
 
 import (
@@ -16,6 +17,7 @@ const (
 	sessionsFilename      = "sessions.json"
 	eventsFilename        = "events.json"
 	subscriptionsFilename = "subscriptions.json"
+	approvalsFilename     = "approvals.json"
 )
 
 // State is the processing state of a Slack mention event.
@@ -49,7 +51,8 @@ type Subscription struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// Store persists thread sessions, event states, and subscriptions in separate JSON files.
+// Store persists thread sessions, event states, subscriptions, and approvals
+// in separate JSON files.
 type Store struct {
 	dir string
 
@@ -61,6 +64,9 @@ type Store struct {
 
 	subscriptionsMu sync.Mutex
 	subscriptions   map[string]Subscription
+
+	approvalsMu sync.Mutex
+	approvals   map[string]Approval
 }
 
 // NewStore loads or creates a state store rooted at dir.
@@ -96,11 +102,17 @@ func NewStore(dir string) (*Store, error) {
 		subscriptions = make(map[string]Subscription)
 	}
 
+	approvals, err := loadApprovals(filepath.Join(dir, approvalsFilename))
+	if err != nil {
+		return nil, fmt.Errorf("load approvals: %w", err)
+	}
+
 	return &Store{
 		dir:           dir,
 		sessions:      sessions,
 		events:        events,
 		subscriptions: subscriptions,
+		approvals:     approvals,
 	}, nil
 }
 

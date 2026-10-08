@@ -5,22 +5,38 @@ ebi-x は、Slack の mention を受けて Codex が方針を検討し、必要�
 ## Slack App の準備
 
 1. Slack App を作成し、Socket Mode を有効にします。
-2. Bot Token Scopes に `app_mentions:read`、`chat:write`、`reactions:write`、`reactions:read`、`channels:history`、`files:write` を追加します。`files:write` は成果物の添付（後述）に使います。scopeを追加・変更した場合は、workspaceへアプリを再インストールしてください。
-3. Event Subscriptions で `app_mention` と `message.channels` を購読します。`message.groups` は追加しません（プライベートチャンネルはサポートしません）。
-4. Workspace に App をインストールして Bot Token (`xoxb-...`) を取得します。
-5. Socket Mode 用の App Token (`xapp-...`) を取得します。
+2. Bot Token Scopes に `app_mentions:read`、`chat:write`、`reactions:write`、`reactions:read`、`channels:history`、`files:write` を追加します。`files:write` は成果物の添付（後述）に使います。承認チャンネル（後述）を使う場合は `groups:read`（承認者がチャンネルのメンバーか確認するため）、プライベートチャンネルで使う場合は `groups:history`（スレッドを読むため）も追加します。scopeを追加・変更した場合は、workspaceへアプリを再インストールしてください。
+3. Event Subscriptions で `app_mention` と `message.channels` を購読します。`message.groups` は追加しません（mentionなしの返信を処理するスレッド購読は、パブリックチャンネルだけが対象です）。
+4. 承認チャンネルを使う場合は、Interactivity & Shortcuts を有効にします。Socket Mode なので Request URL は不要です。
+5. Workspace に App をインストールして Bot Token (`xoxb-...`) を取得します。
+6. Socket Mode 用の App Token (`xapp-...`) を取得します。
 
 ## 設定と起動
 
 `.env.example` を `.env` にコピーし、Slack token、許可する user/channel ID などを設定します。
 
-チャンネルは `SLACK_ALLOWED_CHANNEL_IDS` で個別に許可するか、`SLACK_ALLOW_ALL_PUBLIC_CHANNELS=true` ですべてのパブリックチャンネルを許可できます。この場合もDM・グループDM・プライベートチャンネルは拒否します。mentionイベントにはチャンネル種別が含まれないため、`conversations.info` でパブリックかどうかを確認します（Bot Token Scopes に `channels:read` が必要です）。確認に失敗したチャンネルは拒否します。`SLACK_ALLOWED_CHANNEL_IDS` との併用はできません。どちらも設定しない場合は起動しません（以前の「空なら全チャンネル許可」は廃止しました）。
+ebi-x を使えるuser・channel・Workflowは、`.env` の許可リスト（固定の許可）と、承認チャンネルでボタンを押して許可したものの2つで決まります。
 
-Workflow Builder の「メッセージを送信」からの mention も受け付ける場合は、`SLACK_ALLOW_WORKFLOWS=true` にし、許可するWorkflowのIDを `SLACK_ALLOWED_WORKFLOW_IDS` に列挙します（必須）。通常のBot投稿は拒否し、Slackイベントの `workflow_id` が一覧に含まれるmentionだけを許可します。Workflowはワークスペースのメンバーなら誰でも作れるため、IDで限定しないとユーザー許可リストを迂回できてしまいます。人・Workflowのどちらもチャンネル制限の対象です。
+- `SLACK_ALLOWED_USER_IDS`、`SLACK_ALLOWED_CHANNEL_IDS`：固定の許可です。承認チャンネルを使わない場合は、それぞれ1件以上必須です（以前の「空なら全チャンネル許可」は廃止しました）。DMは許可リストに書かない限り使えません。
+- `SLACK_ALLOW_ALL_PUBLIC_CHANNELS` は廃止しました。`true` のままだと起動しません。チャンネルは1つずつ列挙するか、承認チャンネルで許可してください。
+- Workflow Builder の「メッセージを送信」からの mention も受け付ける場合は、`SLACK_ALLOW_WORKFLOWS=true` にします。許可するWorkflowは `SLACK_ALLOWED_WORKFLOW_IDS` に列挙するか、承認チャンネルで許可します（承認チャンネルを使わない場合は列挙が必須）。通常のBot投稿は拒否し、Slackイベントの `workflow_id` が許可されたmentionだけを受け付けます。Workflowはワークスペースのメンバーなら誰でも作れるため、IDで限定しないとユーザー許可リストを迂回できてしまいます。人・Workflowのどちらもチャンネル制限の対象です。
 
 許可されていないuser、channel、Botからmentionされた場合は、`SLACK_ADMIN_USER_ID` のユーザーへ確認するよう同じスレッドに返信します。未設定時は `@seiji` というテキストを使用します。
 
-承認済みmentionのスレッドで、許可ユーザー（`SLACK_ALLOWED_USER_IDS`）の通常の返信も処理するには、スレッド親メッセージに `SLACK_THREAD_SUBSCRIPTION_REACTION` で指定したリアクションを付けます。既定値は `thread-subete`、有効期間の既定値は `SLACK_THREAD_SUBSCRIPTION_TTL=336h` です。リアクション設定を明示的に空にすると、この機能を無効にできます。有効な場合、TTLは正のdurationにしてください。許可ユーザー以外の返信は、購読中のスレッドでも無視します。
+### 承認チャンネル
+
+`SLACK_APPROVAL_CHANNEL_ID` にチャンネル（プライベート推奨）を設定し、Botをそのチャンネルに招待すると、許可されていないuser・channel・Workflowからのmentionを Slack 上のボタンで許可できます。
+
+- 許可されていない相手からmentionされると、元のスレッドには「承認を依頼しました」と返し、承認チャンネルに［許可］［拒否］ボタン付きの依頼を投稿します。userとchannelの両方が未許可なら、依頼は2件になります。同じ相手の依頼は、決まるまで1件だけです。
+- ボタンを押せるのは、押した時点で承認チャンネルのメンバーである人だけです（`conversations.members` で毎回確認します）。つまり承認チャンネルに招待できる人が、承認者を増やせます。
+- 最初に押されたボタンで決まり、依頼メッセージは「✅ @xxx が許可しました」のように書き換わります。許可した後は、依頼者にもう一度mentionしてもらいます。
+- 拒否した相手は記録され、次からは確認せずに拒否します。
+- 承認チャンネルで `@ebi 許可一覧` と mention すると、固定の許可と Slack で決めたものを一覧します。`@ebi 許可取消 <ID>`（`<@U...>` や `<#C...>` の形でも可）で記録を消すと、次のmentionでもう一度確認します。`.env` の固定の許可は取り消せません。どちらもメンバーだけが使えます。
+- 決定は `data/state/approvals.json` に、誰がいつ決めたかと一緒に保存します。`data/state` はCodexから読み書きできないため（後述）、エージェントが自分で許可を書き足すことはできません。
+
+同じ `data` を複数の ebi-x で共有すると状態を上書きし合うため、起動時に `data/state/ebi-x.lock` をロックし、2つ目のプロセスは起動エラーにします。
+
+承認済みmentionのスレッドで、許可ユーザー（`SLACK_ALLOWED_USER_IDS` か承認チャンネルで許可したuser）の通常の返信も処理するには、スレッド親メッセージに `SLACK_THREAD_SUBSCRIPTION_REACTION` で指定したリアクションを付けます。既定値は `thread-subete`、有効期間の既定値は `SLACK_THREAD_SUBSCRIPTION_TTL=336h` です。リアクション設定を明示的に空にすると、この機能を無効にできます。有効な場合、TTLは正のdurationにしてください。許可ユーザー以外の返信は、購読中のスレッドでも無視します。
 
 ```sh
 cp .env.example .env
