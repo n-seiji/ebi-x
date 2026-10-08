@@ -75,7 +75,7 @@ func TestAcquireCreatesThreadCheckoutAndKeepsPlainRootsShared(t *testing.T) {
 		t.Fatalf("Repositories() = %v, want [%s]", got, repo)
 	}
 
-	lease, err := m.Acquire(context.Background(), "C1-100.1")
+	lease, err := m.Acquire(context.Background(), "C1-100.1", true)
 	if err != nil {
 		t.Fatalf("Acquire() error = %v", err)
 	}
@@ -113,12 +113,12 @@ func TestAcquireCreatesThreadCheckoutAndKeepsPlainRootsShared(t *testing.T) {
 func TestThreadsGetSeparateCheckouts(t *testing.T) {
 	repo := newRepo(t)
 	m, _, _ := newManager(t, repo)
-	first, err := m.Acquire(context.Background(), "C1-100.1")
+	first, err := m.Acquire(context.Background(), "C1-100.1", true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.Release()
-	second, err := m.Acquire(context.Background(), "C1-200.2")
+	second, err := m.Acquire(context.Background(), "C1-200.2", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestAcquireReusesCheckoutWithCommits(t *testing.T) {
 	repo := newRepo(t)
 	m, _, _ := newManager(t, repo)
 	ctx := context.Background()
-	lease, err := m.Acquire(ctx, "C1-100.1")
+	lease, err := m.Acquire(ctx, "C1-100.1", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestAcquireReusesCheckoutWithCommits(t *testing.T) {
 	runGit(t, path, "commit", "-q", "-m", "work")
 	lease.Release()
 
-	lease, err = m.Acquire(ctx, "C1-100.1")
+	lease, err = m.Acquire(ctx, "C1-100.1", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestGCRemovesIdleCheckoutsAndTheirBranches(t *testing.T) {
 	m, workspaceDir, checkoutsDir := newManager(t, repo)
 	ctx := context.Background()
 
-	lease, err := m.Acquire(ctx, "C1-100.1")
+	lease, err := m.Acquire(ctx, "C1-100.1", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestGCRemovesIdleCheckoutsAndTheirBranches(t *testing.T) {
 	}
 
 	// Asking the thread for more work starts again from the repository HEAD.
-	lease, err = m.Acquire(ctx, "C1-100.1")
+	lease, err = m.Acquire(ctx, "C1-100.1", true)
 	if err != nil {
 		t.Fatalf("Acquire() after GC error = %v", err)
 	}
@@ -213,7 +213,7 @@ func TestGCRemovesIdleCheckoutsAndTheirBranches(t *testing.T) {
 func TestGCSkipsLeasedThreads(t *testing.T) {
 	repo := newRepo(t)
 	m, _, checkoutsDir := newManager(t, repo)
-	lease, err := m.Acquire(context.Background(), "C1-100.1")
+	lease, err := m.Acquire(context.Background(), "C1-100.1", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestAcquireRecreatesPartiallyRemovedCheckout(t *testing.T) {
 	repo := newRepo(t)
 	m, _, _ := newManager(t, repo)
 	ctx := context.Background()
-	lease, err := m.Acquire(ctx, "C1-100.1")
+	lease, err := m.Acquire(ctx, "C1-100.1", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestAcquireRecreatesPartiallyRemovedCheckout(t *testing.T) {
 	if err := os.RemoveAll(path + gitDirSuffix); err != nil {
 		t.Fatal(err)
 	}
-	lease, err = m.Acquire(ctx, "C1-100.1")
+	lease, err = m.Acquire(ctx, "C1-100.1", true)
 	if err != nil {
 		t.Fatalf("Acquire() error = %v", err)
 	}
@@ -263,7 +263,7 @@ func TestSubdirectoryOfRepositoryIsAPlainRoot(t *testing.T) {
 	if got := m.Repositories(); len(got) != 0 {
 		t.Fatalf("Repositories() = %v, want none", got)
 	}
-	lease, err := m.Acquire(context.Background(), "C1-100.1")
+	lease, err := m.Acquire(context.Background(), "C1-100.1", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,5 +304,46 @@ func TestOtherThreadPaths(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("OtherThreadPaths() = %v, want %v", got, want)
+	}
+}
+
+func TestAcquireWithoutCreatingListsPendingRepositories(t *testing.T) {
+	repo := newRepo(t)
+	plain := t.TempDir()
+	m, _, checkoutsDir := newManager(t, plain, repo)
+	ctx := context.Background()
+
+	lease, err := m.Acquire(ctx, "C1-100.1", false)
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	if len(lease.Checkouts) != 0 || !reflect.DeepEqual(lease.PendingRepos, []string{repo}) {
+		t.Fatalf("Checkouts = %v, PendingRepos = %v, want only pending %s", lease.Checkouts, lease.PendingRepos, repo)
+	}
+	if !reflect.DeepEqual(lease.WritableRoots, []string{plain}) {
+		t.Errorf("WritableRoots = %v, want [%s]", lease.WritableRoots, plain)
+	}
+	lease.Release()
+	if _, err := os.Stat(filepath.Join(checkoutsDir, "C1-100.1")); !os.IsNotExist(err) {
+		t.Fatalf("thread checkouts directory exists without a request: %v", err)
+	}
+
+	lease, err = m.Acquire(ctx, "C1-100.1", true)
+	if err != nil {
+		t.Fatalf("Acquire() creating error = %v", err)
+	}
+	if len(lease.Checkouts) != 1 || len(lease.PendingRepos) != 0 {
+		t.Fatalf("Checkouts = %v, PendingRepos = %v, want one checkout", lease.Checkouts, lease.PendingRepos)
+	}
+	lease.Release()
+
+	// Once cloned, later turns reuse the checkout without asking again.
+	lease, err = m.Acquire(ctx, "C1-100.1", false)
+	if err != nil {
+		t.Fatalf("Acquire() reuse error = %v", err)
+	}
+	defer lease.Release()
+	if len(lease.Checkouts) != 1 || len(lease.PendingRepos) != 0 {
+		t.Fatalf("Checkouts = %v, PendingRepos = %v, want the existing checkout", lease.Checkouts, lease.PendingRepos)
 	}
 }

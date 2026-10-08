@@ -24,7 +24,7 @@ const (
 	maxMessages    = 100
 	maxFinalBytes  = 128 << 10
 	// maxArgBytes keeps each argument below Linux's 128KiB MAX_ARG_STRLEN.
-	// The deny list is one argument because Codex cannot parse paths as
+	// The filesystem list is one argument because Codex cannot parse paths as
 	// separate dotted keys.
 	maxArgBytes = 120 << 10
 )
@@ -40,9 +40,6 @@ var secretEnvNames = map[string]struct{}{
 type Runner struct {
 	Command string
 	Model   string
-	// WorkModel is the legacy model override for workspace-write turns.
-	// The single-turn flow uses it for the entire request when set.
-	WorkModel string
 	// ConfigPath is a local project config whose values are forwarded as CLI
 	// overrides while the global user config remains disabled.
 	ConfigPath string
@@ -85,7 +82,7 @@ func (r *Runner) Run(
 		return nil, err
 	}
 	denied := append(append(append([]string(nil), r.DeniedReadPaths...), homeDenied...), deniedPaths...)
-	args := buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, denied, r.modelFor(sandbox), r.DeveloperInstructions, configOverrides)
+	args := buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, denied, r.Model, r.DeveloperInstructions, configOverrides)
 	for _, arg := range args {
 		if len(arg) > maxArgBytes {
 			// Running with a truncated deny list would expose protected paths.
@@ -186,13 +183,6 @@ func filterEnv(env []string) []string {
 	return filtered
 }
 
-func (r *Runner) modelFor(sandbox string) string {
-	if sandbox == "workspace-write" && r.WorkModel != "" {
-		return r.WorkModel
-	}
-	return r.Model
-}
-
 func buildArgs(threadID, sandbox, cwd string, writableRoots, deniedReadPaths []string, model, developerInstructions string) []string {
 	return buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, deniedReadPaths, model, developerInstructions, nil)
 }
@@ -221,11 +211,27 @@ func buildArgsWithOverrides(threadID, sandbox, cwd string, writableRoots, denied
 		parentProfile = ":workspace"
 	}
 	args = append(args, "-c", "permissions.ebi-x.extends="+strconv.Quote(parentProfile))
-	if len(deniedReadPaths) > 0 {
-		entries := make([]string, 0, len(deniedReadPaths))
-		for _, path := range deniedReadPaths {
-			entries = append(entries, strconv.Quote(path)+`="deny"`)
+	// Writable roots are profile entries rather than --add-dir, which
+	// "codex exec resume" does not accept. A deny entry wins over a write
+	// entry for the same or an enclosing path, and a path listed twice would
+	// make the inline table invalid, so a denied root is left out.
+	denied := make(map[string]struct{}, len(deniedReadPaths))
+	entries := make([]string, 0, len(writableRoots)+len(deniedReadPaths))
+	for _, path := range deniedReadPaths {
+		denied[path] = struct{}{}
+	}
+	if sandbox == "workspace-write" {
+		for _, root := range writableRoots {
+			if _, ok := denied[root]; ok {
+				continue
+			}
+			entries = append(entries, strconv.Quote(root)+`="write"`)
 		}
+	}
+	for _, path := range deniedReadPaths {
+		entries = append(entries, strconv.Quote(path)+`="deny"`)
+	}
+	if len(entries) > 0 {
 		args = append(args, "-c", "permissions.ebi-x.filesystem={"+strings.Join(entries, ",")+"}")
 	}
 	if developerInstructions != "" {
@@ -233,11 +239,6 @@ func buildArgsWithOverrides(threadID, sandbox, cwd string, writableRoots, denied
 	}
 	if sandbox == "workspace-write" || sandbox == "read-only-network" {
 		args = append(args, "-c", "permissions.ebi-x.network.enabled=true")
-	}
-	if sandbox == "workspace-write" {
-		for _, root := range writableRoots {
-			args = append(args, "--add-dir", root)
-		}
 	}
 	if model != "" {
 		args = append(args, "-m", model)

@@ -82,7 +82,10 @@ type Runner interface {
 // Workspaces provides per-thread working directories and git checkouts.
 type Workspaces interface {
 	ThreadDir(threadID string) (string, error)
-	Acquire(ctx context.Context, threadID string) (*workspace.Lease, error)
+	// Acquire leases the thread's workspace. Missing checkouts are created
+	// only when createCheckouts is set; otherwise they are reported in
+	// Lease.PendingRepos.
+	Acquire(ctx context.Context, threadID string, createCheckouts bool) (*workspace.Lease, error)
 	// OtherThreadPaths lists every workspace and checkout entry except
 	// threadID's own, so one thread's turn cannot read another's.
 	OtherThreadPaths(threadID string) ([]string, error)
@@ -429,11 +432,13 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 	}
 	defer release()
 
-	lease, err := b.config.Workspaces.Acquire(ctx, workspaceID)
+	// Checkouts are cloned only when the turn asks for them, so a request
+	// that only reads code or answers a question does not create any.
+	lease, err := b.config.Workspaces.Acquire(ctx, workspaceID, false)
 	if err != nil {
 		return workOutput{}, false, fmt.Errorf("prepare workspace: %w", err)
 	}
-	defer lease.Release()
+	defer func() { lease.Release() }()
 	otherThreads, err := b.config.Workspaces.OtherThreadPaths(workspaceID)
 	if err != nil {
 		return workOutput{}, false, fmt.Errorf("list other thread workspaces: %w", err)
@@ -441,54 +446,75 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 	// Playbooks and global memory reach every channel, so only trusted
 	// channels may change them.
 	_, sharedWritable := b.sharedWriteChannels[channel]
-	roots := append([]string(nil), lease.WritableRoots...)
-	if b.config.PlaybooksDir != "" && sharedWritable {
-		roots = append(roots, b.config.PlaybooksDir)
-	}
 
-	currentPlaybooks := b.playbooks
-	if b.config.PlaybooksDir != "" {
-		currentPlaybooks, err = playbook.List(b.config.PlaybooksDir)
-		if err != nil {
-			return workOutput{}, false, fmt.Errorf("reload playbooks: %w", err)
+	// A new session receives the memory, playbook catalog, and rules once;
+	// a resumed session already holds them, so only the request is sent.
+	var turnPrompt string
+	if threadID == "" {
+		currentPlaybooks := b.playbooks
+		if b.config.PlaybooksDir != "" {
+			currentPlaybooks, err = playbook.List(b.config.PlaybooksDir)
+			if err != nil {
+				return workOutput{}, false, fmt.Errorf("reload playbooks: %w", err)
+			}
 		}
+		// memoryMu is only held around the memory access itself, so other
+		// turns can read memory while this one runs. The memory directory is
+		// intentionally not a writable root: the agent proposes memory
+		// entries through the output contract and the bot writes them.
+		b.memoryMu.RLock()
+		memoryContext, memErr := memory.ReadContext(b.config.MemoryDir, channel)
+		b.memoryMu.RUnlock()
+		if memErr != nil {
+			log.Printf("slackbot: read memory: %v", memErr)
+		}
+		turnPrompt = prompt.BuildTurnPrompt(memoryContext, currentPlaybooks, slackThread, trigger.authorID, trigger.message, lease.Checkouts, lease.PendingRepos, sharedWritable)
+	} else {
+		turnPrompt = prompt.BuildResumePrompt(trigger.authorID, trigger.message, lease.Checkouts, lease.PendingRepos)
 	}
 
 	if err := b.store.Transition(eventKey, state.Received, state.Working); err != nil {
 		return workOutput{}, false, err
 	}
-	// Keep the status visible throughout the single execution turn.
+	// Keep the status visible throughout the execution turn.
 	stopWorkingStatus := b.keepStatus(ctx, channel, threadTS, workingStatus)
 	defer stopWorkingStatus()
 
-	// memoryMu is only held around the memory access itself, so other turns
-	// can read memory while this one runs. The memory directory is
-	// intentionally not a writable root: the agent proposes memory entries
-	// through the output contract and the bot writes them.
-	b.memoryMu.RLock()
-	workMemoryContext, memErr := memory.ReadContext(b.config.MemoryDir, channel)
-	b.memoryMu.RUnlock()
-	if memErr != nil {
-		log.Printf("slackbot: refresh memory before work: %v", memErr)
-	}
-	workPrompt := prompt.BuildTurnPrompt(workMemoryContext, currentPlaybooks, slackThread, trigger.authorID, trigger.message, lease.Checkouts, sharedWritable)
-	workResult, workErr := b.runTurn(ctx, threadID, "workspace-write", lease.Dir, roots, otherThreads, workPrompt, func(id string) error {
+	// sessionID is the session a checkout request continues in.
+	sessionID := threadID
+	persistThread := func(id string) error {
+		sessionID = id
 		if err := b.store.SetThread(threadKey, id); err != nil {
 			return fmt.Errorf("persist thread: %w", err)
 		}
 		return nil
-	})
-	if workErr != nil {
-		return workOutput{}, true, workErr
 	}
-	if workResult == nil || !workResult.Completed || len(workResult.Messages) == 0 {
-		if workResult != nil && workResult.Err != "" {
-			return workOutput{}, true, fmt.Errorf("work turn incomplete: %s", workResult.Err)
+	finalText, err := b.runWorkTurn(ctx, threadID, lease, sharedWritable, otherThreads, turnPrompt, persistThread)
+	if err != nil {
+		return workOutput{}, true, err
+	}
+	finalText, checkoutsRequested := codex.SplitCheckoutRequest(finalText)
+	if checkoutsRequested && len(lease.PendingRepos) > 0 {
+		if sessionID == "" {
+			return workOutput{}, true, errors.New("checkout request without a session to continue")
 		}
-		return workOutput{}, true, errors.New("work turn incomplete")
+		// Release is idempotent, so the deferred call is a no-op for this
+		// lease if acquiring the next one fails.
+		lease.Release()
+		next, err := b.config.Workspaces.Acquire(ctx, workspaceID, true)
+		if err != nil {
+			return workOutput{}, true, fmt.Errorf("prepare requested checkouts: %w", err)
+		}
+		lease = next
+		finalText, err = b.runWorkTurn(ctx, sessionID, lease, sharedWritable, otherThreads, prompt.BuildCheckoutsReadyPrompt(lease.Checkouts), persistThread)
+		if err != nil {
+			return workOutput{}, true, err
+		}
+		// A second request has nothing more to prepare.
+		finalText, _ = codex.SplitCheckoutRequest(finalText)
 	}
 
-	resultText, attachmentPaths, attachmentOutputValid := codex.SplitAttachments(workResult.Messages[len(workResult.Messages)-1])
+	resultText, attachmentPaths, attachmentOutputValid := codex.SplitAttachments(finalText)
 	if !attachmentOutputValid {
 		log.Printf("slackbot: ignore malformed attachment output %q", eventKey)
 		output.attachmentOutputInvalid = true
@@ -535,6 +561,26 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 		output.failedAttachments = b.uploadAttachments(ctx, eventKey, channel, threadTS, lease, attachmentPaths)
 	}
 	return output, true, nil
+}
+
+// runWorkTurn runs one workspace-write turn in lease and returns its final
+// message.
+func (b *Bot) runWorkTurn(ctx context.Context, threadID string, lease *workspace.Lease, sharedWritable bool, otherThreads []string, text string, onThreadStarted func(string) error) (string, error) {
+	roots := append([]string(nil), lease.WritableRoots...)
+	if b.config.PlaybooksDir != "" && sharedWritable {
+		roots = append(roots, b.config.PlaybooksDir)
+	}
+	result, err := b.runTurn(ctx, threadID, "workspace-write", lease.Dir, roots, otherThreads, text, onThreadStarted)
+	if err != nil {
+		return "", err
+	}
+	if result == nil || !result.Completed || len(result.Messages) == 0 {
+		if result != nil && result.Err != "" {
+			return "", fmt.Errorf("work turn incomplete: %s", result.Err)
+		}
+		return "", errors.New("work turn incomplete")
+	}
+	return result.Messages[len(result.Messages)-1], nil
 }
 
 // uploadAttachments sends the files a work turn listed to the Slack thread.
@@ -630,7 +676,7 @@ type sharedWorkspaces struct {
 
 func (w sharedWorkspaces) ThreadDir(string) (string, error) { return w.dir, nil }
 
-func (w sharedWorkspaces) Acquire(context.Context, string) (*workspace.Lease, error) {
+func (w sharedWorkspaces) Acquire(context.Context, string, bool) (*workspace.Lease, error) {
 	lease := workspace.NewLease(w.dir, w.roots, nil, func() {})
 	lease.Shared = true
 	return lease, nil

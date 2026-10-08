@@ -40,9 +40,7 @@ type Config struct {
 	AdminUserID        string
 	CodexCommand       string
 	CodexModel         string
-	// CodexWorkModel is a legacy override for the entire execution turn.
-	CodexWorkModel string
-	CodexTimeout   time.Duration
+	CodexTimeout       time.Duration
 	// MaxParallelWork is how many work turns for different Slack threads may
 	// run at once.
 	MaxParallelWork int
@@ -259,7 +257,6 @@ func Load() (*Config, error) {
 		AdminUserID:                adminUserID,
 		CodexCommand:               codexCommand,
 		CodexModel:                 strings.TrimSpace(os.Getenv("CODEX_MODEL")),
-		CodexWorkModel:             strings.TrimSpace(os.Getenv("CODEX_WORK_MODEL")),
 		CodexTimeout:               codexTimeout,
 		MaxParallelWork:            maxParallelWork,
 		SharedWriteChannelIDs:      sharedWriteChannelIDs,

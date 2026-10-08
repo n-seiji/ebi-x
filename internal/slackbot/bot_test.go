@@ -1742,7 +1742,8 @@ func TestPlaybooksReloadBetweenRequests(t *testing.T) {
 		runner.responses = append(runner.responses, runnerResponse{result: &codex.TurnResult{
 			Completed: true, Messages: []string{"Done."},
 		}})
-		bot.HandleMention(context.Background(), mention())
+		// Each new thread starts a session with the catalog read now.
+		bot.HandleMention(context.Background(), mentionAt(fmt.Sprintf("%d.1", 100+len(runner.prompts)), ""))
 		got := runner.prompts[len(runner.prompts)-1]
 		if description == "" {
 			if strings.Contains(got, "name: example") {
@@ -1947,8 +1948,13 @@ type fakeWorkspaces struct {
 	mu        sync.Mutex
 	threadIDs []string
 	acquired  []string
+	creates   []bool
 	released  int
 	err       error
+	// lazy makes the thread's checkout exist only after an Acquire that
+	// creates it, like workspace.Manager.
+	lazy   bool
+	cloned map[string]bool
 }
 
 func (w *fakeWorkspaces) ThreadDir(threadID string) (string, error) {
@@ -1962,23 +1968,34 @@ func (w *fakeWorkspaces) OtherThreadPaths(threadID string) ([]string, error) {
 	return []string{"/home/workspace/OTHER-" + threadID}, nil
 }
 
-func (w *fakeWorkspaces) Acquire(_ context.Context, threadID string) (*workspace.Lease, error) {
+func (w *fakeWorkspaces) Acquire(_ context.Context, threadID string, createCheckouts bool) (*workspace.Lease, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.err != nil {
 		return nil, w.err
 	}
 	w.acquired = append(w.acquired, threadID)
+	w.creates = append(w.creates, createCheckouts)
+	release := func() {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		w.released++
+	}
+	if w.lazy && !createCheckouts && !w.cloned[threadID] {
+		lease := workspace.NewLease("/home/workspace/"+threadID, []string{"/shared/plain"}, nil, release)
+		lease.PendingRepos = []string{"/src/app"}
+		return lease, nil
+	}
+	if w.cloned == nil {
+		w.cloned = make(map[string]bool)
+	}
+	w.cloned[threadID] = true
 	checkoutPath := "/home/checkouts/" + threadID + "/app"
 	lease := workspace.NewLease(
 		"/home/workspace/"+threadID,
 		[]string{"/shared/plain", checkoutPath, checkoutPath + ".gitdir"},
 		[]workspace.Checkout{{Repo: "/src/app", Path: checkoutPath, Branch: "ebi-x/" + threadID}},
-		func() {
-			w.mu.Lock()
-			defer w.mu.Unlock()
-			w.released++
-		},
+		release,
 	)
 	return lease, nil
 }
@@ -2176,7 +2193,7 @@ func (w dirWorkspaces) ThreadDir(threadID string) (string, error) {
 
 func (w dirWorkspaces) OtherThreadPaths(string) ([]string, error) { return nil, nil }
 
-func (w dirWorkspaces) Acquire(_ context.Context, threadID string) (*workspace.Lease, error) {
+func (w dirWorkspaces) Acquire(_ context.Context, threadID string, _ bool) (*workspace.Lease, error) {
 	dir, err := w.ThreadDir(threadID)
 	if err != nil {
 		return nil, err
@@ -2411,7 +2428,7 @@ func TestUploadRetriesOnlyRateLimits(t *testing.T) {
 	}
 }
 
-func TestSingleTurnContinuesSessionWithCurrentPlaybooks(t *testing.T) {
+func TestResumedSessionReceivesOnlyTheRequest(t *testing.T) {
 	store := &fakeStore{claim: true}
 	api := &fakeSlack{}
 	runner := &fakeRunner{responses: []runnerResponse{
@@ -2421,16 +2438,16 @@ func TestSingleTurnContinuesSessionWithCurrentPlaybooks(t *testing.T) {
 	bot := newTestBot(t, store, api, runner)
 	bot.config.PlaybooksDir = t.TempDir()
 	path := filepath.Join(bot.config.PlaybooksDir, "example.md")
-	for i, description := range []string{"first-version", "updated-version"} {
-		if err := os.WriteFile(path, []byte("---\nname: example\ndescription: "+description+"\n---\nBody"), 0600); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(path, []byte("---\nname: example\ndescription: first-version\n---\nBody"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memory.AppendScoped(bot.config.MemoryDir, memory.ScopeChannel, "C1", "channel-fact"); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 2 {
 		bot.HandleMention(context.Background(), mentionAt(fmt.Sprintf("100.%d", i+1), "100.1"))
 		if runner.calls != i+1 {
 			t.Fatalf("runner calls = %d, want exactly one per request", runner.calls)
-		}
-		if !strings.Contains(runner.prompts[i], description) || !strings.Contains(runner.prompts[i], path) {
-			t.Fatal("executing turn lacks current playbook")
 		}
 		if runner.sandboxes[i] != "workspace-write" {
 			t.Fatalf("sandbox = %q", runner.sandboxes[i])
@@ -2439,8 +2456,18 @@ func TestSingleTurnContinuesSessionWithCurrentPlaybooks(t *testing.T) {
 	if !reflect.DeepEqual(runner.threadIDs, []string{"", "codex-thread"}) {
 		t.Fatalf("session IDs = %v, want same session resumed", runner.threadIDs)
 	}
-	if strings.Contains(runner.prompts[1], "first-version") {
-		t.Fatal("resumed prompt contains stale catalog")
+	for _, want := range []string{path, "first-version", "channel-fact", "1800字以内"} {
+		if !strings.Contains(runner.prompts[0], want) {
+			t.Errorf("first prompt missing %q", want)
+		}
+	}
+	for _, repeated := range []string{path, "channel-fact", "1800字以内", "<slack_thread>"} {
+		if strings.Contains(runner.prompts[1], repeated) {
+			t.Errorf("resumed prompt repeats %q", repeated)
+		}
+	}
+	if !strings.Contains(runner.prompts[1], "<message_text>\ndo it\n</message_text>") {
+		t.Error("resumed prompt lacks the request")
 	}
 	if !reflect.DeepEqual(api.postTexts, []string{"確認したいことがあります。", "Work completed."}) {
 		t.Fatalf("posts = %q", api.postTexts)
@@ -2449,6 +2476,119 @@ func TestSingleTurnContinuesSessionWithCurrentPlaybooks(t *testing.T) {
 		{state.Received, state.Working}, {state.Working, state.Done},
 		{state.Received, state.Working}, {state.Working, state.Done},
 	})
+}
+
+func newLazyCheckoutBot(t *testing.T, api *fakeSlack, runner *fakeRunner, workspaces *fakeWorkspaces) *Bot {
+	t.Helper()
+	return New(api, &fakeStore{claim: true}, runner, Config{
+		AllowedUserIDs:    []string{"U1"},
+		AllowedChannelIDs: []string{"C1"},
+		WorkspaceDir:      "/repo/workspace",
+		MemoryDir:         filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:      time.Minute,
+		BotUserID:         "UBOT",
+		Workspaces:        workspaces,
+	}, nil)
+}
+
+func TestQuestionDoesNotCreateCheckouts(t *testing.T) {
+	api := &fakeSlack{}
+	runner := &fakeRunner{responses: []runnerResponse{
+		{result: &codex.TurnResult{Completed: true, Messages: []string{"回答です。"}}},
+	}}
+	workspaces := &fakeWorkspaces{lazy: true}
+	bot := newLazyCheckoutBot(t, api, runner, workspaces)
+
+	bot.HandleMention(context.Background(), mention())
+
+	if !reflect.DeepEqual(workspaces.creates, []bool{false}) {
+		t.Fatalf("Acquire createCheckouts = %v, want [false]", workspaces.creates)
+	}
+	if !reflect.DeepEqual(runner.roots, [][]string{{"/shared/plain"}}) {
+		t.Errorf("roots = %v, want only the shared root", runner.roots)
+	}
+	if !strings.Contains(runner.prompts[0], "- /src/app") || !strings.Contains(runner.prompts[0], codex.CheckoutRequestHeading) {
+		t.Errorf("prompt does not offer a checkout of the pending repository:\n%s", runner.prompts[0])
+	}
+	if !reflect.DeepEqual(api.postTexts, []string{"回答です。"}) {
+		t.Fatalf("posts = %q", api.postTexts)
+	}
+	if workspaces.released != 1 {
+		t.Errorf("released = %d, want 1", workspaces.released)
+	}
+}
+
+func TestCheckoutRequestCreatesCheckoutsAndContinuesSession(t *testing.T) {
+	api := &fakeSlack{}
+	runner := &fakeRunner{responses: []runnerResponse{
+		{result: &codex.TurnResult{Completed: true, Messages: []string{codex.CheckoutRequestHeading}}},
+		{result: &codex.TurnResult{Completed: true, Messages: []string{"変更しました。"}}},
+		{result: &codex.TurnResult{Completed: true, Messages: []string{"続きも対応しました。"}}},
+	}}
+	workspaces := &fakeWorkspaces{lazy: true}
+	bot := newLazyCheckoutBot(t, api, runner, workspaces)
+
+	bot.HandleMention(context.Background(), mention())
+
+	if !reflect.DeepEqual(workspaces.creates, []bool{false, true}) {
+		t.Fatalf("Acquire createCheckouts = %v, want [false true]", workspaces.creates)
+	}
+	if !reflect.DeepEqual(runner.threadIDs, []string{"", "codex-thread"}) {
+		t.Fatalf("session IDs = %v, want the requesting session continued", runner.threadIDs)
+	}
+	checkout := "/home/checkouts/C1-100.1/app"
+	if want := []string{"/shared/plain", checkout, checkout + ".gitdir"}; !reflect.DeepEqual(runner.roots[1], want) {
+		t.Errorf("continued roots = %v, want %v", runner.roots[1], want)
+	}
+	if !strings.Contains(runner.prompts[1], "/src/app → "+checkout) {
+		t.Errorf("continuation prompt does not list the checkout:\n%s", runner.prompts[1])
+	}
+	if !reflect.DeepEqual(api.postTexts, []string{"変更しました。"}) {
+		t.Fatalf("posts = %q, want only the continued answer", api.postTexts)
+	}
+
+	// Later requests reuse the checkout without asking again.
+	bot.HandleMention(context.Background(), mentionAt("100.2", "100.1"))
+	if !reflect.DeepEqual(workspaces.creates, []bool{false, true, false}) {
+		t.Fatalf("Acquire createCheckouts = %v", workspaces.creates)
+	}
+	if !strings.Contains(runner.prompts[2], "/src/app → "+checkout) || strings.Contains(runner.prompts[2], codex.CheckoutRequestHeading) {
+		t.Errorf("resumed prompt does not describe the existing checkout:\n%s", runner.prompts[2])
+	}
+	if workspaces.released != 3 {
+		t.Errorf("released = %d, want 3", workspaces.released)
+	}
+}
+
+func TestCheckoutRequestPreparationFailureIsInterrupted(t *testing.T) {
+	api := &fakeSlack{}
+	runner := &fakeRunner{responses: []runnerResponse{
+		{result: &codex.TurnResult{Completed: true, Messages: []string{codex.CheckoutRequestHeading}}},
+	}}
+	workspaces := &fakeWorkspaces{lazy: true}
+	store := &fakeStore{claim: true}
+	bot := newLazyCheckoutBot(t, api, runner, workspaces)
+	bot.store = store
+	runner.onRun = func(int) {
+		workspaces.mu.Lock()
+		workspaces.err = errors.New("clone failed")
+		workspaces.mu.Unlock()
+	}
+
+	bot.HandleMention(context.Background(), mention())
+
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want 1", runner.calls)
+	}
+	if !reflect.DeepEqual(api.postTexts, []string{workFailureMessage}) {
+		t.Fatalf("posts = %q", api.postTexts)
+	}
+	assertTransitions(t, store.transitions, [][2]state.State{
+		{state.Received, state.Working}, {state.Working, state.Interrupted},
+	})
+	if workspaces.released != 1 {
+		t.Errorf("released = %d, want 1", workspaces.released)
+	}
 }
 
 func TestIncompleteSingleTurnIsInterruptedAndNotRetried(t *testing.T) {

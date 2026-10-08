@@ -10,6 +10,9 @@ const (
 	channelMemoryHeading       = "## チャンネルメモリ追記"
 	forbiddenUserMemoryHeading = "## ユーザーメモリ追記"
 	attachmentsHeading         = "## 添付ファイル"
+	// CheckoutRequestHeading asks the bot to prepare the thread's checkouts
+	// and continue the same session in them.
+	CheckoutRequestHeading = "## 作業用クローン要求"
 )
 
 // MemoryAppends contains optional entries proposed by a work turn. The bot
@@ -103,6 +106,25 @@ func SplitMemoryAppend(text string) (rest, entry string) {
 		return text, ""
 	}
 	return rest, appends.Global
+}
+
+// SplitCheckoutRequest removes every checkout request heading outside code
+// blocks and reports whether there was one.
+func SplitCheckoutRequest(text string) (rest string, requested bool) {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	prose := proseLines(lines)
+	kept := make([]string, 0, len(lines))
+	for i, line := range lines {
+		if prose[i] && strings.TrimSpace(line) == CheckoutRequestHeading {
+			requested = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !requested {
+		return text, false
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n")), true
 }
 
 // SplitAttachments removes the attachment section from a work response. The

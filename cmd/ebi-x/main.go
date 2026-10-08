@@ -60,7 +60,6 @@ func main() {
 	runner := &codex.Runner{
 		Command:               cfg.CodexCommand,
 		Model:                 cfg.CodexModel,
-		WorkModel:             cfg.CodexWorkModel,
 		ConfigPath:            filepath.Join(cfg.EBIXHome, ".codex", "config.toml"),
 		DeniedReadPaths:       cfg.ProtectedPaths,
 		CodexHome:             cfg.CodexHome,

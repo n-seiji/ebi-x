@@ -67,10 +67,8 @@ func TestBuildArgs(t *testing.T) {
 				"-c", `approval_policy="never"`,
 				"-c", `default_permissions="ebi-x"`,
 				"-c", `permissions.ebi-x.extends=":workspace"`,
-				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
+				"-c", `permissions.ebi-x.filesystem={"/extra"="write","/a\"b"="write","/private/memory"="deny"}`,
 				"-c", "permissions.ebi-x.network.enabled=true",
-				"--add-dir", "/extra",
-				"--add-dir", `/a"b`,
 				"-m", "gpt-test", "-C", "/work", "-",
 			},
 		},
@@ -85,16 +83,13 @@ func TestBuildArgs(t *testing.T) {
 				"-c", `approval_policy="never"`,
 				"-c", `default_permissions="ebi-x"`,
 				"-c", `permissions.ebi-x.extends=":workspace"`,
-				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
+				"-c", `permissions.ebi-x.filesystem={"/a dir"="write","/b/c"="write","/d e/f"="write","/private/memory"="deny"}`,
 				"-c", "permissions.ebi-x.network.enabled=true",
-				"--add-dir", "/a dir",
-				"--add-dir", "/b/c",
-				"--add-dir", "/d e/f",
 				"-C", "/work", "-",
 			},
 		},
 		{
-			name:        "workspace-write without roots omits add-dir",
+			name:        "workspace-write without roots has no write entries",
 			sandbox:     "workspace-write",
 			cwd:         "/work",
 			deniedPaths: []string{"/private/memory"},
@@ -139,7 +134,23 @@ func TestBuildArgs(t *testing.T) {
 			},
 		},
 		{
-			name:          "resume omits cwd",
+			name:          "denied root is not made writable",
+			sandbox:       "workspace-write",
+			cwd:           "/work",
+			writableRoots: []string{"/extra", "/private/memory"},
+			deniedPaths:   []string{"/private/memory"},
+			want: []string{
+				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
+				"-c", `approval_policy="never"`,
+				"-c", `default_permissions="ebi-x"`,
+				"-c", `permissions.ebi-x.extends=":workspace"`,
+				"-c", `permissions.ebi-x.filesystem={"/extra"="write","/private/memory"="deny"}`,
+				"-c", "permissions.ebi-x.network.enabled=true",
+				"-C", "/work", "-",
+			},
+		},
+		{
+			name:          "resume omits cwd and keeps writable roots",
 			threadID:      "thread-1",
 			sandbox:       "workspace-write",
 			cwd:           "/ignored",
@@ -151,9 +162,8 @@ func TestBuildArgs(t *testing.T) {
 				"-c", `approval_policy="never"`,
 				"-c", `default_permissions="ebi-x"`,
 				"-c", `permissions.ebi-x.extends=":workspace"`,
-				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
+				"-c", `permissions.ebi-x.filesystem={"/extra"="write","/private/memory"="deny"}`,
 				"-c", "permissions.ebi-x.network.enabled=true",
-				"--add-dir", "/extra",
 				"-m", "gpt-test", "-",
 			},
 		},
@@ -580,23 +590,6 @@ func TestLimitedBufferTruncates(t *testing.T) {
 	}
 	if n != 6 || buffer.String() != "abcd" {
 		t.Fatalf("write = (%d, %q), want (6, %q)", n, buffer.String(), "abcd")
-	}
-}
-
-func TestRunnerUsesWorkModelOnlyForWorkTurns(t *testing.T) {
-	runner := &Runner{Model: "plan-model", WorkModel: "work-model"}
-	for sandbox, want := range map[string]string{
-		"read-only-network": "plan-model",
-		"read-only":         "plan-model",
-		"workspace-write":   "work-model",
-	} {
-		if got := runner.modelFor(sandbox); got != want {
-			t.Errorf("modelFor(%q) = %q, want %q", sandbox, got, want)
-		}
-	}
-	runner.WorkModel = ""
-	if got := runner.modelFor("workspace-write"); got != "plan-model" {
-		t.Errorf("modelFor(workspace-write) without WorkModel = %q, want plan-model", got)
 	}
 }
 

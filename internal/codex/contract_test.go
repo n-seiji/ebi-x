@@ -299,3 +299,26 @@ func TestSplitAttachments(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitCheckoutRequest(t *testing.T) {
+	tests := []struct {
+		name      string
+		text      string
+		rest      string
+		requested bool
+	}{
+		{name: "absent", text: "回答です。", rest: "回答です。"},
+		{name: "heading only", text: "## 作業用クローン要求", rest: "", requested: true},
+		{name: "with text", text: "変更が必要です。\n\n  ## 作業用クローン要求  \n", rest: "変更が必要です。", requested: true},
+		{name: "fenced is ignored", text: "```\n## 作業用クローン要求\n```", rest: "```\n## 作業用クローン要求\n```"},
+		{name: "inline is ignored", text: "見出し「## 作業用クローン要求」を使います。", rest: "見出し「## 作業用クローン要求」を使います。"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rest, requested := SplitCheckoutRequest(tt.text)
+			if rest != tt.rest || requested != tt.requested {
+				t.Fatalf("SplitCheckoutRequest() = (%q, %v), want (%q, %v)", rest, requested, tt.rest, tt.requested)
+			}
+		})
+	}
+}

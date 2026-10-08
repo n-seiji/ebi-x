@@ -53,6 +53,10 @@ type Lease struct {
 	// directory. The original repository is not writable.
 	WritableRoots []string
 	Checkouts     []Checkout
+	// PendingRepos are the repositories this thread has no checkout of yet,
+	// because the lease was acquired without creating them. The turn may
+	// read the originals and ask for checkouts when it has to change them.
+	PendingRepos []string
 	// Shared reports that Dir is used by every thread, so it does not belong
 	// to this thread alone.
 	Shared bool
@@ -195,8 +199,10 @@ func (m *Manager) OtherThreadPaths(threadID string) ([]string, error) {
 
 // Acquire prepares the thread's workspace and checkouts for a work turn.
 // Existing checkouts are reused, so later work in the thread continues on the
-// same branch.
-func (m *Manager) Acquire(ctx context.Context, threadID string) (*Lease, error) {
+// same branch. Missing checkouts are cloned only when createCheckouts is set;
+// otherwise their repositories are listed in Lease.PendingRepos, so a request
+// that only reads code does not pay for clones.
+func (m *Manager) Acquire(ctx context.Context, threadID string, createCheckouts bool) (*Lease, error) {
 	dir, err := m.ThreadDir(threadID)
 	if err != nil {
 		return nil, err
@@ -208,7 +214,7 @@ func (m *Manager) Acquire(ctx context.Context, threadID string) (*Lease, error) 
 
 	idLock := m.idLock(threadID)
 	idLock.Lock()
-	lease, err := m.prepare(ctx, threadID, dir, threadCheckouts)
+	lease, err := m.prepare(ctx, threadID, dir, threadCheckouts, createCheckouts)
 	if err != nil {
 		idLock.Unlock()
 		return nil, err
@@ -223,7 +229,7 @@ func (m *Manager) Acquire(ctx context.Context, threadID string) (*Lease, error) 
 	return lease, nil
 }
 
-func (m *Manager) prepare(ctx context.Context, threadID, dir, threadCheckouts string) (*Lease, error) {
+func (m *Manager) prepare(ctx context.Context, threadID, dir, threadCheckouts string, createCheckouts bool) (*Lease, error) {
 	lease := &Lease{Dir: dir}
 	for _, r := range m.roots {
 		if r.name == "" {
@@ -234,6 +240,10 @@ func (m *Manager) prepare(ctx context.Context, threadID, dir, threadCheckouts st
 			Repo:   r.path,
 			Path:   filepath.Join(threadCheckouts, r.name),
 			Branch: branchPrefix + threadID,
+		}
+		if !createCheckouts && !checkoutReady(checkout) {
+			lease.PendingRepos = append(lease.PendingRepos, r.path)
+			continue
 		}
 		if err := ensureCheckout(ctx, checkout, r.originURL); err != nil {
 			return nil, err
@@ -327,12 +337,10 @@ func threadPath(base, threadID string) (string, error) {
 // not depend on the original afterwards. When originURL is set, the
 // checkout's origin points there too so the branch can be pushed.
 func ensureCheckout(ctx context.Context, checkout Checkout, originURL string) error {
-	gitDir := checkout.Path + gitDirSuffix
-	if _, err := os.Stat(filepath.Join(checkout.Path, ".git")); err == nil {
-		if _, err := os.Stat(gitDir); err == nil {
-			return nil
-		}
+	if checkoutReady(checkout) {
+		return nil
 	}
+	gitDir := checkout.Path + gitDirSuffix
 	// Clear anything a failed or interrupted clone left behind.
 	for _, path := range []string{checkout.Path, gitDir} {
 		if err := os.RemoveAll(path); err != nil {
@@ -352,6 +360,15 @@ func ensureCheckout(ctx context.Context, checkout Checkout, originURL string) er
 		return nil
 	}
 	return git(ctx, checkout.Path, "remote", "set-url", "origin", originURL)
+}
+
+// checkoutReady reports whether a previous turn finished cloning checkout.
+func checkoutReady(checkout Checkout) bool {
+	if _, err := os.Stat(filepath.Join(checkout.Path, ".git")); err != nil {
+		return false
+	}
+	_, err := os.Stat(checkout.Path + gitDirSuffix)
+	return err == nil
 }
 
 // isRepositoryTopLevel reports whether path is the top level of a git
