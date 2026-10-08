@@ -29,6 +29,7 @@ func TestResolveAcceptsFilesInThreadAreas(t *testing.T) {
 		"out/preview.png",
 		filepath.Join(checkout, "dist", "deck.PPTX"),
 		filepath.Join(workspaceDir, "out", "..", "out", "preview.png"),
+		"./out/../out/preview.png",
 	})
 	if len(rejections) != 0 {
 		t.Fatalf("rejections = %+v, want none", rejections)
@@ -66,7 +67,13 @@ func TestResolveRejectsUnsafeFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	writeFile(t, filepath.Join(base, "credential.pdf"), "secret")
+	if err := os.Link(filepath.Join(base, "credential.pdf"), filepath.Join(workspaceDir, "hardlink.pdf")); err != nil {
+		t.Fatal(err)
+	}
+
 	tests := map[string]string{
+		"hardlink.pdf":                           "ハードリンク",
 		"../C1-9.9/secret.pdf":                   "作業領域外",
 		filepath.Join(other, "secret.pdf"):       "作業領域外",
 		filepath.Join(base, "secret.png"):        "作業領域外",

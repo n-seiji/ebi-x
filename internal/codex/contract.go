@@ -148,59 +148,62 @@ func SplitMemoryAppend(text string) (rest, entry string) {
 }
 
 // SplitAttachments removes the attachment section from a work response. The
-// section runs from its heading to the next level-2 heading or the end, so it
-// may sit before or after the memory sections, and lists one file path per
-// bullet line. It must occur at most once. Malformed output yields no
-// attachments and reports valid as false, so the bot can tell the user
-// instead of guessing which files were meant.
+// section is its heading followed by bullet lines, one file path each. It
+// ends at the first other line, so text or memory sections after it stay in
+// place. It must occur at most once. Malformed output yields no attachments
+// and reports valid as false, so the bot can tell the user instead of
+// guessing which files were meant.
 func SplitAttachments(text string) (rest string, paths []string, valid bool) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
-	start, end := -1, len(lines)
-	sections := 0
 	prose := proseLines(lines)
-
+	var starts []int
 	for i, line := range lines {
-		if !prose[i] {
-			continue
-		}
-		trimmed := strings.TrimSpace(line)
-		if trimmed == attachmentsHeading {
-			sections++
-			if start == -1 {
-				start = i
-			}
-		} else if start != -1 && end == len(lines) && strings.HasPrefix(trimmed, "## ") {
-			end = i
+		if prose[i] && strings.TrimSpace(line) == attachmentsHeading {
+			starts = append(starts, i)
 		}
 	}
-
-	if sections == 0 {
+	if len(starts) == 0 {
 		return text, nil, true
 	}
-	kept := append(append([]string(nil), lines[:start]...), lines[end:]...)
-	rest = strings.TrimSpace(strings.Join(kept, "\n"))
-	if sections > 1 {
-		return rest, nil, false
+	start := starts[0]
+	if len(starts) > 1 {
+		// Which list is meant is unclear, so none of it is shown or sent.
+		return strings.TrimSpace(strings.Join(lines[:start], "\n")), nil, false
 	}
-	for _, line := range lines[start+1 : end] {
-		trimmed := strings.TrimSpace(line)
+
+	valid = true
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
 		if trimmed == "" {
 			continue
 		}
 		item, ok := strings.CutPrefix(trimmed, "- ")
-		if !ok {
-			return rest, nil, false
+		if !prose[i] || !ok {
+			// A section with no bullets before other text is malformed; a
+			// heading right after it only means the list is empty.
+			if len(paths) == 0 && valid && !(prose[i] && strings.HasPrefix(trimmed, "#")) {
+				valid = false
+			}
+			end = i
+			break
 		}
 		item = strings.TrimSpace(item)
 		if unquoted, ok := strings.CutPrefix(item, "`"); ok {
-			if item, ok = strings.CutSuffix(unquoted, "`"); !ok {
-				return rest, nil, false
+			item, ok = strings.CutSuffix(unquoted, "`")
+			if !ok {
+				valid = false
 			}
 		}
 		if item == "" {
-			return rest, nil, false
+			valid = false
 		}
 		paths = append(paths, item)
+	}
+	kept := append(append([]string(nil), lines[:start]...), lines[end:]...)
+	rest = strings.TrimSpace(strings.Join(kept, "\n"))
+	if !valid {
+		return rest, nil, false
 	}
 	return rest, paths, true
 }

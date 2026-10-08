@@ -2500,8 +2500,8 @@ func TestMalformedAttachmentSectionUploadsNothing(t *testing.T) {
 		t.Fatalf("uploads = %+v, want none", api.uploads)
 	}
 	if len(api.postTexts) != 1 || !strings.Contains(api.postTexts[0], "添付ファイルの指定を読み取れなかった") ||
-		strings.Contains(api.postTexts[0], "を送ってください") {
-		t.Fatalf("posts = %q, want the notice without the malformed section", api.postTexts)
+		strings.Contains(api.postTexts[0], "## 添付ファイル") {
+		t.Fatalf("posts = %q, want the notice without the attachment heading", api.postTexts)
 	}
 	assertFinalReactionOrder(t, api.calls, "x")
 }
@@ -2554,5 +2554,58 @@ func TestWebAPIUploadFileUsesExternalUpload(t *testing.T) {
 	}
 	if completeForm.Get("channel_id") != "C1" || completeForm.Get("thread_ts") != "100.1" {
 		t.Fatalf("completeUploadExternal form = %v, want the thread", completeForm)
+	}
+}
+
+func TestSharedWorkspaceFilesAreNotAttached(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "report.pdf"), []byte("pdf"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeSlack{}
+	runner := &fakeRunner{responses: []runnerResponse{
+		{result: &codex.TurnResult{Completed: true, Messages: []string{"## 方針\n送る。\n## 作業指示\n添付する。"}}},
+		{result: &codex.TurnResult{Completed: true, Messages: []string{"添付します。\n## 添付ファイル\n- report.pdf"}}},
+	}}
+	New(api, &fakeStore{claim: true}, runner, Config{
+		AllowedUserIDs: []string{"U1"},
+		WorkspaceDir:   dir,
+		MemoryDir:      filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:   time.Minute,
+		BotUserID:      "UBOT",
+	}, nil).HandleMention(context.Background(), mention())
+
+	if len(api.uploads) != 0 {
+		t.Fatalf("uploads = %+v, want none from a directory every thread shares", api.uploads)
+	}
+	if !strings.Contains(api.postTexts[0], "作業領域外") {
+		t.Fatalf("post = %q, want the rejection reported", api.postTexts[0])
+	}
+}
+
+func TestUploadRetriesOnlyRateLimits(t *testing.T) {
+	tests := []struct {
+		name        string
+		errs        []error
+		wantUploads int
+		wantCalls   int
+	}{
+		{name: "rate limited", errs: []error{&slack.RateLimitedError{RetryAfter: time.Millisecond}}, wantUploads: 1, wantCalls: 2},
+		{name: "server error", errs: []error{slack.StatusCodeError{Code: 502, Status: "502 Bad Gateway"}}, wantUploads: 0, wantCalls: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			api := &fakeSlack{uploadErrs: test.errs}
+			newAttachmentBot(t, api, &fakeStore{claim: true}, "添付します。\n## 添付ファイル\n- preview.png")
+			calls := 0
+			for _, call := range api.calls {
+				if call.kind == "upload" {
+					calls++
+				}
+			}
+			if len(api.uploads) != test.wantUploads || calls != test.wantCalls {
+				t.Fatalf("uploads = %d, calls = %d; want %d and %d", len(api.uploads), calls, test.wantUploads, test.wantCalls)
+			}
+		})
 	}
 }

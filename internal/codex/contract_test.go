@@ -379,8 +379,34 @@ func TestSplitAttachments(t *testing.T) {
 		{
 			name:      "prose line",
 			text:      "本文\n## 添付ファイル\n/w/a.pdf を送ってください",
-			wantRest:  "本文",
+			wantRest:  "本文\n/w/a.pdf を送ってください",
 			wantValid: false,
+		},
+		{
+			name:      "text after the list stays",
+			text:      "## 添付ファイル\n- /w/a.pdf\n\n以上をご確認ください。\n### 補足\n詳細",
+			wantRest:  "以上をご確認ください。\n### 補足\n詳細",
+			wantPaths: []string{"/w/a.pdf"},
+			wantValid: true,
+		},
+		{
+			name:      "code block after the list stays",
+			text:      "本文\n## 添付ファイル\n- /w/a.pdf\n```\nx\n```",
+			wantRest:  "本文\n```\nx\n```",
+			wantPaths: []string{"/w/a.pdf"},
+			wantValid: true,
+		},
+		{
+			name:      "code block instead of a list",
+			text:      "本文\n## 添付ファイル\n```\n/w/a.pdf\n```",
+			wantRest:  "本文\n```\n/w/a.pdf\n```",
+			wantValid: false,
+		},
+		{
+			name:      "empty list before memory",
+			text:      "本文\n## 添付ファイル\n\n## 全体メモリ追記\n学び",
+			wantRest:  "本文\n## 全体メモリ追記\n学び",
+			wantValid: true,
 		},
 		{
 			name:      "unclosed backtick",

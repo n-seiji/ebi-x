@@ -81,17 +81,18 @@ func Resolve(roots []string, cwd string, paths []string) ([]File, []Rejection) {
 			path = filepath.Join(cwd, path)
 		}
 		path = filepath.Clean(path)
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		seen[path] = struct{}{}
-		if len(files) >= MaxFiles {
-			rejections = append(rejections, Rejection{Path: path, Reason: fmt.Sprintf("1回の添付は%d件までです", MaxFiles)})
-			continue
-		}
 		file, err := resolveOne(path, areas)
 		if err != nil {
 			rejections = append(rejections, Rejection{Path: path, Reason: err.Error()})
+			continue
+		}
+		// The real path catches one file listed through different paths.
+		if _, ok := seen[file.Path]; ok {
+			continue
+		}
+		seen[file.Path] = struct{}{}
+		if len(files) >= MaxFiles {
+			rejections = append(rejections, Rejection{Path: path, Reason: fmt.Sprintf("1回の添付は%d件までです", MaxFiles)})
 			continue
 		}
 		files = append(files, file)
@@ -119,6 +120,11 @@ func resolveOne(path string, areas []area) (File, error) {
 	}
 	if !info.Mode().IsRegular() {
 		return File{}, errors.New("通常のファイルではありません")
+	}
+	// A hard link shares the inode of a file that may live outside the work
+	// area, such as a credential, and no path check can tell them apart.
+	if linkCount(info) > 1 {
+		return File{}, errors.New("ハードリンクされたファイルです")
 	}
 	if info.Size() == 0 {
 		return File{}, errors.New("ファイルが空です")

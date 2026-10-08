@@ -564,14 +564,22 @@ func (b *Bot) uploadAttachments(ctx context.Context, eventKey, channel, threadTS
 		log.Printf("slackbot: reject attachment %q for %q: %s", rejection.Path, eventKey, rejection.Reason)
 	}
 	for _, file := range files {
-		err := b.retrySlack(ctx, func() error {
+		upload := func() error {
 			content, err := file.Open()
 			if err != nil {
 				return err
 			}
 			defer content.Close()
 			return b.api.UploadFile(ctx, channel, threadTS, file.Name(), file.Size(), content)
-		})
+		}
+		// Only a rate limit proves Slack did not take the file. Retrying any
+		// other failure could share the file twice.
+		err := upload()
+		if rateLimited, ok := errors.AsType[*slack.RateLimitedError](err); ok {
+			if err = b.sleep(ctx, rateLimited.RetryAfter); err == nil {
+				err = upload()
+			}
+		}
 		if err != nil {
 			log.Printf("slackbot: upload attachment %q for %q: %v", file.Path, eventKey, err)
 			failed = append(failed, attachment.Rejection{Path: file.Path, Reason: "Slackへのアップロードに失敗しました"})
@@ -641,7 +649,9 @@ type sharedWorkspaces struct {
 func (w sharedWorkspaces) ThreadDir(string) (string, error) { return w.dir, nil }
 
 func (w sharedWorkspaces) Acquire(context.Context, string) (*workspace.Lease, error) {
-	return workspace.NewLease(w.dir, w.roots, nil, func() {}), nil
+	lease := workspace.NewLease(w.dir, w.roots, nil, func() {})
+	lease.Shared = true
+	return lease, nil
 }
 
 // mentionChannelAllowed reports whether a mention in channel may be
