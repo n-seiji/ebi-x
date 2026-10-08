@@ -74,8 +74,10 @@ func TestConcurrentApprovalRequestsAreAllSaved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore() error = %v", err)
 	}
-	if got := len(reloaded.ListApprovals()); got != count {
-		t.Fatalf("reloaded approvals = %d, want %d", got, count)
+	for i := range count {
+		if status := reloaded.ApprovalStatus(ApprovalChannel, fmt.Sprintf("C%d", i)); status != Pending {
+			t.Fatalf("reloaded C%d status = %q, want pending", i, status)
+		}
 	}
 }
 
@@ -104,9 +106,11 @@ func TestApprovalRollsBackAfterSaveFailure(t *testing.T) {
 
 func TestDecideApprovalWithoutRequest(t *testing.T) {
 	store := newTestStore(t)
-	approval, decided, err := store.DecideApproval(ApprovalChannel, "C9", true, "UOWNER", time.Now())
-	if err != nil || !decided || approval.Status != Approved {
-		t.Fatalf("DecideApproval() = %+v, %v, %v; want approved", approval, decided, err)
+	if _, decided, err := store.DecideApproval(ApprovalChannel, "C9", true, "UOWNER", time.Now()); err != nil || decided {
+		t.Fatalf("DecideApproval() decided = %v, %v; want nothing decided", decided, err)
+	}
+	if status := store.ApprovalStatus(ApprovalChannel, "C9"); status != "" {
+		t.Fatalf("status = %q, want none", status)
 	}
 }
 

@@ -69,13 +69,6 @@ func (s *Store) GetApproval(kind ApprovalKind, id string) (Approval, bool) {
 	return approval, ok
 }
 
-// ListApprovals returns every recorded approval ordered by kind and ID.
-func (s *Store) ListApprovals() []Approval {
-	s.approvalsMu.Lock()
-	defer s.approvalsMu.Unlock()
-	return s.sortedApprovals()
-}
-
 // RequestApproval records a pending request for kind and id unless something
 // is already recorded for them. It reports whether this call created the
 // request, so only one caller posts it.
@@ -106,25 +99,19 @@ func (s *Store) RequestApproval(kind ApprovalKind, id, requestedBy, requestChann
 	return true, nil
 }
 
-// DecideApproval approves or denies kind and id. A pending request or an
-// unrecorded entity is decided; an existing decision is kept and returned
-// with decided false, so the first decision wins.
+// DecideApproval approves or denies a pending request. When the request is
+// no longer pending, it reports false with the current record, so the first
+// decision wins.
 func (s *Store) DecideApproval(kind ApprovalKind, id string, approve bool, decidedBy string, now time.Time) (approval Approval, decided bool, err error) {
-	if err := validApprovalKind(kind); err != nil {
-		return Approval{}, false, err
-	}
 	s.approvalsMu.Lock()
 	defer s.approvalsMu.Unlock()
 
 	key := approvalKey(kind, id)
 	current, exists := s.approvals[key]
-	if exists && current.Status != Pending {
+	if !exists || current.Status != Pending {
 		return current, false, nil
 	}
 	next := current
-	if !exists {
-		next = Approval{Kind: kind, ID: id, RequestedAt: now.UTC()}
-	}
 	next.Status = Denied
 	if approve {
 		next.Status = Approved
@@ -133,11 +120,7 @@ func (s *Store) DecideApproval(kind ApprovalKind, id string, approve bool, decid
 	next.DecidedAt = now.UTC()
 	s.approvals[key] = next
 	if err := s.saveApprovals(); err != nil {
-		if exists {
-			s.approvals[key] = current
-		} else {
-			delete(s.approvals, key)
-		}
+		s.approvals[key] = current
 		return current, false, fmt.Errorf("save approval decision %q: %w", key, err)
 	}
 	return next, true, nil

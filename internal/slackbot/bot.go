@@ -207,8 +207,11 @@ func (b *Bot) handleMention(ctx context.Context, event *slackevents.AppMentionEv
 	if event == nil || event.Edited != nil || event.User == b.config.BotUserID {
 		return
 	}
-	if event.BotID == "" && b.approvalsEnabled() && event.Channel == b.config.ApprovalChannelID &&
-		b.handleApprovalCommand(ctx, event) {
+	// The approval channel is only for deciding requests.
+	if b.approvalsEnabled() && event.Channel == b.config.ApprovalChannelID {
+		if event.BotID == "" {
+			b.handleApprovalCommand(ctx, event)
+		}
 		return
 	}
 	var missing []approvalSubject
