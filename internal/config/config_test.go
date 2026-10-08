@@ -491,10 +491,7 @@ func TestLoadWritableRoots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvalSymlinks() error = %v, want nil", err)
 	}
-	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
-	t.Setenv("SLACK_APP_TOKEN", "xapp-test")
-	t.Setenv("SLACK_ALLOWED_USER_IDS", "U123")
-	t.Setenv("SLACK_ALLOWED_CHANNEL_IDS", "C999")
+	setRequiredEnv(t)
 	t.Setenv("EBIX_WRITABLE_ROOTS", root)
 
 	cfg, err := Load()
@@ -541,14 +538,11 @@ func TestLoadRejectsMemoryOverlappingWritableRoots(t *testing.T) {
 					t.Fatalf("MkdirAll(%q) error = %v", dir, err)
 				}
 			}
-			t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
-			t.Setenv("SLACK_APP_TOKEN", "xapp-test")
-			t.Setenv("SLACK_ALLOWED_USER_IDS", "U123")
-			t.Setenv("SLACK_ALLOWED_CHANNEL_IDS", "C999")
+			setRequiredEnv(t)
 			t.Setenv("EBIX_HOME", home)
 			t.Setenv("EBIX_WRITABLE_ROOTS", tt.rootPath(home))
 
-			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected memory directory") {
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected path") {
 				t.Fatalf("Load() error = %v, want protected memory overlap", err)
 			}
 		})
@@ -568,14 +562,11 @@ func TestLoadRejectsSymlinkedMemoryWritableRoot(t *testing.T) {
 	if err := os.Symlink(memoryDir, link); err != nil {
 		t.Fatalf("Symlink(%q) error = %v", link, err)
 	}
-	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
-	t.Setenv("SLACK_APP_TOKEN", "xapp-test")
-	t.Setenv("SLACK_ALLOWED_USER_IDS", "U123")
-	t.Setenv("SLACK_ALLOWED_CHANNEL_IDS", "C999")
+	setRequiredEnv(t)
 	t.Setenv("EBIX_HOME", home)
 	t.Setenv("EBIX_WRITABLE_ROOTS", link)
 
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected memory directory") {
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected path") {
 		t.Fatalf("Load() error = %v, want protected memory overlap", err)
 	}
 }
@@ -668,6 +659,15 @@ func clearConfigEnv(t *testing.T) {
 	t.Setenv("CODEX_HOME", "codex-home")
 }
 
+// setRequiredEnv sets the minimal valid configuration.
+func setRequiredEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
+	t.Setenv("SLACK_APP_TOKEN", "xapp-test")
+	t.Setenv("SLACK_ALLOWED_USER_IDS", "U123")
+	t.Setenv("SLACK_ALLOWED_CHANNEL_IDS", "C999")
+}
+
 func withWorkingDir(t *testing.T, dir string) {
 	t.Helper()
 	previous, err := os.Getwd()
@@ -686,10 +686,7 @@ func TestLoadRejectsPlaybooksSymlinkToMemory(t *testing.T) {
 	workingDir := t.TempDir()
 	withWorkingDir(t, workingDir)
 	clearConfigEnv(t)
-	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
-	t.Setenv("SLACK_APP_TOKEN", "xapp-test")
-	t.Setenv("SLACK_ALLOWED_USER_IDS", "U123")
-	t.Setenv("SLACK_ALLOWED_CHANNEL_IDS", "C999")
+	setRequiredEnv(t)
 	memoryDir := filepath.Join(workingDir, "data", "memory")
 	if err := os.MkdirAll(memoryDir, 0700); err != nil {
 		t.Fatal(err)
@@ -697,7 +694,7 @@ func TestLoadRejectsPlaybooksSymlinkToMemory(t *testing.T) {
 	if err := os.Symlink(memoryDir, filepath.Join(workingDir, "data", "playbooks")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected memory") {
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "overlaps protected path") {
 		t.Fatalf("Load() error = %v, want memory isolation error", err)
 	}
 }
@@ -720,10 +717,7 @@ func TestLoadRejectsWritableRootOverlappingProtectedPaths(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
-			t.Setenv("SLACK_APP_TOKEN", "xapp-test")
-			t.Setenv("SLACK_ALLOWED_USER_IDS", "U123")
-			t.Setenv("SLACK_ALLOWED_CHANNEL_IDS", "C999")
+			setRequiredEnv(t)
 			t.Setenv("EBIX_WRITABLE_ROOTS", root)
 			configure(t, root)
 
@@ -738,10 +732,7 @@ func TestLoadIncludesOperatorDeniedPaths(t *testing.T) {
 	workingDir := t.TempDir()
 	withWorkingDir(t, workingDir)
 	clearConfigEnv(t)
-	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
-	t.Setenv("SLACK_APP_TOKEN", "xapp-test")
-	t.Setenv("SLACK_ALLOWED_USER_IDS", "U123")
-	t.Setenv("SLACK_ALLOW_ALL_PUBLIC_CHANNELS", "true")
+	setRequiredEnv(t)
 	t.Setenv("EBIX_DENIED_READ_PATHS", filepath.Join(workingDir, "ssh"))
 
 	cfg, err := Load()

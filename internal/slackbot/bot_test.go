@@ -2480,3 +2480,24 @@ func TestNeutralizeBroadcasts(t *testing.T) {
 		t.Fatalf("neutralizeBroadcasts() = %q, want %q", got, want)
 	}
 }
+
+func TestWebAPIPostMessageNeutralizesBroadcasts(t *testing.T) {
+	var form url.Values
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if err := r.ParseForm(); err != nil {
+			return nil, err
+		}
+		form = r.Form
+		return postMessageResponse(r, `{"ok":true,"ts":"100.2"}`), nil
+	})}
+	api := &webAPI{client: slack.New("token", slack.OptionAPIURL("https://slack.test/"), slack.OptionHTTPClient(httpClient))}
+
+	if _, err := api.PostMessage(context.Background(), "C1", "100.1", "完了 <!channel>"); err != nil {
+		t.Fatalf("PostMessage() error = %v, want nil", err)
+	}
+	for _, field := range []string{"blocks", "text"} {
+		if strings.Contains(form.Get(field), "<!channel>") {
+			t.Fatalf("%s field = %q, must not contain a broadcast mention", field, form.Get(field))
+		}
+	}
+}

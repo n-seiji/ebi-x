@@ -337,23 +337,13 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		return
 	}
 
-	// Take the thread lock first so a turn queued behind its own thread does
-	// not hold a plan slot while it waits.
 	lock := b.keyedLock(b.threadLocks, threadKey)
 	lock.Lock()
-	releasePlan, err := b.acquirePlan(ctx)
-	if err != nil {
-		lock.Unlock()
-		log.Printf("slackbot: wait for plan slot %q: %v", eventKey, err)
-		b.fail(ctx, eventKey, state.Planning, state.Failed, channel, threadTS, timestamp, planFailureMessage)
-		return
-	}
 	threadID, hasThread := b.store.GetThread(threadKey)
 	var slackThread string
 	if !hasThread && trigger.threadReply {
 		threadMessages, err := b.api.GetThreadMessages(ctx, channel, threadTS, timestamp)
 		if err != nil {
-			releasePlan()
 			lock.Unlock()
 			log.Printf("slackbot: read thread context %q: %v", eventKey, err)
 			b.fail(ctx, eventKey, state.Planning, state.Failed, channel, threadTS, timestamp, threadFailureMessage)
@@ -383,13 +373,23 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	} else {
 		planPrompt = prompt.BuildPlanPrompt(memoryContext, currentPlaybooks, slackThread, trigger.message)
 	}
+	// The plan slot covers only the Codex turn, so slow Slack calls above do
+	// not hold back other threads' planning.
+	select {
+	case b.planSlots <- struct{}{}:
+	case <-ctx.Done():
+		lock.Unlock()
+		log.Printf("slackbot: wait for plan slot %q: %v", eventKey, ctx.Err())
+		b.fail(ctx, eventKey, state.Planning, state.Failed, channel, threadTS, timestamp, planFailureMessage)
+		return
+	}
 	planResult, runErr := b.runTurn(ctx, threadID, "read-only-network", cwd, nil, otherThreads, planPrompt, func(id string) error {
 		if err := b.store.SetThread(threadKey, id); err != nil {
 			return fmt.Errorf("persist plan thread: %w", err)
 		}
 		return nil
 	})
-	releasePlan()
+	<-b.planSlots
 	lock.Unlock()
 
 	if runErr != nil || planResult == nil || !planResult.Completed {
@@ -595,18 +595,6 @@ func (b *Bot) acquireWork(ctx context.Context, threadKey, channel, threadTS stri
 	}
 }
 
-// acquirePlan waits for a free planning slot. Planning turns of different
-// threads otherwise run without limit.
-func (b *Bot) acquirePlan(ctx context.Context) (func(), error) {
-	select {
-	case b.planSlots <- struct{}{}:
-		var once sync.Once
-		return func() { once.Do(func() { <-b.planSlots }) }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
 // threadWorkspace returns the workspace identifier and plan cwd for a Slack
 // thread.
 func (b *Bot) threadWorkspace(channel, threadTS string) (string, string, error) {
@@ -671,25 +659,10 @@ func (b *Bot) forbidden(ctx context.Context, event *slackevents.AppMentionEvent)
 }
 
 // workflowAllowed reports whether a bot-authored mention comes from an
-// explicitly allowed Slack workflow.
+// explicitly allowed Slack workflow. The configuration validates the IDs.
 func (b *Bot) workflowAllowed(id string) bool {
-	if !b.config.AllowWorkflows || !validWorkflowID(id) {
-		return false
-	}
 	_, ok := b.allowedWorkflows[id]
-	return ok
-}
-
-func validWorkflowID(id string) bool {
-	if len(id) <= 2 || !strings.HasPrefix(id, "Wf") {
-		return false
-	}
-	for _, char := range id[2:] {
-		if (char < 'A' || char > 'Z') && (char < '0' || char > '9') {
-			return false
-		}
-	}
-	return true
+	return b.config.AllowWorkflows && ok
 }
 
 func workflowIDFromPayload(payload json.RawMessage) string {
@@ -825,7 +798,6 @@ func neutralizeBroadcasts(text string) string {
 }
 
 func (b *Bot) post(ctx context.Context, channel, threadTS, text string) error {
-	text = neutralizeBroadcasts(text)
 	for _, chunk := range slackfmt.Split(text, maxSlackMessageRunes) {
 		if err := b.retrySlack(ctx, func() error {
 			_, err := b.api.PostMessage(ctx, channel, threadTS, chunk)
@@ -931,6 +903,7 @@ type webAPI struct {
 // option is not a second copy of the body: Slack shows it in notification
 // previews and in clients that cannot render blocks.
 func (w *webAPI) PostMessage(ctx context.Context, channel, threadTS, text string) (string, error) {
+	text = neutralizeBroadcasts(text)
 	fallback := slackfmt.PlainText(text)
 	// Escape the plain text so model output cannot form Slack control
 	// sequences such as <!channel> in it.

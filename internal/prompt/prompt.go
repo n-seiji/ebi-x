@@ -122,19 +122,17 @@ func BuildWorkPrompt(instruction string, memories memory.Context, checkouts []wo
 %s
 メモリファイルを直接編集しないでください。
 `, stripClosingTags(instruction, "work_instruction"), slackFormatRules)
-	if sharedWritable {
-		builder.WriteString(`作業中に長期的に有用な学びがあれば、最終応答の末尾に以下の見出しを必要なものだけ置いてください。複数使う場合はこの順序にしてください。
-- 「## 全体メモリ追記」: 他のユーザーやチャンネルでも再利用できる技術的・運用上の知識
-- 「## チャンネルメモリ追記」: 現在のチャンネルの参加者で共有してよい用語・目的・運用ルール
-
-各見出しは最大1回です。`)
-	} else {
-		builder.WriteString(`このチャンネルからは playbook と全体メモリを変更できません。playbook は読み取り専用です。作業中に長期的に有用な学びがあれば、最終応答の末尾に次の見出しを置いてください。
-- 「## チャンネルメモリ追記」: 現在のチャンネルの参加者で共有してよい用語・目的・運用ルール
-
-見出しは最大1回です。`)
+	if !sharedWritable {
+		builder.WriteString("このチャンネルからは playbook と全体メモリを変更できません。playbook は読み取り専用です。\n")
 	}
-	builder.WriteString("認証情報、秘密、一時的な依頼内容、推測したセンシティブ属性は保存しないでください。重要な学びがなければ、これらの見出しを出力しないでください。\n")
+	builder.WriteString("作業中に長期的に有用な学びがあれば、最終応答の末尾に以下の見出しを必要なものだけ置いてください。複数使う場合はこの順序にしてください。\n")
+	if sharedWritable {
+		builder.WriteString("- 「## 全体メモリ追記」: 他のユーザーやチャンネルでも再利用できる技術的・運用上の知識\n")
+	}
+	builder.WriteString(`- 「## チャンネルメモリ追記」: 現在のチャンネルの参加者で共有してよい用語・目的・運用ルール
+
+各見出しは最大1回です。認証情報、秘密、一時的な依頼内容、推測したセンシティブ属性は保存しないでください。重要な学びがなければ、これらの見出しを出力しないでください。
+`)
 	return builder.String()
 }
 
@@ -156,29 +154,21 @@ func sanitizeMemory(value string) string {
 	return stripClosingTags(value, "global_memory", "channel_memory")
 }
 
-// closingTag matches any closing tag, ignoring case and inner whitespace.
-var closingTag = regexp.MustCompile(`<\s*/\s*([A-Za-z_]+)\s*>`)
-
 // stripClosingTags removes closing tags for the given data blocks so input
-// cannot end its block early. Removal repeats until nothing changes, because
-// deleting one tag can join its neighbours into a new one, as in
-// "</us</user_message>er_message>".
+// cannot end its block early. Case and inner whitespace are ignored, and
+// removal repeats until nothing changes, because deleting one tag can join its
+// neighbours into a new one, as in "</us</user_message>er_message>".
 func stripClosingTags(value string, tags ...string) string {
-	isTarget := func(name string) bool {
-		for _, tag := range tags {
-			if strings.EqualFold(name, tag) {
-				return true
-			}
-		}
-		return false
+	if !strings.Contains(value, "/") {
+		return value
 	}
+	quoted := make([]string, len(tags))
+	for i, tag := range tags {
+		quoted[i] = regexp.QuoteMeta(tag)
+	}
+	pattern := regexp.MustCompile(`(?i)<\s*/\s*(?:` + strings.Join(quoted, "|") + `)\s*>`)
 	for {
-		next := closingTag.ReplaceAllStringFunc(value, func(match string) string {
-			if isTarget(closingTag.FindStringSubmatch(match)[1]) {
-				return ""
-			}
-			return match
-		})
+		next := pattern.ReplaceAllString(value, "")
 		if next == value {
 			return value
 		}

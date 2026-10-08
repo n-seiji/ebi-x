@@ -150,25 +150,13 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("CODEX_TIMEOUT %q: %w", value, err)
 		}
 	}
-	maxParallelWork := defaultMaxParallelWork
-	if value := strings.TrimSpace(os.Getenv("CODEX_MAX_PARALLEL_WORK")); value != "" {
-		maxParallelWork, err = strconv.Atoi(value)
-		if err != nil {
-			return nil, fmt.Errorf("CODEX_MAX_PARALLEL_WORK %q: %w", value, err)
-		}
-		if maxParallelWork < 1 {
-			return nil, fmt.Errorf("CODEX_MAX_PARALLEL_WORK %q: %w", value, errors.New("must be at least 1"))
-		}
+	maxParallelWork, err := positiveIntEnv("CODEX_MAX_PARALLEL_WORK", defaultMaxParallelWork)
+	if err != nil {
+		return nil, err
 	}
-	maxParallelPlan := defaultMaxParallelPlan
-	if value := strings.TrimSpace(os.Getenv("CODEX_MAX_PARALLEL_PLAN")); value != "" {
-		maxParallelPlan, err = strconv.Atoi(value)
-		if err != nil {
-			return nil, fmt.Errorf("CODEX_MAX_PARALLEL_PLAN %q: %w", value, err)
-		}
-		if maxParallelPlan < 1 {
-			return nil, fmt.Errorf("CODEX_MAX_PARALLEL_PLAN %q: %w", value, errors.New("must be at least 1"))
-		}
+	maxParallelPlan, err := positiveIntEnv("CODEX_MAX_PARALLEL_PLAN", defaultMaxParallelPlan)
+	if err != nil {
+		return nil, err
 	}
 	sharedWriteChannelIDs := splitList(os.Getenv("EBIX_SHARED_WRITE_CHANNEL_IDS"))
 	for _, channelID := range sharedWriteChannelIDs {
@@ -223,20 +211,12 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("resolve playbooks directory: %w", err)
 	}
 	stateDir := filepath.Join(home, "data", "state")
-	isolationRoots := append(append([]string(nil), writableRoots...), playbooksDir, checkoutsDir)
-	if err := validateMemoryIsolation(workspaceDir, memoryDir, isolationRoots); err != nil {
-		return nil, err
-	}
-	protectedPaths, err := resolveProtectedPaths(home, memoryDir, stateDir)
+	protectedPaths, err := resolveProtectedPaths(home, memoryDir, stateDir, os.Getenv("EBIX_DENIED_READ_PATHS"))
 	if err != nil {
 		return nil, err
 	}
-	extraDenied, err := resolveDeniedPaths(os.Getenv("EBIX_DENIED_READ_PATHS"))
-	if err != nil {
-		return nil, fmt.Errorf("EBIX_DENIED_READ_PATHS: %w", err)
-	}
-	protectedPaths = append(protectedPaths, extraDenied...)
-	if err := validateProtectedIsolation(isolationRoots, protectedPaths); err != nil {
+	isolationRoots := append(append([]string(nil), writableRoots...), workspaceDir, playbooksDir, checkoutsDir)
+	if err := validateIsolation(isolationRoots, protectedPaths); err != nil {
 		return nil, err
 	}
 
@@ -270,42 +250,18 @@ func Load() (*Config, error) {
 	}, nil
 }
 
-// validateMemoryIsolation keeps the agent's workspace and every additional
-// sandbox root disjoint from memory. Codex receives only the current scoped
-// memory through its prompt; it must never be able to inspect the backing
-// files directly.
-func validateMemoryIsolation(workspaceDir, memoryDir string, writableRoots []string) error {
-	workspace, err := canonicalPath(workspaceDir)
-	if err != nil {
-		return fmt.Errorf("resolve workspace directory: %w", err)
-	}
-	memory, err := canonicalPath(memoryDir)
-	if err != nil {
-		return fmt.Errorf("resolve memory directory: %w", err)
-	}
-	if pathsOverlap(workspace, memory) {
-		return errors.New("workspace overlaps protected memory directory")
-	}
-	for _, root := range writableRoots {
-		if pathsOverlap(root, memory) {
-			return fmt.Errorf("EBIX_WRITABLE_ROOTS: %q overlaps protected memory directory", root)
-		}
-	}
-	return nil
-}
-
 // resolveProtectedPaths returns the paths ebi-x always hides from the agent:
 // memory and bot state, the .env file holding the Slack tokens, the local
-// Codex config, and the Codex credentials and session history, which hold
-// every other thread's conversation.
-func resolveProtectedPaths(home, memoryDir, stateDir string) ([]string, error) {
+// Codex config, the Codex credentials and session history, which hold every
+// other thread's conversation, and the operator's extra denied paths.
+func resolveProtectedPaths(home, memoryDir, stateDir, extraDenied string) ([]string, error) {
 	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
 	if codexHome == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("resolve Codex home: %w", err)
-		}
-		codexHome = filepath.Join(userHome, ".codex")
+		codexHome = "~/.codex"
+	}
+	codexHome, err := expandHome(codexHome)
+	if err != nil {
+		return nil, fmt.Errorf("CODEX_HOME: %w", err)
 	}
 	candidates := []string{
 		memoryDir,
@@ -316,6 +272,13 @@ func resolveProtectedPaths(home, memoryDir, stateDir string) ([]string, error) {
 	}
 	for _, name := range []string{"auth.json", "sessions", "archived_sessions", "history.jsonl"} {
 		candidates = append(candidates, filepath.Join(codexHome, name))
+	}
+	for _, item := range splitList(extraDenied) {
+		expanded, err := expandHome(item)
+		if err != nil {
+			return nil, fmt.Errorf("EBIX_DENIED_READ_PATHS %q: %w", item, err)
+		}
+		candidates = append(candidates, expanded)
 	}
 	var paths []string
 	seen := make(map[string]struct{})
@@ -333,36 +296,40 @@ func resolveProtectedPaths(home, memoryDir, stateDir string) ([]string, error) {
 	return paths, nil
 }
 
-// resolveDeniedPaths parses operator-supplied paths to hide from the agent.
-// Unlike writable roots they need not exist yet.
-func resolveDeniedPaths(value string) ([]string, error) {
-	var paths []string
-	for _, item := range splitList(value) {
-		expanded, err := expandHome(item)
-		if err != nil {
-			return nil, fmt.Errorf("%q: %w", item, err)
-		}
-		path, err := canonicalPath(expanded)
-		if err != nil {
-			return nil, fmt.Errorf("%q: %w", item, err)
-		}
-		paths = append(paths, path)
-	}
-	return paths, nil
-}
-
-// validateProtectedIsolation rejects writable roots that contain or sit inside
-// a protected path. A writable .codex/config.toml, for example, would let the
-// agent register commands that Codex runs outside the sandbox.
-func validateProtectedIsolation(writableRoots, protectedPaths []string) error {
+// validateIsolation keeps the agent's workspace and every writable root
+// disjoint from protected paths. Codex receives only the current scoped
+// memory through its prompt, and a writable .codex/config.toml, for example,
+// would let the agent register commands that Codex runs outside the sandbox.
+func validateIsolation(writableRoots, protectedPaths []string) error {
 	for _, root := range writableRoots {
+		root, err := canonicalPath(root)
+		if err != nil {
+			return fmt.Errorf("resolve writable path %q: %w", root, err)
+		}
 		for _, protected := range protectedPaths {
 			if pathsOverlap(root, protected) {
-				return fmt.Errorf("EBIX_WRITABLE_ROOTS: %q overlaps protected path %q", root, protected)
+				return fmt.Errorf("writable path %q overlaps protected path %q", root, protected)
 			}
 		}
 	}
 	return nil
+}
+
+// positiveIntEnv reads an integer of at least 1 from the environment
+// variable name, returning fallback when it is unset or blank.
+func positiveIntEnv(name string, fallback int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q: %w", name, value, err)
+	}
+	if n < 1 {
+		return 0, fmt.Errorf("%s %q: %w", name, value, errors.New("must be at least 1"))
+	}
+	return n, nil
 }
 
 // validWorkflowID reports whether id looks like a Slack workflow ID.
