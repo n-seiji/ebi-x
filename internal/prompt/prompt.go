@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/n-seiji/ebi-x/internal/attachment"
 	"github.com/n-seiji/ebi-x/internal/codex"
@@ -79,8 +80,16 @@ func BuildTurnPrompt(memories memory.Context, playbooks []playbook.Playbook, sla
 - 添付の成否はbotが本文の後に伝えます。本文では「添付しました」と断定せず、「添付します」のように書いてください。
 - 添付の再送を依頼された場合は、成果物を作り直さず、既存のファイルを確認してこの見出しで指定してください。
 
+時間をおいて確認・継続すべき作業がある場合（CIやデプロイの完了待ち、時間をおいた再確認、依頼者が指定した時刻の作業など）は、最終応答に「## フォローアップ」見出しを1回だけ置き、その下に次の2行を書いてください。botが指定の時刻にこのセッションを再開し、結果をこのスレッドに投稿します。
+- いつ: 30m、2h、1d のような待ち時間、または 2026-10-10T09:00:00+09:00 のような日時（%s後から%d日後まで）
+- やること: その時に行う作業を1文で
+- 予定できるのはスレッドごとに1件です。後の依頼への回答で指定しなければ、予定中のフォローアップは取り消されます。
+- フォローアップの実行中に続けて予定できるのは、人の発言なしで%d回までです。
+- 依頼者の返答を待つ場合や、確認することが決まっていない場合には使わないでください。予定時刻はbotが本文の後に伝えるため、本文で予定を約束しないでください。
+
 メモリファイルを直接編集しないでください。
-`, slackFormatRules, attachment.MaxSize>>20, attachment.MaxFiles)
+`, slackFormatRules, attachment.MaxSize>>20, attachment.MaxFiles,
+		codex.FormatDelay(codex.FollowUpMinDelay), int(codex.FollowUpMaxDelay/(24*time.Hour)), codex.MaxFollowUpChain)
 	if !sharedWritable {
 		builder.WriteString("このチャンネルからは playbook と全体メモリを変更できません。playbook は読み取り専用です。\n")
 	}
@@ -99,12 +108,40 @@ func BuildTurnPrompt(memories memory.Context, playbooks []playbook.Playbook, sla
 // session already holds the memory, playbook catalog, and rules from
 // BuildTurnPrompt. Only the request and the current repositories are sent,
 // because checkouts may have been created or removed since the last turn.
-func BuildResumePrompt(authorID, message string, checkouts []workspace.Checkout, pendingRepos []string) string {
+//
+// pendingFollowUp describes the thread's scheduled follow-up, if any, which
+// this request's answer replaces or cancels.
+func BuildResumePrompt(authorID, message string, checkouts []workspace.Checkout, pendingRepos []string, pendingFollowUp string) string {
 	var builder strings.Builder
-	builder.WriteString("同じSlackスレッドで新しい依頼が届きました。このセッションの最初の指示（作業の進め方・playbook・書式・添付ファイル・メモリ追記の規約）に従って、調査・作業・回答してください。\n\n")
+	builder.WriteString("同じSlackスレッドで新しい依頼が届きました。このセッションの最初の指示（作業の進め方・playbook・書式・添付ファイル・フォローアップ・メモリ追記の規約）に従って、調査・作業・回答してください。\n\n")
+	writePendingFollowUp(&builder, pendingFollowUp)
 	writeRepositories(&builder, checkouts, pendingRepos)
 	writeSlackMessage(&builder, authorID, message)
 	return builder.String()
+}
+
+// BuildFollowUpPrompt resumes a thread's session when a follow-up it
+// scheduled is due. Nobody wrote in the thread, so the prompt carries the
+// task the session set itself rather than a Slack message.
+func BuildFollowUpPrompt(task string, scheduledAt, now time.Time, chain int, checkouts []workspace.Checkout, pendingRepos []string) string {
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "このセッションが予定したフォローアップの時刻になりました（予定: %s、現在: %s）。依頼者はいま会話していません。次の作業を行い、このセッションの最初の指示に従って、結果を依頼者への報告として最終応答に書いてください。\n", scheduledAt.Format(time.RFC3339), now.Format(time.RFC3339))
+	fmt.Fprintf(&builder, "- 予定した作業: %s\n", task)
+	builder.WriteString("- 状況が変わっていない場合も、確認した内容を短く報告してください。\n")
+	if remaining := codex.MaxFollowUpChain - chain; remaining > 0 {
+		fmt.Fprintf(&builder, "- まだ完了していなければ、「## フォローアップ」で次の確認を予定できます（人の発言なしで残り%d回）。\n\n", remaining)
+	} else {
+		builder.WriteString("- これ以上フォローアップは予定できません。完了していなければ、依頼者に状況と次に必要なことを伝えてください。\n\n")
+	}
+	writeRepositories(&builder, checkouts, pendingRepos)
+	return builder.String()
+}
+
+func writePendingFollowUp(builder *strings.Builder, pending string) {
+	if pending == "" {
+		return
+	}
+	fmt.Fprintf(builder, "このスレッドには予定中のフォローアップがあります（%s）。この依頼の回答で「## フォローアップ」を指定しなければ取り消されます。続ける必要があれば改めて指定してください。\n\n", pending)
 }
 
 // BuildCheckoutsReadyPrompt continues a turn that asked for checkouts with

@@ -322,3 +322,56 @@ func TestSplitCheckoutRequest(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitFollowUp(t *testing.T) {
+	tests := []struct {
+		name      string
+		text      string
+		wantRest  string
+		want      FollowUpRequest
+		wantFound bool
+		wantValid bool
+	}{
+		{
+			name:      "none",
+			text:      "答え",
+			wantRest:  "答え",
+			wantValid: true,
+		},
+		{
+			name:      "valid section before memory",
+			text:      "CIを待っています。\n\n## フォローアップ\n- いつ: 30m\n- やること：CIの結果を確認して報告する\n\n## チャンネルメモリ追記\n- x",
+			wantRest:  "CIを待っています。\n\n## チャンネルメモリ追記\n- x",
+			want:      FollowUpRequest{When: "30m", Task: "CIの結果を確認して報告する"},
+			wantFound: true,
+			wantValid: true,
+		},
+		{
+			name:      "missing task",
+			text:      "本文\n## フォローアップ\n- いつ: 1h",
+			wantRest:  "本文",
+			wantFound: true,
+		},
+		{
+			name:      "duplicate heading",
+			text:      "本文\n## フォローアップ\n- いつ: 1h\n- やること: a\n## フォローアップ\n- いつ: 2h\n- やること: b",
+			wantRest:  "本文",
+			wantFound: true,
+		},
+		{
+			name:      "heading inside code is ignored",
+			text:      "```\n## フォローアップ\n- いつ: 1h\n```",
+			wantRest:  "```\n## フォローアップ\n- いつ: 1h\n```",
+			wantValid: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rest, got, found, valid := SplitFollowUp(test.text)
+			if rest != test.wantRest || got != test.want || found != test.wantFound || valid != test.wantValid {
+				t.Fatalf("SplitFollowUp() = %q, %#v, %v, %v; want %q, %#v, %v, %v",
+					rest, got, found, valid, test.wantRest, test.want, test.wantFound, test.wantValid)
+			}
+		})
+	}
+}

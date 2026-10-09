@@ -39,6 +39,45 @@ type fakeStore struct {
 	subscriptionCalls   []subscriptionCall
 	subscriptionDeletes []string
 	subscriptionErr     error
+	followUps           map[string]state.FollowUp
+}
+
+func (s *fakeStore) GetFollowUp(threadKey string) (state.FollowUp, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	followUp, ok := s.followUps[threadKey]
+	return followUp, ok
+}
+
+func (s *fakeStore) SetFollowUp(threadKey string, followUp state.FollowUp) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.followUps == nil {
+		s.followUps = make(map[string]state.FollowUp)
+	}
+	s.followUps[threadKey] = followUp
+	return nil
+}
+
+func (s *fakeStore) DeleteFollowUp(threadKey string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.followUps[threadKey]
+	delete(s.followUps, threadKey)
+	return ok, nil
+}
+
+func (s *fakeStore) TakeDueFollowUps(now time.Time) ([]state.FollowUp, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var due []state.FollowUp
+	for key, followUp := range s.followUps {
+		if !followUp.DueAt.After(now) {
+			due = append(due, followUp)
+			delete(s.followUps, key)
+		}
+	}
+	return due, nil
 }
 
 type subscriptionCall struct {
@@ -1591,6 +1630,11 @@ type looseStore struct {
 }
 
 func (s *looseStore) ClaimEvent(string) (bool, error) { return true, nil }
+
+func (s *looseStore) GetFollowUp(string) (state.FollowUp, bool)            { return state.FollowUp{}, false }
+func (s *looseStore) SetFollowUp(string, state.FollowUp) error             { return nil }
+func (s *looseStore) DeleteFollowUp(string) (bool, error)                  { return false, nil }
+func (s *looseStore) TakeDueFollowUps(time.Time) ([]state.FollowUp, error) { return nil, nil }
 
 func (s *looseStore) Transition(string, state.State, state.State) error { return nil }
 
