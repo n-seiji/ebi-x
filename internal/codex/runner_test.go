@@ -429,7 +429,7 @@ func TestParseJSONL(t *testing.T) {
 			err := parseJSONL(strings.NewReader(tt.output), &got, func(id string) error {
 				callbacks = append(callbacks, id)
 				return nil
-			})
+			}, nil)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("parseJSONL() error = %v, want containing %q", err, tt.wantErr)
@@ -452,7 +452,7 @@ func TestParseJSONL(t *testing.T) {
 func TestParseJSONLStdoutLimit(t *testing.T) {
 	output := strings.Repeat(" ", maxStdoutBytes+1)
 	var got TurnResult
-	err := parseJSONL(strings.NewReader(output), &got, nil)
+	err := parseJSONL(strings.NewReader(output), &got, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "stdout exceeds 64MB") {
 		t.Fatalf("parseJSONL() error = %v, want stdout limit error", err)
 	}
@@ -496,6 +496,7 @@ printf '{"type":"turn.completed"}\n'
 			callbackIDs = append(callbackIDs, id)
 			return nil
 		},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -530,6 +531,7 @@ while :; do :; done
 	_, err := runner.Run(
 		context.Background(), "", "read-only", dir, nil, nil, "prompt",
 		func(string) error { return errors.New("persist failed") },
+		nil,
 	)
 	if err == nil || !strings.Contains(err.Error(), "persist failed") {
 		t.Fatalf("Run() error = %v, want wrapped callback error", err)
@@ -553,7 +555,7 @@ exit 1
 	}
 
 	runner := &Runner{Command: script}
-	result, err := runner.Run(context.Background(), "", "read-only", dir, nil, nil, "prompt", nil)
+	result, err := runner.Run(context.Background(), "", "read-only", dir, nil, nil, "prompt", nil, nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v, want semantic failure in TurnResult", err)
 	}
@@ -576,7 +578,7 @@ while :; do :; done
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	runner := &Runner{Command: script}
-	_, err := runner.Run(ctx, "", "read-only", dir, nil, nil, "prompt", nil)
+	_, err := runner.Run(ctx, "", "read-only", dir, nil, nil, "prompt", nil, nil)
 	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Run() error = %v, want deadline exceeded", err)
 	}
@@ -612,7 +614,7 @@ printf '{"type":"turn.completed"}\n'
 	t.Setenv("EBIX_TEST_VISIBLE", "kept")
 
 	runner := &Runner{Command: script, DeniedReadPaths: []string{"/protected"}}
-	if _, err := runner.Run(context.Background(), "", "read-only", dir, nil, []string{"/other-thread"}, "prompt", nil); err != nil {
+	if _, err := runner.Run(context.Background(), "", "read-only", dir, nil, []string{"/other-thread"}, "prompt", nil, nil); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	env, err := os.ReadFile(envFile)
@@ -637,7 +639,7 @@ func TestRunRejectsOversizedDenyList(t *testing.T) {
 		denied = append(denied, fmt.Sprintf("/data/workspace/C0123456789-%d.000000", i))
 	}
 	runner := &Runner{Command: "/nonexistent/codex"}
-	_, err := runner.Run(context.Background(), "", "read-only", t.TempDir(), nil, denied, "prompt", nil)
+	_, err := runner.Run(context.Background(), "", "read-only", t.TempDir(), nil, denied, "prompt", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("Run() error = %v, want oversized argument error", err)
 	}

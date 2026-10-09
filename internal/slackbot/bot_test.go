@@ -270,7 +270,7 @@ type fakeRunner struct {
 	onRun     func(call int)
 }
 
-func (r *fakeRunner) Run(_ context.Context, threadID, sandbox, cwd string, roots, denied []string, prompt string, callback func(string) error) (*codex.TurnResult, error) {
+func (r *fakeRunner) Run(_ context.Context, threadID, sandbox, cwd string, roots, denied []string, prompt string, callback func(string) error, onActivity func(codex.Activity)) (*codex.TurnResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
@@ -1775,7 +1775,7 @@ func newParallelRunner() *parallelRunner {
 	return &parallelRunner{started: make(chan struct{}, 16), release: make(chan struct{})}
 }
 
-func (r *parallelRunner) Run(ctx context.Context, _, _, cwd string, roots, _ []string, prompt string, callback func(string) error) (*codex.TurnResult, error) {
+func (r *parallelRunner) Run(ctx context.Context, _, _, cwd string, roots, _ []string, prompt string, callback func(string) error, onActivity func(codex.Activity)) (*codex.TurnResult, error) {
 	if callback != nil {
 		if err := callback("codex-thread"); err != nil {
 			return nil, err

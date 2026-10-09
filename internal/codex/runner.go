@@ -72,6 +72,7 @@ func (r *Runner) Run(
 	writableRoots, deniedPaths []string,
 	prompt string,
 	onThreadStarted func(id string) error,
+	onActivity func(Activity),
 ) (*TurnResult, error) {
 	configOverrides, err := loadConfigOverrides(r.ConfigPath)
 	if err != nil {
@@ -108,7 +109,7 @@ func (r *Runner) Run(
 	}
 
 	result := &TurnResult{}
-	parseErr := parseJSONL(io.LimitReader(stdout, maxStdoutBytes+1), result, onThreadStarted)
+	parseErr := parseJSONL(io.LimitReader(stdout, maxStdoutBytes+1), result, onThreadStarted, onActivity)
 	if parseErr != nil {
 		cancel()
 	}
@@ -258,15 +259,30 @@ type event struct {
 }
 
 type eventItem struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type    string        `json:"type"`
+	Text    string        `json:"text,omitempty"`
+	Command string        `json:"command,omitempty"`
+	Changes []eventChange `json:"changes,omitempty"`
+	Query   string        `json:"query,omitempty"`
+	Server  string        `json:"server,omitempty"`
+	Tool    string        `json:"tool,omitempty"`
+	Items   []eventTodo   `json:"items,omitempty"`
+}
+
+type eventChange struct {
+	Path string `json:"path"`
+}
+
+type eventTodo struct {
+	Text      string `json:"text"`
+	Completed bool   `json:"completed"`
 }
 
 type eventErr struct {
 	Message string `json:"message"`
 }
 
-func parseJSONL(r io.Reader, result *TurnResult, onThreadStarted func(string) error) error {
+func parseJSONL(r io.Reader, result *TurnResult, onThreadStarted func(string) error, onActivity func(Activity)) error {
 	counted := &countingReader{reader: r}
 	scanner := bufio.NewScanner(counted)
 	scanner.Buffer(make([]byte, 64*1024), maxStdoutBytes+1)
@@ -293,8 +309,13 @@ func parseJSONL(r io.Reader, result *TurnResult, onThreadStarted func(string) er
 					return fmt.Errorf("codex thread started callback: %w", err)
 				}
 			}
-		case "item.completed":
-			if ev.Item == nil || ev.Item.Type != "agent_message" {
+		case "item.started", "item.updated", "item.completed":
+			if onActivity != nil && ev.Item != nil {
+				if activity, ok := activityFromItem(ev.Type, ev.Item); ok {
+					onActivity(activity)
+				}
+			}
+			if ev.Type != "item.completed" || ev.Item == nil || ev.Item.Type != "agent_message" {
 				continue
 			}
 			if len(result.Messages) >= maxMessages {

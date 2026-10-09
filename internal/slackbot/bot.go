@@ -41,8 +41,15 @@ const (
 	attachmentOutputNotice  = "⚠️ 添付ファイルの指定を読み取れなかったため、ファイルは添付していません。再送する場合は「添付を再送して」と依頼してください。"
 	workingStatus           = "が作業を進めています…"
 	queuedStatus            = "が作業の順番を待っています…"
+	stoppedMessage          = "⏹️ 依頼により作業を停止しました。途中までの変更が作業領域に残っている場合があります。続ける場合は、新しい mention で依頼してください。"
+	nothingToStopMessage    = "停止する作業はありません。"
 	statusRefreshDelay      = 80 * time.Second
+	// statusMinInterval is the shortest gap between two status changes.
+	statusMinInterval = 3 * time.Second
 )
+
+// errStoppedByUser is the cancellation cause of a request stopped from Slack.
+var errStoppedByUser = errors.New("stopped by user")
 
 // SlackAPI is the subset of Slack Web API used by Bot.
 type SlackAPI interface {
@@ -74,9 +81,10 @@ type Store interface {
 }
 
 // Runner executes one Codex turn. deniedPaths are hidden from the turn in
-// addition to the runner's own protected paths.
+// addition to the runner's own protected paths. onActivity, when set,
+// receives the turn's steps while it runs.
 type Runner interface {
-	Run(ctx context.Context, threadID, sandbox, cwd string, writableRoots, deniedPaths []string, text string, onThreadStarted func(string) error) (*codex.TurnResult, error)
+	Run(ctx context.Context, threadID, sandbox, cwd string, writableRoots, deniedPaths []string, text string, onThreadStarted func(string) error, onActivity func(codex.Activity)) (*codex.TurnResult, error)
 }
 
 // Workspaces provides per-thread working directories and git checkouts.
@@ -146,8 +154,12 @@ type Bot struct {
 	threadMu            sync.Mutex
 	threadLocks         map[string]*sync.Mutex
 	workLocks           map[string]*sync.Mutex
-	now                 func() time.Time
-	sleep               func(context.Context, time.Duration) error
+	// running holds the cancel functions of the requests each thread is
+	// processing or waiting to process, keyed by thread and then event.
+	runningMu sync.Mutex
+	running   map[string]map[string]context.CancelCauseFunc
+	now       func() time.Time
+	sleep     func(context.Context, time.Duration) error
 }
 
 type triggerSource uint8
@@ -187,6 +199,7 @@ func New(api SlackAPI, store Store, runner Runner, config Config, playbooks []pl
 		workSlots:           make(chan struct{}, max(config.MaxParallelWork, 1)),
 		threadLocks:         make(map[string]*sync.Mutex),
 		workLocks:           make(map[string]*sync.Mutex),
+		running:             make(map[string]map[string]context.CancelCauseFunc),
 		now:                 time.Now,
 		sleep:               sleepContext,
 	}
@@ -236,6 +249,10 @@ func (b *Bot) handleMention(ctx context.Context, event *slackevents.AppMentionEv
 
 	message := stripBotMention(event.Text, b.config.BotUserID)
 	if message == "" {
+		return
+	}
+	if isStopCommand(message) {
+		b.stopThread(ctx, event.Channel, threadTS, event.TimeStamp)
 		return
 	}
 	b.processTrigger(ctx, processingTrigger{
@@ -291,6 +308,10 @@ func (b *Bot) HandleMessage(ctx context.Context, event *slackevents.MessageEvent
 		return
 	}
 
+	if isStopCommand(event.Text) {
+		b.stopThread(ctx, event.Channel, event.ThreadTimeStamp, event.TimeStamp)
+		return
+	}
 	b.processTrigger(ctx, processingTrigger{
 		source:      messageTrigger,
 		authorID:    event.User,
@@ -320,6 +341,8 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	if !claimed {
 		return
 	}
+	ctx, untrack := b.trackRequest(ctx, channel+":"+threadTS, eventKey)
+	defer untrack()
 	if trigger.source == mentionTrigger {
 		b.startThreadSubscription(ctx, channel, threadTS)
 	}
@@ -366,6 +389,11 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		log.Printf("slackbot: work turn %q: %v", eventKey, workErr)
 		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, workFailureMessage)
 		return
+	}
+	// A stop that arrives after the turn finished does not discard its
+	// result.
+	if errors.Is(context.Cause(ctx), errStoppedByUser) {
+		ctx = context.WithoutCancel(ctx)
 	}
 	resultText := output.text
 	if resultText == "" {
@@ -476,9 +504,14 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 	if err := b.store.Transition(eventKey, state.Received, state.Working); err != nil {
 		return workOutput{}, false, err
 	}
-	// Keep the status visible throughout the execution turn.
-	stopWorkingStatus := b.keepStatus(ctx, channel, threadTS, workingStatus)
-	defer stopWorkingStatus()
+	// Keep the status visible throughout the execution turn, and show what
+	// the turn is doing as it goes.
+	status := b.startStatus(ctx, channel, threadTS, workingStatus)
+	defer status.Stop()
+	tracker := &progress{}
+	onActivity := func(activity codex.Activity) {
+		status.Update(tracker.observe(activity))
+	}
 
 	// sessionID is the session a checkout request continues in.
 	sessionID := threadID
@@ -489,7 +522,7 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 		}
 		return nil
 	}
-	finalText, err := b.runWorkTurn(ctx, threadID, lease, sharedWritable, otherThreads, turnPrompt, persistThread)
+	finalText, err := b.runWorkTurn(ctx, threadID, lease, sharedWritable, otherThreads, turnPrompt, persistThread, onActivity)
 	if err != nil {
 		return workOutput{}, true, err
 	}
@@ -506,7 +539,7 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 			return workOutput{}, true, fmt.Errorf("prepare requested checkouts: %w", err)
 		}
 		lease = next
-		finalText, err = b.runWorkTurn(ctx, sessionID, lease, sharedWritable, otherThreads, prompt.BuildCheckoutsReadyPrompt(lease.Checkouts), persistThread)
+		finalText, err = b.runWorkTurn(ctx, sessionID, lease, sharedWritable, otherThreads, prompt.BuildCheckoutsReadyPrompt(lease.Checkouts), persistThread, onActivity)
 		if err != nil {
 			return workOutput{}, true, err
 		}
@@ -565,12 +598,12 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 
 // runWorkTurn runs one workspace-write turn in lease and returns its final
 // message.
-func (b *Bot) runWorkTurn(ctx context.Context, threadID string, lease *workspace.Lease, sharedWritable bool, otherThreads []string, text string, onThreadStarted func(string) error) (string, error) {
+func (b *Bot) runWorkTurn(ctx context.Context, threadID string, lease *workspace.Lease, sharedWritable bool, otherThreads []string, text string, onThreadStarted func(string) error, onActivity func(codex.Activity)) (string, error) {
 	roots := append([]string(nil), lease.WritableRoots...)
 	if b.config.PlaybooksDir != "" && sharedWritable {
 		roots = append(roots, b.config.PlaybooksDir)
 	}
-	result, err := b.runTurn(ctx, threadID, "workspace-write", lease.Dir, roots, otherThreads, text, onThreadStarted)
+	result, err := b.runTurn(ctx, threadID, "workspace-write", lease.Dir, roots, otherThreads, text, onThreadStarted, onActivity)
 	if err != nil {
 		return "", err
 	}
@@ -734,13 +767,19 @@ func (b *Bot) startThreadSubscription(ctx context.Context, channel, threadTS str
 	}
 }
 
-func (b *Bot) runTurn(ctx context.Context, threadID, sandbox, cwd string, roots, denied []string, text string, callback func(string) error) (*codex.TurnResult, error) {
+func (b *Bot) runTurn(ctx context.Context, threadID, sandbox, cwd string, roots, denied []string, text string, callback func(string) error, onActivity func(codex.Activity)) (*codex.TurnResult, error) {
 	turnCtx, cancel := context.WithTimeout(ctx, b.config.CodexTimeout)
 	defer cancel()
-	return b.runner.Run(turnCtx, threadID, sandbox, cwd, roots, denied, text, callback)
+	return b.runner.Run(turnCtx, threadID, sandbox, cwd, roots, denied, text, callback, onActivity)
 }
 
 func (b *Bot) fail(ctx context.Context, eventKey string, from, to state.State, channel, threadTS, timestamp, message string) {
+	// A request stopped from Slack says so, and its context is cancelled, so
+	// the notice is posted without it.
+	if errors.Is(context.Cause(ctx), errStoppedByUser) {
+		ctx = context.WithoutCancel(ctx)
+		message = stoppedMessage
+	}
 	if err := b.store.Transition(eventKey, from, to); err != nil {
 		log.Printf("slackbot: transition %q to %s: %v", eventKey, to, err)
 	}
@@ -774,29 +813,6 @@ func (b *Bot) addReaction(ctx context.Context, channel, timestamp, name string) 
 func (b *Bot) setStatus(ctx context.Context, channel, threadTS, status string) {
 	if err := b.api.SetStatus(ctx, channel, threadTS, status); err != nil {
 		log.Printf("slackbot: set thread status %q: %v", status, err)
-	}
-}
-
-func (b *Bot) keepStatus(ctx context.Context, channel, threadTS, status string) func() {
-	statusCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	b.setStatus(ctx, channel, threadTS, status)
-	go func() {
-		defer close(done)
-		for {
-			if err := b.sleep(statusCtx, statusRefreshDelay); err != nil {
-				return
-			}
-			b.setStatus(statusCtx, channel, threadTS, status)
-		}
-	}()
-
-	var stopOnce sync.Once
-	return func() {
-		stopOnce.Do(func() {
-			cancel()
-			<-done
-		})
 	}
 }
 
