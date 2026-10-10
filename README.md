@@ -9,7 +9,7 @@ ebi-x は、Slack の mention を受けて Codex が1回の実行で依頼を検
 1. Slack App を作成し、Socket Mode を有効にします。
 2. Bot Token Scopes に `app_mentions:read`、`chat:write`、`reactions:write`、`reactions:read`、`channels:history`、`files:write`、`im:history`、`assistant:write` を追加します。`files:write` は成果物の添付（後述）、`im:history` と `assistant:write` はエージェントとしての表示と DM（後述）に使います。プライベートチャンネルで使う場合は `groups:history`（スレッドを読むため）も追加します。scopeを追加・変更した場合は、workspaceへアプリを再インストールしてください。
 3. Event Subscriptions で `app_mention`、`message.channels`、`message.im`、`app_home_opened` を購読します。`message.groups` は追加しません（mentionなしの返信を処理するスレッド購読は、パブリックチャンネルだけが対象です）。
-4. App Home で Messages Tab を有効にし、「Allow users to send Slash commands and messages from the messages tab」をオンにします。
+4. App Home で Home Tab と Messages Tab を有効にし、「Allow users to send Slash commands and messages from the messages tab」をオンにします。
 5. 「Agents & AI Apps」で **Agent App** に切り替えます（manifest では `features.agent_view`）。切り替えは元に戻せません。
 6. Workspace に App をインストールして Bot Token (`xoxb-...`) を取得します。
 7. Socket Mode 用の App Token (`xapp-...`) を取得します。
@@ -80,6 +80,16 @@ Slack App を Agent App にすると、ebi-x はサイドバーと Messages タ�
 - **許可**：DM は送った人と ebi-x だけの会話なので、userが許可されていればチャンネルの許可は要りません。許可されていないuserからの DM は、承認チャンネルがあれば承認を依頼し、なければ 403 を返します。グループ DM には反応しません。
 - **依頼の候補**：許可されたuserが Messages タブを開くと、「できること」「リポジトリの説明」「最近の変更」の3つを候補として表示します。選ぶとその文面が依頼として送られます。
 - **メモリ**：DM の会話は DM ごとのチャンネルメモリになり、ほかのチャンネルからは読まれません。playbook と全体メモリには書き込めません。
+
+### 作業の一覧（Home タブ）
+
+dots の Activity や Devin のセッション一覧にならい、ebi-x の Home タブに、開いた人が依頼した作業の今の状況を表示します。
+
+- **作業中**：実行中か順番待ちの依頼と、そのスレッドへのリンク
+- **予定中のフォローアップ**：時刻とやること
+- **見守り中の PR**：PR の URL と CI の状態
+
+表示するのは、開いた人が依頼したものだけです。Home タブを開いたときに作り直すので、最新にするには開き直してください。許可されていない人には、作業がないことだけを表示します。追加の scope は要りません（`app_home_opened` イベントは前述の設定で購読済みです）。
 
 ## 並列作業とスレッドごとのクローン
 
