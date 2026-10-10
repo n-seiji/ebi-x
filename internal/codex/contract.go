@@ -292,11 +292,26 @@ type FollowUpRequest struct {
 // that appears more than once or has incomplete bullets; it yields no
 // request.
 func SplitFollowUp(text string) (rest string, request *FollowUpRequest, invalid bool) {
+	rest, fields, present, invalid := splitFieldSection(text, followUpHeading)
+	if !present {
+		return text, nil, false
+	}
+	if invalid || fields[followUpWhenKey] == "" || fields[followUpTaskKey] == "" {
+		return rest, nil, true
+	}
+	return rest, &FollowUpRequest{When: fields[followUpWhenKey], Task: fields[followUpTaskKey]}, false
+}
+
+// splitFieldSection removes the section under heading whose lines are
+// "- いつ: ..." and "- やること: ..." bullets, and ends at the first other
+// line. present reports the heading; invalid reports a repeated heading,
+// field, or an unreadable bullet.
+func splitFieldSection(text, heading string) (rest string, fields map[string]string, present, invalid bool) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	prose := proseLines(lines)
 	start, count := -1, 0
 	for i, line := range lines {
-		if prose[i] && strings.TrimSpace(line) == followUpHeading {
+		if prose[i] && strings.TrimSpace(line) == heading {
 			if count == 0 {
 				start = i
 			}
@@ -304,13 +319,12 @@ func SplitFollowUp(text string) (rest string, request *FollowUpRequest, invalid 
 		}
 	}
 	if count == 0 {
-		return text, nil, false
+		return text, nil, false, false
 	}
 	if count > 1 {
-		return strings.TrimSpace(strings.Join(lines[:start], "\n")), nil, true
+		return strings.TrimSpace(strings.Join(lines[:start], "\n")), nil, true, true
 	}
-	var parsed FollowUpRequest
-	seen := make(map[string]bool)
+	fields = make(map[string]string)
 	end := len(lines)
 	for i := start + 1; i < len(lines); i++ {
 		trimmed := strings.TrimSpace(lines[i])
@@ -323,24 +337,14 @@ func SplitFollowUp(text string) (rest string, request *FollowUpRequest, invalid 
 			break
 		}
 		key, value, ok := cutFollowUpField(item)
-		if !ok || seen[key] {
+		if _, seen := fields[key]; !ok || seen {
 			invalid = true
 			continue
 		}
-		seen[key] = true
-		switch key {
-		case followUpWhenKey:
-			parsed.When = value
-		case followUpTaskKey:
-			parsed.Task = value
-		}
+		fields[key] = value
 	}
 	kept := append(append([]string(nil), lines[:start]...), lines[end:]...)
-	rest = strings.TrimSpace(strings.Join(kept, "\n"))
-	if invalid || parsed.When == "" || parsed.Task == "" {
-		return rest, nil, true
-	}
-	return rest, &parsed, false
+	return strings.TrimSpace(strings.Join(kept, "\n")), fields, true, invalid
 }
 
 // cutFollowUpField splits "key: value", accepting a full-width colon too.

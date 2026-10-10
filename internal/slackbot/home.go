@@ -74,6 +74,13 @@ func (b *Bot) publishHome(ctx context.Context, userID string) {
 		}
 	}
 
+	var schedules []homeThread
+	for _, schedule := range b.store.Schedules() {
+		if schedule.AuthorID == userID {
+			schedules = append(schedules, homeThread{channel: schedule.Channel, threadTS: schedule.ThreadTS, detail: scheduleSummary(schedule)})
+		}
+	}
+
 	links := make(map[string]string)
 	sections := []string{homeTitle}
 	sections = append(sections, b.homeSection(ctx, links, "⏳ 作業中", running, func(item homeThread) string {
@@ -83,6 +90,9 @@ func (b *Bot) publishHome(ctx context.Context, userID string) {
 		return formatFollowUpTime(item.at) + " ごろ: " + clipText(item.detail, 100)
 	}))
 	sections = append(sections, b.homeSection(ctx, links, "👀 見守り中の PR", watches, func(item homeThread) string {
+		return item.detail
+	}))
+	sections = append(sections, b.homeSection(ctx, links, "🔁 定期実行", schedules, func(item homeThread) string {
 		return item.detail
 	}))
 	sections = append(sections, "_更新: "+formatFollowUpTime(b.now())+"_")

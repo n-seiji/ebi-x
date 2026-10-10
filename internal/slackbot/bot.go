@@ -91,6 +91,10 @@ type Store interface {
 	DeleteFollowUp(threadKey string) (state.FollowUp, bool, error)
 	TakeDueFollowUps(now time.Time) ([]state.FollowUp, error)
 	FollowUps() []state.FollowUp
+	SetSchedule(threadKey string, schedule state.Schedule) error
+	DeleteSchedule(threadKey string) (state.Schedule, bool, error)
+	TakeDueSchedules(now time.Time, next func(state.Schedule) time.Time) ([]state.Schedule, error)
+	Schedules() []state.Schedule
 	PullWatches() []state.PullWatch
 	GetPullWatch(key string) (state.PullWatch, bool)
 	SetPullWatch(watch state.PullWatch) error
@@ -197,6 +201,8 @@ const (
 	followUpTrigger
 	// pullWatchTrigger is an event on a pull request the session watches.
 	pullWatchTrigger
+	// scheduleTrigger is an occurrence of a schedule a person set.
+	scheduleTrigger
 )
 
 type processingTrigger struct {
@@ -459,6 +465,9 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	if notice := b.scheduleFollowUp(trigger, output); notice != "" {
 		resultText += "\n\n" + notice
 	}
+	if notice := b.applySchedule(trigger, output); notice != "" {
+		resultText += "\n\n" + notice
+	}
 	if notice := b.watchPulls(ctx, trigger, output.pullURLs); notice != "" {
 		resultText += "\n\n" + notice
 	}
@@ -505,6 +514,10 @@ type workOutput struct {
 	// reports a follow-up section the bot could not read.
 	followUp        *codex.FollowUpRequest
 	followUpInvalid bool
+	// schedule is the schedule the turn asked to set or stop, and
+	// scheduleInvalid reports a schedule section the bot could not read.
+	schedule        *codex.ScheduleRequest
+	scheduleInvalid bool
 	// waiting reports that the turn stopped to ask the requester questions.
 	waiting   bool
 	questions []string
@@ -640,6 +653,10 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	resultText, output.followUp, output.followUpInvalid = codex.SplitFollowUp(resultText)
 	if output.followUpInvalid {
 		log.Printf("slackbot: ignore malformed follow-up output %q", eventKey)
+	}
+	resultText, output.schedule, output.scheduleInvalid = codex.SplitSchedule(resultText)
+	if output.scheduleInvalid {
+		log.Printf("slackbot: ignore malformed schedule output %q", eventKey)
 	}
 	resultText, output.questions, output.waiting = codex.SplitQuestions(resultText)
 	resultText, output.pullURLs = codex.SplitPullWatches(resultText)
@@ -1144,6 +1161,7 @@ func RunSocketMode(acceptCtx, turnCtx context.Context, botToken, appToken string
 	// Follow-ups post to Slack, so they start once the client is ready.
 	wg.Go(func() { bot.runFollowUps(acceptCtx, turnCtx, wg) })
 	wg.Go(func() { bot.runPullWatches(acceptCtx, turnCtx, wg) })
+	wg.Go(func() { bot.runSchedules(acceptCtx, turnCtx, wg) })
 	socketClient := socketmode.New(client)
 	runErr := make(chan error, 1)
 	go func() {

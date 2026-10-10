@@ -41,6 +41,7 @@ type fakeStore struct {
 	subscriptionErr     error
 	followUps           map[string]state.FollowUp
 	pullWatches         map[string]state.PullWatch
+	schedules           map[string]state.Schedule
 }
 
 func (s *fakeStore) FollowUps() []state.FollowUp {
@@ -51,6 +52,49 @@ func (s *fakeStore) FollowUps() []state.FollowUp {
 		followUps = append(followUps, followUp)
 	}
 	return followUps
+}
+
+func (s *fakeStore) SetSchedule(threadKey string, schedule state.Schedule) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.schedules == nil {
+		s.schedules = make(map[string]state.Schedule)
+	}
+	s.schedules[threadKey] = schedule
+	return nil
+}
+
+func (s *fakeStore) DeleteSchedule(threadKey string) (state.Schedule, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	schedule, ok := s.schedules[threadKey]
+	delete(s.schedules, threadKey)
+	return schedule, ok, nil
+}
+
+func (s *fakeStore) TakeDueSchedules(now time.Time, next func(state.Schedule) time.Time) ([]state.Schedule, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var due []state.Schedule
+	for key, schedule := range s.schedules {
+		if !schedule.NextAt.After(now) {
+			due = append(due, schedule)
+			schedule.Runs++
+			schedule.NextAt = next(schedule)
+			s.schedules[key] = schedule
+		}
+	}
+	return due, nil
+}
+
+func (s *fakeStore) Schedules() []state.Schedule {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var schedules []state.Schedule
+	for _, schedule := range s.schedules {
+		schedules = append(schedules, schedule)
+	}
+	return schedules
 }
 
 func (s *fakeStore) PullWatches() []state.PullWatch {
@@ -251,6 +295,9 @@ type fakeSlack struct {
 	uploads           []fakeUpload
 	uploadErrs        []error
 	posts             []fakePost
+	// topTimestamp, when set, is returned for top-level posts instead of
+	// the default placeholder, for flows that run work in the new thread.
+	topTimestamp string
 }
 
 type fakePost struct {
@@ -298,6 +345,9 @@ func (s *fakeSlack) PostMessage(_ context.Context, channel, threadTS, text strin
 	if len(s.postErrs) > 0 {
 		err = s.postErrs[0]
 		s.postErrs = s.postErrs[1:]
+	}
+	if err == nil && threadTS == "" && s.topTimestamp != "" {
+		return s.topTimestamp, nil
 	}
 	if err == nil && threadTS == "" {
 		// Top-level posts get distinct timestamps so threads can be told apart.
@@ -1735,6 +1785,14 @@ func (s *looseStore) DeleteFollowUp(string) (state.FollowUp, bool, error) {
 	return state.FollowUp{}, false, nil
 }
 func (s *looseStore) TakeDueFollowUps(time.Time) ([]state.FollowUp, error) { return nil, nil }
+func (s *looseStore) SetSchedule(string, state.Schedule) error             { return nil }
+func (s *looseStore) DeleteSchedule(string) (state.Schedule, bool, error) {
+	return state.Schedule{}, false, nil
+}
+func (s *looseStore) TakeDueSchedules(time.Time, func(state.Schedule) time.Time) ([]state.Schedule, error) {
+	return nil, nil
+}
+func (s *looseStore) Schedules() []state.Schedule { return nil }
 
 func (s *looseStore) Transition(string, state.State, state.State) error { return nil }
 
