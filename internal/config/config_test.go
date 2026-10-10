@@ -673,6 +673,9 @@ func assertPaths(t *testing.T, cfg *Config, home string) {
 			t.Errorf("%s = %q, want %q", name, got, want)
 		}
 	}
+	if want := filepath.Join(home, "data", "rules.md"); cfg.ActionRulesFile != want {
+		t.Errorf("ActionRulesFile = %q, want %q", cfg.ActionRulesFile, want)
+	}
 }
 
 func clearConfigEnv(t *testing.T) {

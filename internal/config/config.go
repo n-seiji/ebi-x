@@ -58,6 +58,7 @@ type Config struct {
 	MemoryDir                  string
 	PlaybooksDir               string
 	StateDir                   string
+	ActionRulesFile            string
 	// WritableRoots are absolute, symlink-resolved directories the work turn
 	// may write to in addition to the workspace.
 	WritableRoots []string
@@ -224,6 +225,8 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("resolve playbooks directory: %w", err)
 	}
 	stateDir := filepath.Join(home, "data", "state")
+	// The operator's action rules; the agent may read them but not change them.
+	actionRulesFile := filepath.Join(home, "data", "rules.md")
 	codexHome, err := resolveCodexHome()
 	if err != nil {
 		return nil, err
@@ -241,7 +244,7 @@ func Load() (*Config, error) {
 	if err := validateIsolation(botDirs, reserved); err != nil {
 		return nil, err
 	}
-	if err := validateIsolation(writableRoots, append(reserved, botDirs...)); err != nil {
+	if err := validateIsolation(writableRoots, append(append(reserved, botDirs...), actionRulesFile)); err != nil {
 		return nil, err
 	}
 
@@ -269,6 +272,7 @@ func Load() (*Config, error) {
 		MemoryDir:                  memoryDir,
 		PlaybooksDir:               playbooksDir,
 		StateDir:                   stateDir,
+		ActionRulesFile:            actionRulesFile,
 		WritableRoots:              writableRoots,
 		ProtectedPaths:             protectedPaths,
 		CodexHome:                  codexHome,
