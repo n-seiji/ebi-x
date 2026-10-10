@@ -215,7 +215,7 @@ func TestStopReplyInSubscribedThread(t *testing.T) {
 	runner := &fakeRunner{}
 	bot := newTestBot(t, store, api, runner)
 	configureActiveSubscription(bot, store, time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC))
-	cancelled, untrack := bot.trackRequest(context.Background(), "C1:100.1", "C1:100.1")
+	cancelled, untrack := bot.trackRequest(context.Background(), "C1:100.1", "C1:100.1", "U1")
 	defer untrack()
 
 	bot.HandleMessage(context.Background(), messageReply("U1", "100.3", "止めて"))

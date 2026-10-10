@@ -150,7 +150,6 @@ func TestAppHomeOpenedSetsSuggestedPrompts(t *testing.T) {
 			event: &slackevents.AppHomeOpenedEvent{User: "U1", Channel: "D1", Tab: "messages"},
 			want:  []slackCall{{kind: "prompts:D1", text: "3"}},
 		},
-		{name: "home tab", event: &slackevents.AppHomeOpenedEvent{User: "U1", Channel: "D1", Tab: "home"}},
 		{name: "unallowed user", event: &slackevents.AppHomeOpenedEvent{User: "U9", Channel: "D1", Tab: "messages"}},
 	}
 	for _, test := range tests {

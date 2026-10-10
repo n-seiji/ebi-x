@@ -91,10 +91,17 @@ func (b *Bot) handleDirectMessage(ctx context.Context, event *slackevents.Messag
 	})
 }
 
-// HandleAppHomeOpened offers suggested prompts when an allowed user opens the
-// agent's Messages tab.
+// HandleAppHomeOpened shows the user's work on the Home tab, and offers
+// suggested prompts when an allowed user opens the agent's Messages tab.
 func (b *Bot) HandleAppHomeOpened(ctx context.Context, event *slackevents.AppHomeOpenedEvent) {
-	if event == nil || event.Tab != appHomeMessagesTab || event.Channel == "" || !b.userAllowed(event.User) {
+	if event == nil || event.User == "" {
+		return
+	}
+	if event.Tab == appHomeHomeTab {
+		b.publishHome(ctx, event.User)
+		return
+	}
+	if event.Tab != appHomeMessagesTab || event.Channel == "" || !b.userAllowed(event.User) {
 		return
 	}
 	if err := b.api.SetSuggestedPrompts(ctx, event.Channel, agentSuggestedPrompts); err != nil {

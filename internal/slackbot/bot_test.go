@@ -43,6 +43,16 @@ type fakeStore struct {
 	pullWatches         map[string]state.PullWatch
 }
 
+func (s *fakeStore) FollowUps() []state.FollowUp {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var followUps []state.FollowUp
+	for _, followUp := range s.followUps {
+		followUps = append(followUps, followUp)
+	}
+	return followUps
+}
+
 func (s *fakeStore) PullWatches() []state.PullWatch {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -316,6 +326,17 @@ func (s *fakeSlack) SetSuggestedPrompts(_ context.Context, channel string, promp
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, slackCall{kind: "prompts:" + channel, text: fmt.Sprint(len(prompts))})
 	return nil
+}
+
+func (s *fakeSlack) PublishHome(_ context.Context, userID string, sections []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, slackCall{kind: "home:" + userID, text: strings.Join(sections, "\n---\n")})
+	return nil
+}
+
+func (s *fakeSlack) Permalink(_ context.Context, channel, timestamp string) (string, error) {
+	return "https://slack.test/archives/" + channel + "/p" + timestamp, nil
 }
 
 func (s *fakeSlack) AddReaction(_ context.Context, _, _, name string) error {
@@ -1690,6 +1711,7 @@ func (s *looseStore) ClaimEvent(string) (bool, error) { return true, nil }
 func (s *looseStore) GetFollowUp(string) (state.FollowUp, bool)   { return state.FollowUp{}, false }
 func (s *looseStore) SetFollowUp(string, state.FollowUp) error    { return nil }
 func (s *looseStore) PullWatches() []state.PullWatch              { return nil }
+func (s *looseStore) FollowUps() []state.FollowUp                 { return nil }
 func (s *looseStore) GetPullWatch(string) (state.PullWatch, bool) { return state.PullWatch{}, false }
 func (s *looseStore) SetPullWatch(state.PullWatch) error          { return nil }
 func (s *looseStore) DeletePullWatches(func(state.PullWatch) bool) ([]state.PullWatch, error) {

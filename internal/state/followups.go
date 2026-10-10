@@ -99,6 +99,18 @@ func (s *Store) TakeDueFollowUps(now time.Time) ([]FollowUp, error) {
 	return due, nil
 }
 
+// FollowUps returns every scheduled follow-up, earliest first.
+func (s *Store) FollowUps() []FollowUp {
+	s.followUpsMu.Lock()
+	defer s.followUpsMu.Unlock()
+	followUps := make([]FollowUp, 0, len(s.followUps))
+	for _, followUp := range s.followUps {
+		followUps = append(followUps, followUp)
+	}
+	sort.Slice(followUps, func(i, j int) bool { return followUps[i].DueAt.Before(followUps[j].DueAt) })
+	return followUps
+}
+
 func (s *Store) saveFollowUps() error {
 	if err := atomicWriteJSON(filepath.Join(s.dir, followUpsFilename), s.followUps); err != nil {
 		return fmt.Errorf("write follow-ups: %w", err)

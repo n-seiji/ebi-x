@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"strings"
+	"time"
 )
 
 // stopCommands are the whole messages that stop a thread's work, compared
@@ -24,17 +25,24 @@ func threadRef(channel, threadTS string) string {
 	return channel + ":" + threadTS
 }
 
+// runningRequest is a request a thread is processing or waiting to process.
+type runningRequest struct {
+	cancel    context.CancelCauseFunc
+	authorID  string
+	startedAt time.Time
+}
+
 // trackRequest makes a request stoppable from its thread until the returned
 // function is called.
-func (b *Bot) trackRequest(ctx context.Context, threadKey, eventKey string) (context.Context, func()) {
+func (b *Bot) trackRequest(ctx context.Context, threadKey, eventKey, authorID string) (context.Context, func()) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	b.runningMu.Lock()
 	requests := b.running[threadKey]
 	if requests == nil {
-		requests = make(map[string]context.CancelCauseFunc)
+		requests = make(map[string]runningRequest)
 		b.running[threadKey] = requests
 	}
-	requests[eventKey] = cancel
+	requests[eventKey] = runningRequest{cancel: cancel, authorID: authorID, startedAt: b.now()}
 	b.runningMu.Unlock()
 	return ctx, func() {
 		b.runningMu.Lock()
@@ -57,8 +65,8 @@ func (b *Bot) stopThread(ctx context.Context, channel, threadTS, timestamp strin
 	key := threadRef(channel, threadTS)
 	b.runningMu.Lock()
 	requests := b.running[key]
-	for _, cancel := range requests {
-		cancel(errStoppedByUser)
+	for _, request := range requests {
+		request.cancel(errStoppedByUser)
 	}
 	stopped := len(requests)
 	b.runningMu.Unlock()
