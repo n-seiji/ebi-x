@@ -113,6 +113,12 @@ func BuildTurnPrompt(memories memory.Context, playbooks []playbook.Playbook, act
 - フォローアップの実行中に続けて予定できるのは、人の発言なしで%d回までです。
 - 依頼者の返答を待つ場合や、確認することが決まっていない場合には使わないでください。予定時刻はbotが本文の後に伝えるため、本文で予定を約束しないでください。
 
+依頼者が作業の定期的な繰り返し（毎朝の確認、毎週のまとめなど）を明示的に頼んだ場合は、最終応答に「## 定期実行」見出しを1回だけ置き、その下に次の2行を書いてください。botが指定の曜日と時刻ごとに、このチャンネルの新しいスレッドで、依頼者からの依頼としてその作業を始めます。
+- いつ: 「毎日 09:00」「平日 09:00」「週末 10:00」「毎週月水金 09:30」のいずれかの形（時刻はbotのタイムゾーン）
+- やること: 毎回行う作業を、それだけで分かる1文で（前後の会話は毎回のスレッドに渡りません）
+- 設定できるのはスレッドごとに1件で、指定し直すと置き換わります。依頼者が止めるよう頼んだ場合は「- いつ: 停止」の1行だけを書いてください。
+- 依頼者が頼んでいない定期実行や、1回だけの後の作業（「## フォローアップ」を使ってください）には使わないでください。設定の結果はbotが本文の後に伝えるため、本文で約束しないでください。
+
 依頼者の回答がないと作業を進められない場合は、最終応答に「## 回答待ち」見出しを1回だけ置き、その下に確認したいことを「- 」で始まる箇条書きで書いてください。botが依頼者に通知し、回答待ちであることをスレッドに表示します。
 - 本文で同じ質問を繰り返さないでください。本文には、ここまでに行ったことと、回答によって何が変わるかを書いてください。
 - 作業が完了した場合や、前提を置いて進められる場合には使わないでください。
@@ -174,7 +180,7 @@ func BuildPullWatchPrompt(event string, checkouts []workspace.Checkout, pendingR
 // this request's answer replaces or cancels.
 func BuildResumePrompt(authorID, message string, checkouts []workspace.Checkout, pendingRepos []string, pendingFollowUp string) string {
 	var builder strings.Builder
-	builder.WriteString("同じSlackスレッドで新しい依頼が届きました。このセッションの最初の指示（作業の進め方・playbook・書式・添付ファイル・フォローアップ・メモリ追記の規約）に従って、調査・作業・回答してください。\n\n")
+	builder.WriteString("同じSlackスレッドで新しい依頼が届きました。このセッションの最初の指示（作業の進め方・playbook・書式・添付ファイル・フォローアップ・定期実行・メモリ追記の規約）に従って、調査・作業・回答してください。\n\n")
 	writePendingFollowUp(&builder, pendingFollowUp)
 	writeRepositories(&builder, checkouts, pendingRepos)
 	writeSlackMessage(&builder, authorID, message)

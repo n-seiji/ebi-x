@@ -58,7 +58,7 @@ func (b *Bot) trackRequest(ctx context.Context, threadKey, eventKey, authorID st
 }
 
 // stopThread cancels the requests the thread is running or waiting to run,
-// and its scheduled follow-up.
+// its scheduled follow-up, pull request watches, and schedule.
 // Each stopped request reports itself in the thread, so the stop command
 // only gets a reaction.
 func (b *Bot) stopThread(ctx context.Context, channel, threadTS, timestamp string) {
@@ -75,6 +75,7 @@ func (b *Bot) stopThread(ctx context.Context, channel, threadTS, timestamp strin
 		log.Printf("slackbot: cancel follow-up %s: %v", key, err)
 	}
 	stoppedWatches := b.stopPullWatches(channel, threadTS)
+	stoppedSchedule := b.stopSchedule(channel, threadTS)
 	if stopped > 0 {
 		log.Printf("slackbot: stopping %d request(s) in %s", stopped, key)
 		b.addReaction(ctx, channel, timestamp, "ok_hand")
@@ -86,6 +87,9 @@ func (b *Bot) stopThread(ctx context.Context, channel, threadTS, timestamp strin
 	}
 	if stoppedWatches {
 		stoppedParts = append(stoppedParts, pullWatchStoppedMessage)
+	}
+	if stoppedSchedule {
+		stoppedParts = append(stoppedParts, scheduleStoppedMsg)
 	}
 	message := nothingToStopMessage
 	if len(stoppedParts) > 0 {
