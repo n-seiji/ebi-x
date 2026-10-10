@@ -64,6 +64,9 @@ type SlackAPI interface {
 	// PublishHome shows sections of mrkdwn text on userID's App Home tab.
 	PublishHome(ctx context.Context, userID string, sections []string) error
 	Permalink(ctx context.Context, channel, timestamp string) (string, error)
+	// OpenRequestModal opens the "ebi-x に頼む" modal for a message shortcut.
+	OpenRequestModal(ctx context.Context, triggerID, metadata, quoted string) error
+	PostEphemeral(ctx context.Context, channel, user, text string) error
 }
 
 // ThreadMessage is the Slack thread data supplied to a first turn.
@@ -1162,6 +1165,14 @@ func RunSocketMode(acceptCtx, turnCtx context.Context, botToken, appToken string
 			}
 			if event.Request != nil {
 				socketClient.Ack(*event.Request)
+			}
+			if event.Type == socketmode.EventTypeInteractive {
+				if callback, ok := event.Data.(slack.InteractionCallback); ok {
+					wg.Go(func() {
+						bot.HandleInteraction(turnCtx, &callback)
+					})
+				}
+				continue
 			}
 			if event.Type != socketmode.EventTypeEventsAPI {
 				continue

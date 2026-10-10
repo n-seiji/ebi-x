@@ -335,6 +335,20 @@ func (s *fakeSlack) PublishHome(_ context.Context, userID string, sections []str
 	return nil
 }
 
+func (s *fakeSlack) OpenRequestModal(_ context.Context, triggerID, metadata, quoted string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, slackCall{kind: "modal:" + triggerID, text: metadata + "\n" + quoted})
+	return nil
+}
+
+func (s *fakeSlack) PostEphemeral(_ context.Context, channel, user, text string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, slackCall{kind: "ephemeral:" + channel + ":" + user, text: text})
+	return nil
+}
+
 func (s *fakeSlack) Permalink(_ context.Context, channel, timestamp string) (string, error) {
 	return "https://slack.test/archives/" + channel + "/p" + timestamp, nil
 }
