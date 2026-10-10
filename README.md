@@ -4,11 +4,15 @@ ebi-x は、Slack の mention を受けて Codex が1回の実行で依頼を検
 
 ## Slack App の準備
 
+`examples/slack-app-manifest.json` を使うと、以下の設定をまとめて入れられます（Slack App の作成画面で「From a manifest」を選び、貼り付けます）。
+
 1. Slack App を作成し、Socket Mode を有効にします。
-2. Bot Token Scopes に `app_mentions:read`、`chat:write`、`reactions:write`、`reactions:read`、`channels:history`、`files:write` を追加します。`files:write` は成果物の添付（後述）に使います。プライベートチャンネルで使う場合は `groups:history`（スレッドを読むため）も追加します。scopeを追加・変更した場合は、workspaceへアプリを再インストールしてください。
-3. Event Subscriptions で `app_mention` と `message.channels` を購読します。`message.groups` は追加しません（mentionなしの返信を処理するスレッド購読は、パブリックチャンネルだけが対象です）。
-4. Workspace に App をインストールして Bot Token (`xoxb-...`) を取得します。
-5. Socket Mode 用の App Token (`xapp-...`) を取得します。
+2. Bot Token Scopes に `app_mentions:read`、`chat:write`、`reactions:write`、`reactions:read`、`channels:history`、`files:write`、`im:history`、`assistant:write` を追加します。`files:write` は成果物の添付（後述）、`im:history` と `assistant:write` はエージェントとしての表示と DM（後述）に使います。プライベートチャンネルで使う場合は `groups:history`（スレッドを読むため）も追加します。scopeを追加・変更した場合は、workspaceへアプリを再インストールしてください。
+3. Event Subscriptions で `app_mention`、`message.channels`、`message.im`、`app_home_opened` を購読します。`message.groups` は追加しません（mentionなしの返信を処理するスレッド購読は、パブリックチャンネルだけが対象です）。
+4. App Home で Messages Tab を有効にし、「Allow users to send Slash commands and messages from the messages tab」をオンにします。
+5. 「Agents & AI Apps」で **Agent App** に切り替えます（manifest では `features.agent_view`）。切り替えは元に戻せません。
+6. Workspace に App をインストールして Bot Token (`xoxb-...`) を取得します。
+7. Socket Mode 用の App Token (`xapp-...`) を取得します。
 
 ## 設定と起動
 
@@ -16,7 +20,7 @@ ebi-x は、Slack の mention を受けて Codex が1回の実行で依頼を検
 
 ebi-x を使えるuser・channel・Workflowは、`.env` の許可リスト（固定の許可）と、承認チャンネルで承認者が許可したものの2つで決まります。
 
-- `SLACK_ALLOWED_USER_IDS`、`SLACK_ALLOWED_CHANNEL_IDS`：固定の許可です。承認チャンネルを使わない場合は、それぞれ1件以上必須です（以前の「空なら全チャンネル許可」は廃止しました）。DMは許可リストに書かない限り使えません。
+- `SLACK_ALLOWED_USER_IDS`、`SLACK_ALLOWED_CHANNEL_IDS`：固定の許可です。承認チャンネルを使わない場合は、それぞれ1件以上必須です（以前の「空なら全チャンネル許可」は廃止しました）。DM（後述のエージェント表示）は、許可されたuserならチャンネルの許可なしで使えます。
 - `SLACK_ALLOW_ALL_PUBLIC_CHANNELS` は廃止しました。`true` のままだと起動しません。チャンネルは1つずつ列挙するか、承認チャンネルで許可してください。
 - Workflow Builder の「メッセージを送信」からの mention も受け付ける場合は、`SLACK_ALLOW_WORKFLOWS=true` にします。許可するWorkflowは `SLACK_ALLOWED_WORKFLOW_IDS` に列挙するか、承認チャンネルで許可します（承認チャンネルを使わない場合は列挙が必須）。通常のBot投稿は拒否し、Slackイベントの `workflow_id` が許可されたmentionだけを受け付けます。Workflowはワークスペースのメンバーなら誰でも作れるため、IDで限定しないとユーザー許可リストを迂回できてしまいます。人・Workflowのどちらもチャンネル制限の対象です。
 
@@ -59,6 +63,23 @@ mise run build   # または: go build -o ebi-x ./cmd/ebi-x
 Go のバージョンは [mise](https://mise.jdx.dev/) で管理しています(`mise install` で揃います)。テストは `mise run test`、lint は `mise run lint` で実行できます。mise なしでも `go build` / `go test -race ./...` / `go vet ./...` で同等です。メモリの読み取り分離には permission profile と `--ignore-user-config` を使うため、Codex CLI 0.149.0 以上が必要です。
 
 ebi-x は単一プロセスでの運用を前提としており、多重起動には対応していません。
+
+## エージェントとしての表示と DM
+
+Slack App を Agent App にすると、ebi-x はサイドバーと Messages タブにエージェントとして表示されます。Slack の有料プランが必要です。
+
+```text
+（ebi-x の Messages タブ）
+  できること / リポジトリの説明 / 最近の変更     ← 依頼の候補
+@tanaka  CI が落ちている原因を調べて
+  └ ebi-x がコマンドを実行しています（go test）…
+  └ @ebi-x  原因は…
+```
+
+- **DM で依頼**：Messages タブ（ebi-x との DM）では mention なしで依頼できます。スレッドの外に送ったメッセージは新しいスレッドになり、そのスレッドへの返信は同じ Codex セッションで続きます。チャンネルと同じく、作業中の表示、停止、フォローアップも使えます。
+- **許可**：DM は送った人と ebi-x だけの会話なので、userが許可されていればチャンネルの許可は要りません。許可されていないuserからの DM は、承認チャンネルがあれば承認を依頼し、なければ 403 を返します。グループ DM には反応しません。
+- **依頼の候補**：許可されたuserが Messages タブを開くと、「できること」「リポジトリの説明」「最近の変更」の3つを候補として表示します。選ぶとその文面が依頼として送られます。
+- **メモリ**：DM の会話は DM ごとのチャンネルメモリになり、ほかのチャンネルからは読まれません。playbook と全体メモリには書き込めません。
 
 ## 並列作業とスレッドごとのクローン
 

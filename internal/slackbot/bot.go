@@ -60,6 +60,7 @@ type SlackAPI interface {
 	AddReaction(ctx context.Context, channel, timestamp, name string) error
 	RemoveReaction(ctx context.Context, channel, timestamp, name string) error
 	UploadFile(ctx context.Context, channel, threadTS, filename string, size int64, content io.Reader) error
+	SetSuggestedPrompts(ctx context.Context, channel string, prompts []suggestedPrompt) error
 }
 
 // ThreadMessage is the Slack thread data supplied to a first turn.
@@ -275,8 +276,13 @@ func (b *Bot) handleMention(ctx context.Context, event *slackevents.AppMentionEv
 }
 
 // HandleMessage filters and processes one already-acknowledged ordinary
-// public-channel message event from an active subscribed thread.
+// message event: a direct message to the bot, or a public-channel message
+// from an active subscribed thread.
 func (b *Bot) HandleMessage(ctx context.Context, event *slackevents.MessageEvent) {
+	if event != nil && event.ChannelType == "im" {
+		b.handleDirectMessage(ctx, event)
+		return
+	}
 	if event == nil ||
 		event.ChannelType != "channel" ||
 		event.ThreadTimeStamp == "" ||
@@ -1116,6 +1122,10 @@ func RunSocketMode(acceptCtx, turnCtx context.Context, botToken, appToken string
 			case *slackevents.MessageEvent:
 				wg.Go(func() {
 					bot.HandleMessage(turnCtx, innerEvent)
+				})
+			case *slackevents.AppHomeOpenedEvent:
+				wg.Go(func() {
+					bot.HandleAppHomeOpened(turnCtx, innerEvent)
 				})
 			}
 		}

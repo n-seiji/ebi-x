@@ -1,0 +1,50 @@
+{
+  "display_information": {
+    "name": "ebi-x",
+    "description": "Slack から Codex に調査や作業を頼めるエージェント"
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": false,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "ebi-x",
+      "always_online": true
+    },
+    "agent_view": {
+      "agent_description": "リポジトリの調査・修正・PR 作成や、成果物の作成を Codex で進めて、スレッドに報告します。"
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "app_mentions:read",
+        "assistant:write",
+        "channels:history",
+        "chat:write",
+        "files:write",
+        "im:history",
+        "reactions:read",
+        "reactions:write"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "app_home_opened",
+        "app_mention",
+        "message.channels",
+        "message.im"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": false
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+}

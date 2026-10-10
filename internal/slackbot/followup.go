@@ -126,7 +126,7 @@ func (b *Bot) runFollowUps(acceptCtx, turnCtx context.Context, wg *sync.WaitGrou
 // the user or channel may have lost it in the meantime.
 func (b *Bot) fireFollowUp(ctx context.Context, followUp state.FollowUp) {
 	threadKey := threadRef(followUp.Channel, followUp.ThreadTS)
-	if !b.userAllowed(followUp.AuthorID) || !b.channelAllowed(followUp.Channel) {
+	if !b.userAllowed(followUp.AuthorID) || !b.conversationAllowed(followUp.Channel) {
 		log.Printf("slackbot: drop follow-up %q: user %q or channel is no longer allowed", threadKey, followUp.AuthorID)
 		return
 	}
