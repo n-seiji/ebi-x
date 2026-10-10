@@ -683,6 +683,8 @@ func clearConfigEnv(t *testing.T) {
 	for _, key := range []string{
 		"SLACK_BOT_TOKEN",
 		"SLACK_APP_TOKEN",
+		"EBIX_GITHUB_TOKEN",
+		"EBIX_GITHUB_API_URL",
 		"SLACK_ALLOWED_USER_IDS",
 		"SLACK_ALLOWED_CHANNEL_IDS",
 		"SLACK_ALLOW_ALL_PUBLIC_CHANNELS",

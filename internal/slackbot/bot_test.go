@@ -40,6 +40,47 @@ type fakeStore struct {
 	subscriptionDeletes []string
 	subscriptionErr     error
 	followUps           map[string]state.FollowUp
+	pullWatches         map[string]state.PullWatch
+}
+
+func (s *fakeStore) PullWatches() []state.PullWatch {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var watches []state.PullWatch
+	for _, watch := range s.pullWatches {
+		watches = append(watches, watch)
+	}
+	return watches
+}
+
+func (s *fakeStore) GetPullWatch(key string) (state.PullWatch, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	watch, ok := s.pullWatches[key]
+	return watch, ok
+}
+
+func (s *fakeStore) SetPullWatch(watch state.PullWatch) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pullWatches == nil {
+		s.pullWatches = make(map[string]state.PullWatch)
+	}
+	s.pullWatches[watch.Key()] = watch
+	return nil
+}
+
+func (s *fakeStore) DeletePullWatches(match func(state.PullWatch) bool) ([]state.PullWatch, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var removed []state.PullWatch
+	for key, watch := range s.pullWatches {
+		if match(watch) {
+			removed = append(removed, watch)
+			delete(s.pullWatches, key)
+		}
+	}
+	return removed, nil
 }
 
 func (s *fakeStore) GetFollowUp(threadKey string) (state.FollowUp, bool) {
@@ -1638,8 +1679,14 @@ type looseStore struct {
 
 func (s *looseStore) ClaimEvent(string) (bool, error) { return true, nil }
 
-func (s *looseStore) GetFollowUp(string) (state.FollowUp, bool) { return state.FollowUp{}, false }
-func (s *looseStore) SetFollowUp(string, state.FollowUp) error  { return nil }
+func (s *looseStore) GetFollowUp(string) (state.FollowUp, bool)   { return state.FollowUp{}, false }
+func (s *looseStore) SetFollowUp(string, state.FollowUp) error    { return nil }
+func (s *looseStore) PullWatches() []state.PullWatch              { return nil }
+func (s *looseStore) GetPullWatch(string) (state.PullWatch, bool) { return state.PullWatch{}, false }
+func (s *looseStore) SetPullWatch(state.PullWatch) error          { return nil }
+func (s *looseStore) DeletePullWatches(func(state.PullWatch) bool) ([]state.PullWatch, error) {
+	return nil, nil
+}
 func (s *looseStore) DeleteFollowUp(string) (state.FollowUp, bool, error) {
 	return state.FollowUp{}, false, nil
 }
