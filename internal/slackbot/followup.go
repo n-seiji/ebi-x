@@ -2,10 +2,8 @@ package slackbot
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,7 +23,7 @@ const (
 	followUpScheduledNotice = "⏰ %s ごろにフォローアップします: %s\n止める場合は、このスレッドで「停止」と mention してください。"
 	followUpCancelledNotice = "⏰ 予定していたフォローアップ（%s）は取り消しました。"
 	followUpInvalidNotice   = "⚠️ フォローアップの指定を読み取れなかったため、予定していません。"
-	followUpTimeNotice      = "⚠️ フォローアップの時刻「%s」を読み取れないか範囲外（%s後から%d日後まで）のため、予定していません。"
+	followUpTimeNotice      = "⚠️ フォローアップの時刻「%s」を読み取れないか範囲外（%s）のため、予定していません。"
 	followUpChainNotice     = "⚠️ 人の発言なしで続けられるフォローアップの上限（%d回）に達したため、次は予定していません。続ける場合は、このスレッドで依頼してください。"
 	followUpStoppedMessage  = "予定していたフォローアップを取り消しました。"
 )
@@ -37,7 +35,7 @@ func (b *Bot) pendingFollowUp(threadKey string) string {
 	if !ok {
 		return ""
 	}
-	return b.formatFollowUpTime(followUp.DueAt) + " に「" + followUp.Task + "」"
+	return formatFollowUpTime(followUp.DueAt) + " に「" + followUp.Task + "」"
 }
 
 // scheduleFollowUp applies the follow-up a finished turn asked for and
@@ -45,92 +43,65 @@ func (b *Bot) pendingFollowUp(threadKey string) string {
 // decides the thread's next follow-up: one that sets none cancels the one
 // pending, so a follow-up never outlives the plan that made it.
 func (b *Bot) scheduleFollowUp(trigger processingTrigger, output workOutput) string {
-	threadKey := trigger.channel + ":" + trigger.threadTS
-	var notices []string
-	// A follow-up was taken from the store when it became due, so only a
-	// person's request can replace one that is still pending.
+	threadKey := threadRef(trigger.channel, trigger.threadTS)
+	next, notice := b.nextFollowUp(trigger, output)
+	if next != nil {
+		// Saving replaces any pending follow-up.
+		if err := b.store.SetFollowUp(threadKey, *next); err != nil {
+			log.Printf("slackbot: save follow-up %q: %v", threadKey, err)
+			return followUpInvalidNotice
+		}
+		return fmt.Sprintf(followUpScheduledNotice, formatFollowUpTime(next.DueAt), next.Task)
+	}
+	// A due follow-up was taken from the store before it ran, so only a
+	// person's request can still have one pending.
 	if trigger.followUp == nil {
-		if previous, ok := b.store.GetFollowUp(threadKey); ok {
-			deleted, err := b.store.DeleteFollowUp(threadKey)
-			if err != nil {
-				log.Printf("slackbot: cancel follow-up %q: %v", threadKey, err)
-			}
-			if deleted && output.followUp == nil {
-				notices = append(notices, fmt.Sprintf(followUpCancelledNotice, b.formatFollowUpTime(previous.DueAt)))
-			}
+		previous, deleted, err := b.store.DeleteFollowUp(threadKey)
+		if err != nil {
+			log.Printf("slackbot: cancel follow-up %q: %v", threadKey, err)
+		}
+		if deleted {
+			notice = strings.TrimSpace(fmt.Sprintf(followUpCancelledNotice, formatFollowUpTime(previous.DueAt)) + "\n" + notice)
 		}
 	}
+	return notice
+}
+
+// nextFollowUp returns the follow-up output asks for, or nil and the notice
+// that says why none is scheduled.
+func (b *Bot) nextFollowUp(trigger processingTrigger, output workOutput) (*state.FollowUp, string) {
 	if output.followUpInvalid {
-		return strings.Join(append(notices, followUpInvalidNotice), "\n")
+		return nil, followUpInvalidNotice
 	}
 	if output.followUp == nil {
-		return strings.Join(notices, "\n")
+		return nil, ""
 	}
-
 	chain := 1
 	if trigger.followUp != nil {
 		chain = trigger.followUp.Chain + 1
 	}
 	if chain > codex.MaxFollowUpChain {
-		return strings.Join(append(notices, fmt.Sprintf(followUpChainNotice, codex.MaxFollowUpChain)), "\n")
+		return nil, fmt.Sprintf(followUpChainNotice, codex.MaxFollowUpChain)
 	}
 	now := b.now()
-	dueAt, err := parseFollowUpTime(output.followUp.When, now)
+	dueAt, err := codex.FollowUpDueAt(output.followUp.When, now)
 	if err != nil {
-		log.Printf("slackbot: reject follow-up time %q in %q: %v", output.followUp.When, threadKey, err)
-		notice := fmt.Sprintf(followUpTimeNotice, shortDetail(output.followUp.When), codex.FormatDelay(codex.FollowUpMinDelay), int(codex.FollowUpMaxDelay/(24*time.Hour)))
-		return strings.Join(append(notices, notice), "\n")
+		log.Printf("slackbot: reject follow-up time %q in %s:%s: %v", output.followUp.When, trigger.channel, trigger.threadTS, err)
+		return nil, fmt.Sprintf(followUpTimeNotice, shortDetail(output.followUp.When), codex.FollowUpRange())
 	}
-	task := truncateRunes(strings.Join(strings.Fields(output.followUp.Task), " "), maxFollowUpTaskRunes)
-	if err := b.store.SetFollowUp(threadKey, state.FollowUp{
+	return &state.FollowUp{
 		Channel:   trigger.channel,
 		ThreadTS:  trigger.threadTS,
 		AuthorID:  trigger.authorID,
-		Task:      task,
+		Task:      clipText(output.followUp.Task, maxFollowUpTaskRunes),
 		DueAt:     dueAt,
 		Chain:     chain,
 		CreatedAt: now,
-	}); err != nil {
-		log.Printf("slackbot: save follow-up %q: %v", threadKey, err)
-		return strings.Join(append(notices, followUpInvalidNotice), "\n")
-	}
-	return strings.Join(append(notices, fmt.Sprintf(followUpScheduledNotice, b.formatFollowUpTime(dueAt), task)), "\n")
+	}, ""
 }
 
-// parseFollowUpTime reads a delay such as "30m", "2h", or "1d", or an
-// RFC 3339 time, and checks that it falls within the follow-up limits.
-func parseFollowUpTime(when string, now time.Time) (time.Time, error) {
-	when = strings.TrimSpace(when)
-	var dueAt time.Time
-	if days, ok := strings.CutSuffix(when, "d"); ok {
-		count, err := strconv.Atoi(days)
-		if err != nil {
-			return time.Time{}, fmt.Errorf("parse days: %w", err)
-		}
-		dueAt = now.Add(time.Duration(count) * 24 * time.Hour)
-	} else if delay, err := time.ParseDuration(when); err == nil {
-		dueAt = now.Add(delay)
-	} else if at, err := time.Parse(time.RFC3339, when); err == nil {
-		dueAt = at
-	} else {
-		return time.Time{}, errors.New("not a delay or RFC 3339 time")
-	}
-	if delay := dueAt.Sub(now); delay < codex.FollowUpMinDelay || delay > codex.FollowUpMaxDelay {
-		return time.Time{}, fmt.Errorf("delay %v is out of range", delay)
-	}
-	return dueAt, nil
-}
-
-func (b *Bot) formatFollowUpTime(at time.Time) string {
+func formatFollowUpTime(at time.Time) string {
 	return at.In(time.Local).Format(followUpTimeLayout)
-}
-
-func truncateRunes(text string, limit int) string {
-	runes := []rune(text)
-	if len(runes) <= limit {
-		return text
-	}
-	return string(runes[:limit-1]) + "…"
 }
 
 // runFollowUps starts due follow-ups until acceptCtx is done. Each runs on
@@ -154,7 +125,7 @@ func (b *Bot) runFollowUps(acceptCtx, turnCtx context.Context, wg *sync.WaitGrou
 // a request from the user who scheduled it. Access is checked again, since
 // the user or channel may have lost it in the meantime.
 func (b *Bot) fireFollowUp(ctx context.Context, followUp state.FollowUp) {
-	threadKey := followUp.Channel + ":" + followUp.ThreadTS
+	threadKey := threadRef(followUp.Channel, followUp.ThreadTS)
 	if !b.userAllowed(followUp.AuthorID) || !b.channelAllowed(followUp.Channel) {
 		log.Printf("slackbot: drop follow-up %q: user %q or channel is no longer allowed", threadKey, followUp.AuthorID)
 		return

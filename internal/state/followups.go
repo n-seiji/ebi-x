@@ -52,21 +52,21 @@ func (s *Store) SetFollowUp(threadKey string, followUp FollowUp) error {
 	return nil
 }
 
-// DeleteFollowUp cancels the follow-up scheduled for threadKey and reports
-// whether there was one.
-func (s *Store) DeleteFollowUp(threadKey string) (bool, error) {
+// DeleteFollowUp cancels the follow-up scheduled for threadKey and returns
+// it, reporting whether there was one.
+func (s *Store) DeleteFollowUp(threadKey string) (FollowUp, bool, error) {
 	s.followUpsMu.Lock()
 	defer s.followUpsMu.Unlock()
 	previous, existed := s.followUps[threadKey]
 	if !existed {
-		return false, nil
+		return FollowUp{}, false, nil
 	}
 	delete(s.followUps, threadKey)
 	if err := s.saveFollowUps(); err != nil {
 		s.followUps[threadKey] = previous
-		return false, fmt.Errorf("delete follow-up %q: %w", threadKey, err)
+		return FollowUp{}, false, fmt.Errorf("delete follow-up %q: %w", threadKey, err)
 	}
-	return true, nil
+	return previous, true, nil
 }
 
 // TakeDueFollowUps removes and returns the follow-ups due at now, earliest

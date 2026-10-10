@@ -1,6 +1,9 @@
 package codex
 
 import (
+	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -14,13 +17,35 @@ const (
 	MaxFollowUpChain = 10
 )
 
-// FormatDelay writes a delay the way a follow-up gives one, as "5m" or "2h".
-func FormatDelay(delay time.Duration) string {
-	text := strings.TrimSuffix(delay.String(), "0s")
-	if strings.Contains(text, "h") {
-		text = strings.TrimSuffix(text, "0m")
+// FollowUpRange describes the accepted follow-up times, for the prompt and
+// for the notice that rejects a time.
+func FollowUpRange() string {
+	minimum := strings.TrimSuffix(FollowUpMinDelay.String(), "0s")
+	return fmt.Sprintf("%s後から%d日後まで", minimum, int(FollowUpMaxDelay/(24*time.Hour)))
+}
+
+// FollowUpDueAt reads a follow-up's "いつ": a delay such as "30m", "2h", or
+// "1d", or an RFC 3339 time. It fails outside FollowUpRange.
+func FollowUpDueAt(when string, now time.Time) (time.Time, error) {
+	when = strings.TrimSpace(when)
+	var dueAt time.Time
+	if days, ok := strings.CutSuffix(when, "d"); ok {
+		count, err := strconv.Atoi(days)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("parse days: %w", err)
+		}
+		dueAt = now.Add(time.Duration(count) * 24 * time.Hour)
+	} else if delay, err := time.ParseDuration(when); err == nil {
+		dueAt = now.Add(delay)
+	} else if at, err := time.Parse(time.RFC3339, when); err == nil {
+		dueAt = at
+	} else {
+		return time.Time{}, errors.New("not a delay or RFC 3339 time")
 	}
-	return text
+	if delay := dueAt.Sub(now); delay < FollowUpMinDelay || delay > FollowUpMaxDelay {
+		return time.Time{}, fmt.Errorf("delay %v is out of range", delay)
+	}
+	return dueAt, nil
 }
 
 const (
@@ -260,27 +285,29 @@ type FollowUpRequest struct {
 
 // SplitFollowUp removes the follow-up section from a work response. The
 // section is its heading followed by the bullets "- いつ: ..." and
-// "- やること: ...", each once, and ends at the first other line. found
-// reports whether the heading appeared; valid is false when it appeared
-// more than once or its bullets are incomplete, and then no follow-up is
-// returned.
-func SplitFollowUp(text string) (rest string, request FollowUpRequest, found, valid bool) {
+// "- やること: ...", each once, and ends at the first other line. It returns
+// the request, or nil when there is no section. invalid reports a section
+// that appears more than once or has incomplete bullets; it yields no
+// request.
+func SplitFollowUp(text string) (rest string, request *FollowUpRequest, invalid bool) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	prose := proseLines(lines)
-	var starts []int
+	start, count := -1, 0
 	for i, line := range lines {
 		if prose[i] && strings.TrimSpace(line) == followUpHeading {
-			starts = append(starts, i)
+			if count == 0 {
+				start = i
+			}
+			count++
 		}
 	}
-	if len(starts) == 0 {
-		return text, FollowUpRequest{}, false, true
+	if count == 0 {
+		return text, nil, false
 	}
-	start := starts[0]
-	if len(starts) > 1 {
-		return strings.TrimSpace(strings.Join(lines[:start], "\n")), FollowUpRequest{}, true, false
+	if count > 1 {
+		return strings.TrimSpace(strings.Join(lines[:start], "\n")), nil, true
 	}
-	valid = true
+	var parsed FollowUpRequest
 	seen := make(map[string]bool)
 	end := len(lines)
 	for i := start + 1; i < len(lines); i++ {
@@ -295,23 +322,23 @@ func SplitFollowUp(text string) (rest string, request FollowUpRequest, found, va
 		}
 		key, value, ok := cutFollowUpField(item)
 		if !ok || seen[key] {
-			valid = false
+			invalid = true
 			continue
 		}
 		seen[key] = true
 		switch key {
 		case followUpWhenKey:
-			request.When = value
+			parsed.When = value
 		case followUpTaskKey:
-			request.Task = value
+			parsed.Task = value
 		}
 	}
 	kept := append(append([]string(nil), lines[:start]...), lines[end:]...)
 	rest = strings.TrimSpace(strings.Join(kept, "\n"))
-	if !valid || request.When == "" || request.Task == "" {
-		return rest, FollowUpRequest{}, true, false
+	if invalid || parsed.When == "" || parsed.Task == "" {
+		return rest, nil, true
 	}
-	return rest, request, true, true
+	return rest, &parsed, false
 }
 
 // cutFollowUpField splits "key: value", accepting a full-width colon too.

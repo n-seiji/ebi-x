@@ -80,7 +80,7 @@ type Store interface {
 	DeleteSubscriptionIfExpired(threadKey string, now time.Time) (bool, error)
 	GetFollowUp(threadKey string) (state.FollowUp, bool)
 	SetFollowUp(threadKey string, followUp state.FollowUp) error
-	DeleteFollowUp(threadKey string) (bool, error)
+	DeleteFollowUp(threadKey string) (state.FollowUp, bool, error)
 	TakeDueFollowUps(now time.Time) ([]state.FollowUp, error)
 }
 
@@ -519,7 +519,7 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	} else if trigger.followUp != nil {
 		turnPrompt = prompt.BuildFollowUpPrompt(trigger.followUp.Task, trigger.followUp.DueAt, b.now(), trigger.followUp.Chain, lease.Checkouts, lease.PendingRepos)
 	} else {
-		turnPrompt = prompt.BuildResumePrompt(trigger.authorID, trigger.message, lease.Checkouts, lease.PendingRepos, b.pendingFollowUp(channel+":"+threadTS))
+		turnPrompt = prompt.BuildResumePrompt(trigger.authorID, trigger.message, lease.Checkouts, lease.PendingRepos, b.pendingFollowUp(threadRef(channel, threadTS)))
 	}
 
 	if err := b.store.Transition(eventKey, state.Received, state.Working); err != nil {
@@ -575,14 +575,9 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	}
 	// The follow-up section is taken out before the memory sections, which
 	// run to the end of the response.
-	resultText, followUp, followUpFound, followUpValid := codex.SplitFollowUp(resultText)
-	if followUpFound {
-		if followUpValid {
-			output.followUp = &followUp
-		} else {
-			log.Printf("slackbot: ignore malformed follow-up output %q", eventKey)
-			output.followUpInvalid = true
-		}
+	resultText, output.followUp, output.followUpInvalid = codex.SplitFollowUp(resultText)
+	if output.followUpInvalid {
+		log.Printf("slackbot: ignore malformed follow-up output %q", eventKey)
 	}
 	resultText, memoryAppends, memoryOutputValid := codex.SplitMemoryAppends(resultText)
 	output.text = codex.SanitizeSlackOutput(resultText)

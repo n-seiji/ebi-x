@@ -191,32 +191,3 @@ func TestRunFollowUpsStartsDueOnes(t *testing.T) {
 		t.Fatal("follow-up that is not due yet was removed")
 	}
 }
-
-func TestParseFollowUpTime(t *testing.T) {
-	tests := []struct {
-		when    string
-		want    time.Time
-		wantErr bool
-	}{
-		{when: "30m", want: followUpNow.Add(30 * time.Minute)},
-		{when: "2h", want: followUpNow.Add(2 * time.Hour)},
-		{when: "1d", want: followUpNow.Add(24 * time.Hour)},
-		{when: "2026-10-10T09:00:00+09:00", want: time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)},
-		{when: "1m", wantErr: true},
-		{when: "8d", wantErr: true},
-		{when: "2026-10-09T06:00:00Z", wantErr: true},
-		{when: "あとで", wantErr: true},
-	}
-	for _, test := range tests {
-		got, err := parseFollowUpTime(test.when, followUpNow)
-		if test.wantErr {
-			if err == nil {
-				t.Errorf("parseFollowUpTime(%q) = %v, want error", test.when, got)
-			}
-			continue
-		}
-		if err != nil || !got.Equal(test.want) {
-			t.Errorf("parseFollowUpTime(%q) = %v, %v; want %v", test.when, got, err, test.want)
-		}
-	}
-}

@@ -59,12 +59,12 @@ func (s *fakeStore) SetFollowUp(threadKey string, followUp state.FollowUp) error
 	return nil
 }
 
-func (s *fakeStore) DeleteFollowUp(threadKey string) (bool, error) {
+func (s *fakeStore) DeleteFollowUp(threadKey string) (state.FollowUp, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, ok := s.followUps[threadKey]
+	followUp, ok := s.followUps[threadKey]
 	delete(s.followUps, threadKey)
-	return ok, nil
+	return followUp, ok, nil
 }
 
 func (s *fakeStore) TakeDueFollowUps(now time.Time) ([]state.FollowUp, error) {
@@ -1631,9 +1631,11 @@ type looseStore struct {
 
 func (s *looseStore) ClaimEvent(string) (bool, error) { return true, nil }
 
-func (s *looseStore) GetFollowUp(string) (state.FollowUp, bool)            { return state.FollowUp{}, false }
-func (s *looseStore) SetFollowUp(string, state.FollowUp) error             { return nil }
-func (s *looseStore) DeleteFollowUp(string) (bool, error)                  { return false, nil }
+func (s *looseStore) GetFollowUp(string) (state.FollowUp, bool) { return state.FollowUp{}, false }
+func (s *looseStore) SetFollowUp(string, state.FollowUp) error  { return nil }
+func (s *looseStore) DeleteFollowUp(string) (state.FollowUp, bool, error) {
+	return state.FollowUp{}, false, nil
+}
 func (s *looseStore) TakeDueFollowUps(time.Time) ([]state.FollowUp, error) { return nil, nil }
 
 func (s *looseStore) Transition(string, state.State, state.State) error { return nil }

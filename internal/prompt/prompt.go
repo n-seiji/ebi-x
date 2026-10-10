@@ -81,7 +81,7 @@ func BuildTurnPrompt(memories memory.Context, playbooks []playbook.Playbook, sla
 - 添付の再送を依頼された場合は、成果物を作り直さず、既存のファイルを確認してこの見出しで指定してください。
 
 時間をおいて確認・継続すべき作業がある場合（CIやデプロイの完了待ち、時間をおいた再確認、依頼者が指定した時刻の作業など）は、最終応答に「## フォローアップ」見出しを1回だけ置き、その下に次の2行を書いてください。botが指定の時刻にこのセッションを再開し、結果をこのスレッドに投稿します。
-- いつ: 30m、2h、1d のような待ち時間、または 2026-10-10T09:00:00+09:00 のような日時（%s後から%d日後まで）
+- いつ: 30m、2h、1d のような待ち時間、または 2026-10-10T09:00:00+09:00 のような日時（%s）
 - やること: その時に行う作業を1文で
 - 予定できるのはスレッドごとに1件です。後の依頼への回答で指定しなければ、予定中のフォローアップは取り消されます。
 - フォローアップの実行中に続けて予定できるのは、人の発言なしで%d回までです。
@@ -89,7 +89,7 @@ func BuildTurnPrompt(memories memory.Context, playbooks []playbook.Playbook, sla
 
 メモリファイルを直接編集しないでください。
 `, slackFormatRules, attachment.MaxSize>>20, attachment.MaxFiles,
-		codex.FormatDelay(codex.FollowUpMinDelay), int(codex.FollowUpMaxDelay/(24*time.Hour)), codex.MaxFollowUpChain)
+		codex.FollowUpRange(), codex.MaxFollowUpChain)
 	if !sharedWritable {
 		builder.WriteString("このチャンネルからは playbook と全体メモリを変更できません。playbook は読み取り専用です。\n")
 	}

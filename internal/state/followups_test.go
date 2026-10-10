@@ -34,8 +34,8 @@ func TestFollowUpsPersistAndTakeDue(t *testing.T) {
 	if got, ok := reloaded.GetFollowUp("C1:2.1"); !ok || got != later {
 		t.Fatalf("GetFollowUp() = %#v, %v", got, ok)
 	}
-	if deleted, err := reloaded.DeleteFollowUp("C1:2.1"); err != nil || !deleted {
-		t.Fatalf("DeleteFollowUp() = %v, %v", deleted, err)
+	if removed, deleted, err := reloaded.DeleteFollowUp("C1:2.1"); err != nil || !deleted || removed != later {
+		t.Fatalf("DeleteFollowUp() = %#v, %v, %v", removed, deleted, err)
 	}
 	final, err := NewStore(dir)
 	if err != nil {
