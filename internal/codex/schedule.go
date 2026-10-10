@@ -126,7 +126,7 @@ type ScheduleRequest struct {
 // the follow-up section ("- いつ: 停止" alone stops the schedule). It returns
 // nil when there is no section; invalid reports one the bot cannot read.
 func SplitSchedule(text string) (rest string, request *ScheduleRequest, invalid bool) {
-	rest, fields, present, invalid := splitFieldSection(text, scheduleHeading)
+	rest, fields, present, invalid := splitFieldSection(text, scheduleHeading, followUpWhenKey, followUpTaskKey)
 	if !present {
 		return text, nil, false
 	}
