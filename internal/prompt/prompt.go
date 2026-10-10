@@ -26,6 +26,18 @@ const slackFormatRules = `- Markdown記法（見出し・太字・箇条書き�
 - 根拠のリンクは本文に散らさず、末尾にまとめてください。
 `
 
+// workingRules are how the agent works through a request. They follow the
+// loop well-behaved coding agents share: gather context, act, verify, and
+// report honestly. A plan matters beyond the model: Codex reports it as a
+// todo list, which the bot shows as the thread's progress.
+const workingRules = `- 依頼の目的と完了条件を把握してから着手してください。関連するファイル・playbook・スレッドを読み、推測で進めないでください。
+- 3ステップ以上かかる作業では、最初に計画（TODOリスト）を立て、進捗に合わせて更新してください。計画はSlackのステータスに進捗として表示されます。
+- 確認なしで進めると取り返しがつかない場合（外部への送信・公開・削除、依頼の解釈が大きく分かれる場合）だけ質問してください。質問は1回に1問にし、回答を待つためにターンを終えてください。それ以外の細部は妥当な前提を置いて進め、置いた前提を回答に書いてください。
+- 作業を中途半端に止めず、依頼を完了させるまで進めてください。失敗したら原因を調べて別の方法を試し、同じ失敗を繰り返さないでください。
+- コードや成果物を変更したら、テスト・ビルド・実行結果の確認など、可能な方法で検証してから報告してください。検証できなかった場合はその理由を書き、確認済みのように書かないでください。
+- 作業を伴う依頼の回答には、結論、行ったこと、検証の方法と結果、未完了の事項や次にできることを、この順で簡潔に書いてください。事実と推測を区別してください。
+`
+
 // BuildTurnPrompt builds the prompt that starts a Slack thread's Codex
 // session. It carries everything the session keeps for later requests: the
 // memory, the playbook catalog, earlier thread messages, and the execution
@@ -39,6 +51,9 @@ func BuildTurnPrompt(memories memory.Context, playbooks []playbook.Playbook, sla
 	var builder strings.Builder
 	writeMemoryContext(&builder, memories)
 	builder.WriteString("このターンで依頼を理解し、必要な調査・作業を行い、結果を回答してください。別の方針検討ターンや作業指示の出力は不要です。確認が必要な場合は質問して回答を待ち、次の依頼で同じセッションを継続します。\n\n")
+	builder.WriteString("作業の進め方:\n")
+	builder.WriteString(workingRules)
+	builder.WriteString("\n")
 	builder.WriteString("以下は利用可能な playbook の一覧です。依頼に該当するものがあれば、作業に入る前にその絶対パスのファイルを読んで従ってください。複数該当する場合は必要なものを併用してください。\n")
 	if len(playbooks) == 0 {
 		builder.WriteString("- 利用可能な playbook はありません。\n")
@@ -86,7 +101,7 @@ func BuildTurnPrompt(memories memory.Context, playbooks []playbook.Playbook, sla
 // because checkouts may have been created or removed since the last turn.
 func BuildResumePrompt(authorID, message string, checkouts []workspace.Checkout, pendingRepos []string) string {
 	var builder strings.Builder
-	builder.WriteString("同じSlackスレッドで新しい依頼が届きました。このセッションの最初の指示（playbook・書式・添付ファイル・メモリ追記の規約）に従って、調査・作業・回答してください。\n\n")
+	builder.WriteString("同じSlackスレッドで新しい依頼が届きました。このセッションの最初の指示（作業の進め方・playbook・書式・添付ファイル・メモリ追記の規約）に従って、調査・作業・回答してください。\n\n")
 	writeRepositories(&builder, checkouts, pendingRepos)
 	writeSlackMessage(&builder, authorID, message)
 	return builder.String()

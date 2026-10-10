@@ -124,3 +124,15 @@ func TestStripClosingTags(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildTurnPromptIncludesWorkingRules(t *testing.T) {
+	got := BuildTurnPrompt(memory.Context{}, nil, "", "U1", "do it", nil, nil, false)
+	for _, want := range []string{"作業の進め方:", "計画（TODOリスト）", "検証してから報告"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("turn prompt does not contain %q", want)
+		}
+	}
+	if resume := BuildResumePrompt("U1", "next", nil, nil); !strings.Contains(resume, "作業の進め方") {
+		t.Errorf("resume prompt does not point back to the working rules: %q", resume)
+	}
+}
