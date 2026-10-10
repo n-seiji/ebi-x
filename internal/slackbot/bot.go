@@ -79,6 +79,7 @@ type Store interface {
 	GetSubscription(threadKey string) (state.Subscription, bool)
 	SetSubscription(threadKey string, startedAt, expiresAt time.Time) error
 	DeleteSubscriptionIfExpired(threadKey string, now time.Time) (bool, error)
+	DeleteSubscription(threadKey string) error
 	GetFollowUp(threadKey string) (state.FollowUp, bool)
 	SetFollowUp(threadKey string, followUp state.FollowUp) error
 	DeleteFollowUp(threadKey string) (state.FollowUp, bool, error)
@@ -272,11 +273,18 @@ func (b *Bot) handleMention(ctx context.Context, event *slackevents.AppMentionEv
 	}
 
 	message := stripBotMention(event.Text, b.config.BotUserID)
-	if message == "" {
+	if message == "" || isAside(message) {
 		return
 	}
-	if isStopCommand(message) {
+	switch {
+	case isStopCommand(message):
 		b.stopThread(ctx, event.Channel, threadTS, event.TimeStamp)
+		return
+	case isMuteCommand(message):
+		b.muteThread(ctx, event.Channel, threadTS)
+		return
+	case isUnmuteCommand(message):
+		b.unmuteThread(ctx, event.Channel, threadTS)
 		return
 	}
 	b.processTrigger(ctx, processingTrigger{
@@ -337,8 +345,14 @@ func (b *Bot) HandleMessage(ctx context.Context, event *slackevents.MessageEvent
 		return
 	}
 
-	if isStopCommand(event.Text) {
+	switch {
+	case isAside(event.Text):
+		return
+	case isStopCommand(event.Text):
 		b.stopThread(ctx, event.Channel, event.ThreadTimeStamp, event.TimeStamp)
+		return
+	case isMuteCommand(event.Text):
+		b.muteThread(ctx, event.Channel, event.ThreadTimeStamp)
 		return
 	}
 	b.processTrigger(ctx, processingTrigger{

@@ -15,8 +15,7 @@ var stopCommands = map[string]struct{}{
 }
 
 func isStopCommand(message string) bool {
-	normalized := strings.ToLower(strings.TrimRight(strings.TrimSpace(message), "。．.!！ "))
-	_, ok := stopCommands[normalized]
+	_, ok := stopCommands[normalizeCommand(message)]
 	return ok
 }
 
