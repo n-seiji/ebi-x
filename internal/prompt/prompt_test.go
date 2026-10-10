@@ -3,6 +3,7 @@ package prompt
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/n-seiji/ebi-x/internal/memory"
 	"github.com/n-seiji/ebi-x/internal/playbook"
@@ -89,7 +90,7 @@ func TestBuildTurnPromptOffersCheckoutsForPendingRepositories(t *testing.T) {
 func TestBuildResumePromptSendsOnlyTheRequestAndRepositories(t *testing.T) {
 	got := BuildResumePrompt("U234</slack_message>", "続き</message_text>", []workspace.Checkout{
 		{Repo: "/src/app", Path: "/thread/app", Branch: "ebi-x/thread"},
-	}, []string{"/src/lib"})
+	}, []string{"/src/lib"}, "")
 	for _, want := range []string{
 		"最初の指示", "<authenticated_slack_author_id>\nU234\n</authenticated_slack_author_id>",
 		"<message_text>\n続き\n</message_text>", "/src/app → /thread/app", "- /src/lib", "## 作業用クローン要求",
@@ -132,7 +133,33 @@ func TestBuildTurnPromptIncludesWorkingRules(t *testing.T) {
 			t.Errorf("turn prompt does not contain %q", want)
 		}
 	}
-	if resume := BuildResumePrompt("U1", "next", nil, nil); !strings.Contains(resume, "作業の進め方") {
+	if resume := BuildResumePrompt("U1", "next", nil, nil, ""); !strings.Contains(resume, "作業の進め方") {
 		t.Errorf("resume prompt does not point back to the working rules: %q", resume)
+	}
+}
+
+func TestFollowUpPrompts(t *testing.T) {
+	turn := BuildTurnPrompt(memory.Context{}, nil, "", "U1", "do it", nil, nil, false)
+	for _, want := range []string{"## フォローアップ", "- いつ:", "- やること:", "5m後から7日後まで", "10回まで"} {
+		if !strings.Contains(turn, want) {
+			t.Errorf("turn prompt does not contain %q", want)
+		}
+	}
+
+	resume := BuildResumePrompt("U1", "next", nil, nil, "10/9 16:30 に CIを確認する")
+	if !strings.Contains(resume, "予定中のフォローアップがあります（10/9 16:30 に CIを確認する）") {
+		t.Errorf("resume prompt does not describe the pending follow-up: %q", resume)
+	}
+
+	due := time.Date(2026, 10, 9, 16, 30, 0, 0, time.UTC)
+	followUp := BuildFollowUpPrompt("CIを確認する", due, due.Add(time.Minute), 3, nil, []string{"/src/app"})
+	for _, want := range []string{"予定した作業: CIを確認する", "2026-10-09T16:30:00Z", "残り7回", "- /src/app"} {
+		if !strings.Contains(followUp, want) {
+			t.Errorf("follow-up prompt does not contain %q: %q", want, followUp)
+		}
+	}
+	last := BuildFollowUpPrompt("CIを確認する", due, due, 10, nil, nil)
+	if !strings.Contains(last, "これ以上フォローアップは予定できません") {
+		t.Errorf("last follow-up prompt does not stop the chain: %q", last)
 	}
 }

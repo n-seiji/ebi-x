@@ -50,23 +50,33 @@ func (b *Bot) trackRequest(ctx context.Context, threadKey, eventKey string) (con
 	}
 }
 
-// stopThread cancels the requests the thread is running or waiting to run.
+// stopThread cancels the requests the thread is running or waiting to run,
+// and its scheduled follow-up.
 // Each stopped request reports itself in the thread, so the stop command
 // only gets a reaction.
 func (b *Bot) stopThread(ctx context.Context, channel, threadTS, timestamp string) {
+	key := threadRef(channel, threadTS)
 	b.runningMu.Lock()
-	requests := b.running[threadRef(channel, threadTS)]
+	requests := b.running[key]
 	for _, cancel := range requests {
 		cancel(errStoppedByUser)
 	}
 	stopped := len(requests)
 	b.runningMu.Unlock()
-	if stopped == 0 {
-		if err := b.post(ctx, channel, threadTS, nothingToStopMessage); err != nil {
-			log.Printf("slackbot: post nothing to stop: %v", err)
-		}
+	_, cancelledFollowUp, err := b.store.DeleteFollowUp(key)
+	if err != nil {
+		log.Printf("slackbot: cancel follow-up %s: %v", key, err)
+	}
+	if stopped > 0 {
+		log.Printf("slackbot: stopping %d request(s) in %s", stopped, key)
+		b.addReaction(ctx, channel, timestamp, "ok_hand")
 		return
 	}
-	log.Printf("slackbot: stopping %d request(s) in %s:%s", stopped, channel, threadTS)
-	b.addReaction(ctx, channel, timestamp, "ok_hand")
+	message := nothingToStopMessage
+	if cancelledFollowUp {
+		message = followUpStoppedMessage
+	}
+	if err := b.post(ctx, channel, threadTS, message); err != nil {
+		log.Printf("slackbot: post stop result: %v", err)
+	}
 }

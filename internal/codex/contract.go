@@ -1,8 +1,52 @@
 package codex
 
 import (
+	"errors"
+	"fmt"
+	"strconv"
 	"strings"
+	"time"
 )
+
+// Follow-up limits. The prompt states them and the bot enforces them.
+const (
+	FollowUpMinDelay = 5 * time.Minute
+	FollowUpMaxDelay = 7 * 24 * time.Hour
+	// MaxFollowUpChain is how many follow-ups may be scheduled in a row
+	// without a person writing in the thread.
+	MaxFollowUpChain = 10
+)
+
+// FollowUpRange describes the accepted follow-up times, for the prompt and
+// for the notice that rejects a time.
+func FollowUpRange() string {
+	minimum := strings.TrimSuffix(FollowUpMinDelay.String(), "0s")
+	return fmt.Sprintf("%s後から%d日後まで", minimum, int(FollowUpMaxDelay/(24*time.Hour)))
+}
+
+// FollowUpDueAt reads a follow-up's "いつ": a delay such as "30m", "2h", or
+// "1d", or an RFC 3339 time. It fails outside FollowUpRange.
+func FollowUpDueAt(when string, now time.Time) (time.Time, error) {
+	when = strings.TrimSpace(when)
+	var dueAt time.Time
+	if days, ok := strings.CutSuffix(when, "d"); ok {
+		count, err := strconv.Atoi(days)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("parse days: %w", err)
+		}
+		dueAt = now.Add(time.Duration(count) * 24 * time.Hour)
+	} else if delay, err := time.ParseDuration(when); err == nil {
+		dueAt = now.Add(delay)
+	} else if at, err := time.Parse(time.RFC3339, when); err == nil {
+		dueAt = at
+	} else {
+		return time.Time{}, errors.New("not a delay or RFC 3339 time")
+	}
+	if delay := dueAt.Sub(now); delay < FollowUpMinDelay || delay > FollowUpMaxDelay {
+		return time.Time{}, fmt.Errorf("delay %v is out of range", delay)
+	}
+	return dueAt, nil
+}
 
 const (
 	memoryHeading              = "## メモリ追記"
@@ -10,6 +54,9 @@ const (
 	channelMemoryHeading       = "## チャンネルメモリ追記"
 	forbiddenUserMemoryHeading = "## ユーザーメモリ追記"
 	attachmentsHeading         = "## 添付ファイル"
+	followUpHeading            = "## フォローアップ"
+	followUpWhenKey            = "いつ"
+	followUpTaskKey            = "やること"
 	// CheckoutRequestHeading asks the bot to prepare the thread's checkouts
 	// and continue the same session in them.
 	CheckoutRequestHeading = "## 作業用クローン要求"
@@ -227,4 +274,83 @@ func fenceMarker(line string) (char byte, length int, ok bool) {
 		return 0, 0, false
 	}
 	return char, length, true
+}
+
+// FollowUpRequest is the work a turn schedules for itself. When is as the
+// model wrote it; the bot decides whether it is a valid time.
+type FollowUpRequest struct {
+	When string
+	Task string
+}
+
+// SplitFollowUp removes the follow-up section from a work response. The
+// section is its heading followed by the bullets "- いつ: ..." and
+// "- やること: ...", each once, and ends at the first other line. It returns
+// the request, or nil when there is no section. invalid reports a section
+// that appears more than once or has incomplete bullets; it yields no
+// request.
+func SplitFollowUp(text string) (rest string, request *FollowUpRequest, invalid bool) {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	prose := proseLines(lines)
+	start, count := -1, 0
+	for i, line := range lines {
+		if prose[i] && strings.TrimSpace(line) == followUpHeading {
+			if count == 0 {
+				start = i
+			}
+			count++
+		}
+	}
+	if count == 0 {
+		return text, nil, false
+	}
+	if count > 1 {
+		return strings.TrimSpace(strings.Join(lines[:start], "\n")), nil, true
+	}
+	var parsed FollowUpRequest
+	seen := make(map[string]bool)
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		item, ok := strings.CutPrefix(trimmed, "- ")
+		if !prose[i] || !ok {
+			end = i
+			break
+		}
+		key, value, ok := cutFollowUpField(item)
+		if !ok || seen[key] {
+			invalid = true
+			continue
+		}
+		seen[key] = true
+		switch key {
+		case followUpWhenKey:
+			parsed.When = value
+		case followUpTaskKey:
+			parsed.Task = value
+		}
+	}
+	kept := append(append([]string(nil), lines[:start]...), lines[end:]...)
+	rest = strings.TrimSpace(strings.Join(kept, "\n"))
+	if invalid || parsed.When == "" || parsed.Task == "" {
+		return rest, nil, true
+	}
+	return rest, &parsed, false
+}
+
+// cutFollowUpField splits "key: value", accepting a full-width colon too.
+func cutFollowUpField(item string) (key, value string, ok bool) {
+	for _, separator := range []string{":", "："} {
+		if key, value, ok = strings.Cut(item, separator); ok {
+			key = strings.TrimSpace(key)
+			value = strings.Trim(strings.TrimSpace(value), "`")
+			if key == followUpWhenKey || key == followUpTaskKey {
+				return key, strings.TrimSpace(value), value != ""
+			}
+		}
+	}
+	return "", "", false
 }

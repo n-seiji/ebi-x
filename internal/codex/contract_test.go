@@ -1,8 +1,10 @@
 package codex
 
 import (
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSplitMemoryAppend(t *testing.T) {
@@ -320,5 +322,86 @@ func TestSplitCheckoutRequest(t *testing.T) {
 				t.Fatalf("SplitCheckoutRequest() = (%q, %v), want (%q, %v)", rest, requested, tt.rest, tt.requested)
 			}
 		})
+	}
+}
+
+func TestSplitFollowUp(t *testing.T) {
+	tests := []struct {
+		name        string
+		text        string
+		wantRest    string
+		want        *FollowUpRequest
+		wantInvalid bool
+	}{
+		{
+			name:     "none",
+			text:     "答え",
+			wantRest: "答え",
+		},
+		{
+			name:     "valid section before memory",
+			text:     "CIを待っています。\n\n## フォローアップ\n- いつ: 30m\n- やること：CIの結果を確認して報告する\n\n## チャンネルメモリ追記\n- x",
+			wantRest: "CIを待っています。\n\n## チャンネルメモリ追記\n- x",
+			want:     &FollowUpRequest{When: "30m", Task: "CIの結果を確認して報告する"},
+		},
+		{
+			name:        "missing task",
+			text:        "本文\n## フォローアップ\n- いつ: 1h",
+			wantRest:    "本文",
+			wantInvalid: true,
+		},
+		{
+			name:        "duplicate heading",
+			text:        "本文\n## フォローアップ\n- いつ: 1h\n- やること: a\n## フォローアップ\n- いつ: 2h\n- やること: b",
+			wantRest:    "本文",
+			wantInvalid: true,
+		},
+		{
+			name:     "heading inside code is ignored",
+			text:     "```\n## フォローアップ\n- いつ: 1h\n```",
+			wantRest: "```\n## フォローアップ\n- いつ: 1h\n```",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rest, got, invalid := SplitFollowUp(test.text)
+			if rest != test.wantRest || !reflect.DeepEqual(got, test.want) || invalid != test.wantInvalid {
+				t.Fatalf("SplitFollowUp() = %q, %#v, %v; want %q, %#v, %v",
+					rest, got, invalid, test.wantRest, test.want, test.wantInvalid)
+			}
+		})
+	}
+}
+
+func TestFollowUpDueAt(t *testing.T) {
+	now := time.Date(2026, 10, 9, 7, 0, 0, 0, time.UTC)
+	tests := []struct {
+		when    string
+		want    time.Time
+		wantErr bool
+	}{
+		{when: "30m", want: now.Add(30 * time.Minute)},
+		{when: "2h", want: now.Add(2 * time.Hour)},
+		{when: "1d", want: now.Add(24 * time.Hour)},
+		{when: "2026-10-10T09:00:00+09:00", want: time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)},
+		{when: "1m", wantErr: true},
+		{when: "8d", wantErr: true},
+		{when: "2026-10-09T06:00:00Z", wantErr: true},
+		{when: "あとで", wantErr: true},
+	}
+	for _, test := range tests {
+		got, err := FollowUpDueAt(test.when, now)
+		if test.wantErr {
+			if err == nil {
+				t.Errorf("FollowUpDueAt(%q) = %v, want error", test.when, got)
+			}
+			continue
+		}
+		if err != nil || !got.Equal(test.want) {
+			t.Errorf("FollowUpDueAt(%q) = %v, %v; want %v", test.when, got, err, test.want)
+		}
+	}
+	if got := FollowUpRange(); got != "5m後から7日後まで" {
+		t.Errorf("FollowUpRange() = %q", got)
 	}
 }

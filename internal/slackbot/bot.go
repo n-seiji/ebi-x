@@ -78,6 +78,10 @@ type Store interface {
 	GetSubscription(threadKey string) (state.Subscription, bool)
 	SetSubscription(threadKey string, startedAt, expiresAt time.Time) error
 	DeleteSubscriptionIfExpired(threadKey string, now time.Time) (bool, error)
+	GetFollowUp(threadKey string) (state.FollowUp, bool)
+	SetFollowUp(threadKey string, followUp state.FollowUp) error
+	DeleteFollowUp(threadKey string) (state.FollowUp, bool, error)
+	TakeDueFollowUps(now time.Time) ([]state.FollowUp, error)
 }
 
 // Runner executes one Codex turn. deniedPaths are hidden from the turn in
@@ -167,6 +171,8 @@ type triggerSource uint8
 const (
 	mentionTrigger triggerSource = iota
 	messageTrigger
+	// followUpTrigger is a follow-up the thread's session scheduled.
+	followUpTrigger
 )
 
 type processingTrigger struct {
@@ -177,6 +183,8 @@ type processingTrigger struct {
 	threadTS    string
 	message     string
 	threadReply bool
+	// followUp is the due follow-up a followUpTrigger runs.
+	followUp *state.FollowUp
 }
 
 // New constructs a Bot.
@@ -406,6 +414,9 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	if len(output.memoryScopes) > 0 {
 		resultText += "\n\n📝 " + strings.Join(output.memoryScopes, "・") + "メモリを更新しました。"
 	}
+	if notice := b.scheduleFollowUp(trigger, output); notice != "" {
+		resultText += "\n\n" + notice
+	}
 	// The deliverable that did not reach Slack must not look successful. The
 	// files stay in the work area for a resend request.
 	final := state.Done
@@ -435,6 +446,10 @@ type workOutput struct {
 	attachmentOutputInvalid bool
 	// failedAttachments lists files that were rejected or failed to upload.
 	failedAttachments []attachment.Rejection
+	// followUp is the follow-up the turn asked for, and followUpInvalid
+	// reports a follow-up section the bot could not read.
+	followUp        *codex.FollowUpRequest
+	followUpInvalid bool
 }
 
 // attachmentNotice tells the user which files did not reach Slack, so the
@@ -501,8 +516,10 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 			log.Printf("slackbot: read memory: %v", memErr)
 		}
 		turnPrompt = prompt.BuildTurnPrompt(memoryContext, currentPlaybooks, slackThread, trigger.authorID, trigger.message, lease.Checkouts, lease.PendingRepos, sharedWritable)
+	} else if trigger.followUp != nil {
+		turnPrompt = prompt.BuildFollowUpPrompt(trigger.followUp.Task, trigger.followUp.DueAt, b.now(), trigger.followUp.Chain, lease.Checkouts, lease.PendingRepos)
 	} else {
-		turnPrompt = prompt.BuildResumePrompt(trigger.authorID, trigger.message, lease.Checkouts, lease.PendingRepos)
+		turnPrompt = prompt.BuildResumePrompt(trigger.authorID, trigger.message, lease.Checkouts, lease.PendingRepos, b.pendingFollowUp(threadRef(channel, threadTS)))
 	}
 
 	if err := b.store.Transition(eventKey, state.Received, state.Working); err != nil {
@@ -555,6 +572,12 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	if !attachmentOutputValid {
 		log.Printf("slackbot: ignore malformed attachment output %q", eventKey)
 		output.attachmentOutputInvalid = true
+	}
+	// The follow-up section is taken out before the memory sections, which
+	// run to the end of the response.
+	resultText, output.followUp, output.followUpInvalid = codex.SplitFollowUp(resultText)
+	if output.followUpInvalid {
+		log.Printf("slackbot: ignore malformed follow-up output %q", eventKey)
 	}
 	resultText, memoryAppends, memoryOutputValid := codex.SplitMemoryAppends(resultText)
 	output.text = codex.SanitizeSlackOutput(resultText)
@@ -1050,6 +1073,8 @@ func RunSocketMode(acceptCtx, turnCtx context.Context, botToken, appToken string
 	}
 	bot.api = &webAPI{client: client}
 	bot.config.BotUserID = auth.UserID
+	// Follow-ups post to Slack, so they start once the client is ready.
+	wg.Go(func() { bot.runFollowUps(acceptCtx, turnCtx, wg) })
 	socketClient := socketmode.New(client)
 	runErr := make(chan error, 1)
 	go func() {
