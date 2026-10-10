@@ -44,3 +44,16 @@ func TestPullWatchesPersist(t *testing.T) {
 		t.Fatalf("watches after delete = %+v", got)
 	}
 }
+
+func TestFollowUpsAreListedEarliestFirst(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 10, 9, 0, 0, 0, time.UTC)
+	_ = store.SetFollowUp("C1:2", FollowUp{Channel: "C1", ThreadTS: "2", DueAt: now.Add(2 * time.Hour)})
+	_ = store.SetFollowUp("C1:1", FollowUp{Channel: "C1", ThreadTS: "1", DueAt: now.Add(time.Hour)})
+	if got := store.FollowUps(); len(got) != 2 || got[0].ThreadTS != "1" || got[1].ThreadTS != "2" {
+		t.Fatalf("FollowUps() = %+v, want earliest first", got)
+	}
+}

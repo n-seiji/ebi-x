@@ -61,6 +61,9 @@ type SlackAPI interface {
 	RemoveReaction(ctx context.Context, channel, timestamp, name string) error
 	UploadFile(ctx context.Context, channel, threadTS, filename string, size int64, content io.Reader) error
 	SetSuggestedPrompts(ctx context.Context, channel string, prompts []suggestedPrompt) error
+	// PublishHome shows sections of mrkdwn text on userID's App Home tab.
+	PublishHome(ctx context.Context, userID string, sections []string) error
+	Permalink(ctx context.Context, channel, timestamp string) (string, error)
 }
 
 // ThreadMessage is the Slack thread data supplied to a first turn.
@@ -84,6 +87,7 @@ type Store interface {
 	SetFollowUp(threadKey string, followUp state.FollowUp) error
 	DeleteFollowUp(threadKey string) (state.FollowUp, bool, error)
 	TakeDueFollowUps(now time.Time) ([]state.FollowUp, error)
+	FollowUps() []state.FollowUp
 	PullWatches() []state.PullWatch
 	GetPullWatch(key string) (state.PullWatch, bool)
 	SetPullWatch(watch state.PullWatch) error
@@ -176,7 +180,7 @@ type Bot struct {
 	// running holds the cancel functions of the requests each thread is
 	// processing or waiting to process, keyed by thread and then event.
 	runningMu sync.Mutex
-	running   map[string]map[string]context.CancelCauseFunc
+	running   map[string]map[string]runningRequest
 	now       func() time.Time
 	sleep     func(context.Context, time.Duration) error
 }
@@ -224,7 +228,7 @@ func New(api SlackAPI, store Store, runner Runner, config Config, playbooks []pl
 		workSlots:           make(chan struct{}, max(config.MaxParallelWork, 1)),
 		threadLocks:         make(map[string]*sync.Mutex),
 		workLocks:           make(map[string]*sync.Mutex),
-		running:             make(map[string]map[string]context.CancelCauseFunc),
+		running:             make(map[string]map[string]runningRequest),
 		now:                 time.Now,
 		sleep:               sleepContext,
 	}
@@ -387,7 +391,7 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	// stopCtx ends when the request is stopped from Slack. Only waiting and
 	// the Codex turn use it; Slack calls keep ctx, so a stop never keeps the
 	// bot from reporting.
-	stopCtx, untrack := b.trackRequest(ctx, threadRef(channel, threadTS), eventKey)
+	stopCtx, untrack := b.trackRequest(ctx, threadRef(channel, threadTS), eventKey, trigger.authorID)
 	defer untrack()
 	failure := func(message string) string {
 		if errors.Is(context.Cause(stopCtx), errStoppedByUser) {
