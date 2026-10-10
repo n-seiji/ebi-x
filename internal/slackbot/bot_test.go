@@ -1446,7 +1446,7 @@ func TestKeepStatusRefreshesUntilStopped(t *testing.T) {
 		}
 	}
 
-	stop := bot.keepStatus(context.Background(), "C1", "100.1", workingStatus)
+	stop := bot.startStatus(context.Background(), "C1", "100.1", workingStatus).Stop
 	if got := receiveDuration(t, sleepCalls); got != statusRefreshDelay {
 		t.Fatalf("first status delay = %v, want %v", got, statusRefreshDelay)
 	}

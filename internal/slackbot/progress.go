@@ -21,16 +21,16 @@ const (
 // the requester can see what the agent is doing instead of a fixed
 // "working" line for many minutes. Each update carries the whole state, so a
 // lost update only delays the status.
+//
+// The runner reports activity from its output loop, one event at a time, so
+// progress needs no locking.
 type progress struct {
-	mu     sync.Mutex
 	action string
 	plan   codex.Activity
 }
 
 // observe records activity and returns the status to show.
 func (p *progress) observe(activity codex.Activity) string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	switch activity.Kind {
 	case codex.ActivityPlan:
 		p.plan = activity
@@ -73,12 +73,18 @@ func (p *progress) status() string {
 
 // shortDetail makes model-written text fit on the status line.
 func shortDetail(text string) string {
+	return clipText(text, maxStatusDetailRunes)
+}
+
+// clipText puts text on one line and cuts it to limit runes, marking a cut
+// with "…".
+func clipText(text string, limit int) string {
 	text = strings.Join(strings.Fields(text), " ")
 	runes := []rune(text)
-	if len(runes) <= maxStatusDetailRunes {
+	if len(runes) <= limit {
 		return text
 	}
-	return string(runes[:maxStatusDetailRunes-1]) + "…"
+	return string(runes[:limit-1]) + "…"
 }
 
 var (
@@ -152,6 +158,7 @@ func (b *Bot) startStatus(ctx context.Context, channel, threadTS, status string)
 	b.setStatus(ctx, channel, threadTS, status)
 	go func() {
 		defer close(done)
+		sent := status
 		for {
 			keeper.mu.Lock()
 			waitCtx, wake := context.WithCancel(statusCtx)
@@ -169,10 +176,17 @@ func (b *Bot) startStatus(ctx context.Context, channel, threadTS, status string)
 			text := keeper.text
 			keeper.dirty = false
 			keeper.mu.Unlock()
+			// The refresh resends the status; a change that was undone before
+			// it was sent needs nothing.
+			woken := err != nil
+			if woken && text == sent {
+				continue
+			}
 			b.setStatus(statusCtx, channel, threadTS, text)
+			sent = text
 			// A wake-up by Update waits before the next change is sent, so a
 			// burst of commands does not run into Slack's rate limits.
-			if err != nil {
+			if woken {
 				if b.sleep(statusCtx, statusMinInterval) != nil {
 					return
 				}
@@ -188,8 +202,4 @@ func (b *Bot) startStatus(ctx context.Context, channel, threadTS, status string)
 		})
 	}
 	return keeper
-}
-
-func (b *Bot) keepStatus(ctx context.Context, channel, threadTS, status string) func() {
-	return b.startStatus(ctx, channel, threadTS, status).Stop
 }
