@@ -53,7 +53,7 @@ func (b *Bot) handleDirectMessage(ctx context.Context, event *slackevents.Messag
 		return
 	}
 	message := stripBotMention(event.Text, b.config.BotUserID)
-	if message == "" {
+	if message == "" || isAside(message) {
 		return
 	}
 	threadTS := event.ThreadTimeStamp
@@ -70,8 +70,14 @@ func (b *Bot) handleDirectMessage(ctx context.Context, event *slackevents.Messag
 		}, []approvalSubject{{kind: state.ApprovalUser, id: event.User}})
 		return
 	}
-	if isStopCommand(message) {
+	switch {
+	case isStopCommand(message):
 		b.stopThread(ctx, event.Channel, threadTS, event.TimeStamp)
+		return
+	case isMuteCommand(message) || isUnmuteCommand(message):
+		if err := b.post(ctx, event.Channel, threadTS, directMessageMuteMsg); err != nil {
+			log.Printf("slackbot: post direct message mute note: %v", err)
+		}
 		return
 	}
 	b.processTrigger(ctx, processingTrigger{

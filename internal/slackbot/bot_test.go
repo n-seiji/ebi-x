@@ -203,6 +203,14 @@ func (s *fakeStore) DeleteSubscriptionIfExpired(key string, now time.Time) (bool
 	return true, nil
 }
 
+func (s *fakeStore) DeleteSubscription(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subscriptionDeletes = append(s.subscriptionDeletes, key)
+	delete(s.subscriptions, key)
+	return nil
+}
+
 type slackCall struct {
 	kind string
 	text string
@@ -1713,6 +1721,8 @@ func (s *looseStore) GetSubscription(string) (state.Subscription, bool) {
 }
 
 func (s *looseStore) SetSubscription(string, time.Time, time.Time) error { return nil }
+
+func (s *looseStore) DeleteSubscription(string) error { return nil }
 
 func (s *looseStore) DeleteSubscriptionIfExpired(string, time.Time) (bool, error) {
 	return false, nil
