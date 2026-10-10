@@ -83,6 +83,10 @@ type Store interface {
 	SetFollowUp(threadKey string, followUp state.FollowUp) error
 	DeleteFollowUp(threadKey string) (state.FollowUp, bool, error)
 	TakeDueFollowUps(now time.Time) ([]state.FollowUp, error)
+	PullWatches() []state.PullWatch
+	GetPullWatch(key string) (state.PullWatch, bool)
+	SetPullWatch(watch state.PullWatch) error
+	DeletePullWatches(match func(state.PullWatch) bool) ([]state.PullWatch, error)
 }
 
 // Runner executes one Codex turn. deniedPaths are hidden from the turn in
@@ -139,6 +143,12 @@ type Config struct {
 	// SharedWriteChannelIDs are the channels whose work turns may write
 	// playbooks and global memory, which every channel reads.
 	SharedWriteChannelIDs []string
+	// GitHub reads the pull requests turns ask the bot to watch. Watching is
+	// off when it is nil.
+	GitHub GitHub
+	// GitHubLogin is the GitHub user behind GitHub's token, whose own
+	// reviews and comments do not wake a watch.
+	GitHubLogin string
 	// Workspaces gives each Slack thread its cwd and writable roots. When
 	// nil, every thread shares WorkspaceDir and WritableRoots.
 	Workspaces Workspaces
@@ -177,6 +187,8 @@ const (
 	messageTrigger
 	// followUpTrigger is a follow-up the thread's session scheduled.
 	followUpTrigger
+	// pullWatchTrigger is an event on a pull request the session watches.
+	pullWatchTrigger
 )
 
 type processingTrigger struct {
@@ -426,6 +438,9 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	if notice := b.scheduleFollowUp(trigger, output); notice != "" {
 		resultText += "\n\n" + notice
 	}
+	if notice := b.watchPulls(ctx, trigger, output.pullURLs); notice != "" {
+		resultText += "\n\n" + notice
+	}
 	// The deliverable that did not reach Slack must not look successful. The
 	// files stay in the work area for a resend request.
 	final := state.Done
@@ -472,6 +487,8 @@ type workOutput struct {
 	// waiting reports that the turn stopped to ask the requester questions.
 	waiting   bool
 	questions []string
+	// pullURLs are the pull requests the turn asked the bot to watch.
+	pullURLs []string
 }
 
 // attachmentNotice tells the user which files did not reach Slack, so the
@@ -537,7 +554,9 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		if memErr != nil {
 			log.Printf("slackbot: read memory: %v", memErr)
 		}
-		turnPrompt = prompt.BuildTurnPrompt(memoryContext, currentPlaybooks, readActionRules(b.config.ActionRulesFile), slackThread, trigger.authorID, trigger.message, lease.Checkouts, lease.PendingRepos, sharedWritable)
+		turnPrompt = prompt.BuildTurnPrompt(memoryContext, currentPlaybooks, readActionRules(b.config.ActionRulesFile), slackThread, trigger.authorID, trigger.message, lease.Checkouts, lease.PendingRepos, sharedWritable, b.pullWatchEnabled())
+	} else if trigger.source == pullWatchTrigger {
+		turnPrompt = prompt.BuildPullWatchPrompt(trigger.message, lease.Checkouts, lease.PendingRepos)
 	} else if trigger.followUp != nil {
 		turnPrompt = prompt.BuildFollowUpPrompt(trigger.followUp.Task, trigger.followUp.DueAt, b.now(), trigger.followUp.Chain, lease.Checkouts, lease.PendingRepos)
 	} else {
@@ -602,6 +621,7 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		log.Printf("slackbot: ignore malformed follow-up output %q", eventKey)
 	}
 	resultText, output.questions, output.waiting = codex.SplitQuestions(resultText)
+	resultText, output.pullURLs = codex.SplitPullWatches(resultText)
 	resultText, memoryAppends, memoryOutputValid := codex.SplitMemoryAppends(resultText)
 	output.text = codex.SanitizeSlackOutput(resultText)
 	if !memoryOutputValid {
@@ -1102,6 +1122,7 @@ func RunSocketMode(acceptCtx, turnCtx context.Context, botToken, appToken string
 	bot.config.BotUserID = auth.UserID
 	// Follow-ups post to Slack, so they start once the client is ready.
 	wg.Go(func() { bot.runFollowUps(acceptCtx, turnCtx, wg) })
+	wg.Go(func() { bot.runPullWatches(acceptCtx, turnCtx, wg) })
 	socketClient := socketmode.New(client)
 	runErr := make(chan error, 1)
 	go func() {
