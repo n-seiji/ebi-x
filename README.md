@@ -7,12 +7,13 @@ ebi-x は、Slack の mention を受けて Codex が1回の実行で依頼を検
 `examples/slack-app-manifest.json` を使うと、以下の設定をまとめて入れられます（Slack App の作成画面で「From a manifest」を選び、貼り付けます）。
 
 1. Slack App を作成し、Socket Mode を有効にします。
-2. Bot Token Scopes に `app_mentions:read`、`chat:write`、`reactions:write`、`reactions:read`、`channels:history`、`files:write`、`im:history`、`assistant:write` を追加します。`files:write` は成果物の添付（後述）、`im:history` と `assistant:write` はエージェントとしての表示と DM（後述）に使います。プライベートチャンネルで使う場合は `groups:history`（スレッドを読むため）も追加します。scopeを追加・変更した場合は、workspaceへアプリを再インストールしてください。
+2. Bot Token Scopes に `app_mentions:read`、`chat:write`、`reactions:write`、`reactions:read`、`channels:history`、`files:write`、`im:history`、`assistant:write`、`commands` を追加します。`files:write` は成果物の添付（後述）、`commands` はメッセージから依頼するショートカット（後述）、`im:history` と `assistant:write` はエージェントとしての表示と DM（後述）に使います。プライベートチャンネルで使う場合は `groups:history`（スレッドを読むため）も追加します。scopeを追加・変更した場合は、workspaceへアプリを再インストールしてください。
 3. Event Subscriptions で `app_mention`、`message.channels`、`message.im`、`app_home_opened` を購読します。`message.groups` は追加しません（mentionなしの返信を処理するスレッド購読は、パブリックチャンネルだけが対象です）。
 4. App Home で Home Tab と Messages Tab を有効にし、「Allow users to send Slash commands and messages from the messages tab」をオンにします。
-5. 「Agents & AI Apps」で **Agent App** に切り替えます（manifest では `features.agent_view`）。切り替えは元に戻せません。
-6. Workspace に App をインストールして Bot Token (`xoxb-...`) を取得します。
-7. Socket Mode 用の App Token (`xapp-...`) を取得します。
+5. Interactivity & Shortcuts で Interactivity をオンにし、Message の Shortcut「ebi-x に頼む」（Callback ID `ebix_request`）を作ります。
+6. 「Agents & AI Apps」で **Agent App** に切り替えます（manifest では `features.agent_view`）。切り替えは元に戻せません。
+7. Workspace に App をインストールして Bot Token (`xoxb-...`) を取得します。
+8. Socket Mode 用の App Token (`xapp-...`) を取得します。
 
 ## 設定と起動
 
@@ -90,6 +91,18 @@ dots の Activity や Devin のセッション一覧にならい、ebi-x の Hom
 - **見守り中の PR**：PR の URL と CI の状態
 
 表示するのは、開いた人が依頼したものだけです。Home タブを開いたときに作り直すので、最新にするには開き直してください。許可されていない人には、作業がないことだけを表示します。追加の scope は要りません（`app_home_opened` イベントは前述の設定で購読済みです）。
+
+### メッセージから依頼する（ショートカット）
+
+Devin の「Create a new session」にならい、メッセージの「…」メニューの「ebi-x に頼む」から依頼できます。エラーの投稿や質問に mention を付け直さずに、そのメッセージについて頼めます。
+
+1. メッセージの「…」→「ebi-x に頼む」を選ぶ
+2. 開いたフォームに依頼内容を書いて「依頼する」を押す
+3. ebi-x がそのメッセージのスレッドに「📝 @依頼者 からの依頼」として依頼内容を投稿し、作業を始める
+
+- **文脈**：対象のメッセージを含むスレッドが、mention で頼んだときと同じように Codex に渡ります。以降はそのスレッドで mention して続けられます。
+- **許可**：使えるのは、許可されたuserが許可されたチャンネルのメッセージに対してだけです。それ以外では、本人にだけ見えるメッセージで断ります。承認チャンネルと DM では使えません（DM では直接書いて依頼してください）。フォームを送ったときにも許可を確かめ直します。
+- **設定**：前述の手順 5 と `commands` scope が必要です（manifest では `settings.interactivity` と `features.shortcuts`）。Socket Mode なので Request URL は要りません。
 
 ## 並列作業とスレッドごとのクローン
 
