@@ -3,6 +3,7 @@ package codex
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -292,7 +293,7 @@ type FollowUpRequest struct {
 // that appears more than once or has incomplete bullets; it yields no
 // request.
 func SplitFollowUp(text string) (rest string, request *FollowUpRequest, invalid bool) {
-	rest, fields, present, invalid := splitFieldSection(text, followUpHeading)
+	rest, fields, present, invalid := splitFieldSection(text, followUpHeading, followUpWhenKey, followUpTaskKey)
 	if !present {
 		return text, nil, false
 	}
@@ -303,10 +304,10 @@ func SplitFollowUp(text string) (rest string, request *FollowUpRequest, invalid 
 }
 
 // splitFieldSection removes the section under heading whose lines are
-// "- いつ: ..." and "- やること: ..." bullets, and ends at the first other
-// line. present reports the heading; invalid reports a repeated heading,
-// field, or an unreadable bullet.
-func splitFieldSection(text, heading string) (rest string, fields map[string]string, present, invalid bool) {
+// "- key: ..." bullets for the given keys (such as "いつ" and "やること"), and
+// ends at the first other line. present reports the heading; invalid reports
+// a repeated heading, field, or an unreadable bullet.
+func splitFieldSection(text, heading string, keys ...string) (rest string, fields map[string]string, present, invalid bool) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	prose := proseLines(lines)
 	start, count := -1, 0
@@ -336,7 +337,7 @@ func splitFieldSection(text, heading string) (rest string, fields map[string]str
 			end = i
 			break
 		}
-		key, value, ok := cutFollowUpField(item)
+		key, value, ok := cutField(item, keys)
 		if _, seen := fields[key]; !ok || seen {
 			invalid = true
 			continue
@@ -347,13 +348,14 @@ func splitFieldSection(text, heading string) (rest string, fields map[string]str
 	return strings.TrimSpace(strings.Join(kept, "\n")), fields, true, invalid
 }
 
-// cutFollowUpField splits "key: value", accepting a full-width colon too.
-func cutFollowUpField(item string) (key, value string, ok bool) {
+// cutField splits "key: value" for one of keys, accepting a full-width colon
+// too.
+func cutField(item string, keys []string) (key, value string, ok bool) {
 	for _, separator := range []string{":", "："} {
 		if key, value, ok = strings.Cut(item, separator); ok {
 			key = strings.TrimSpace(key)
 			value = strings.Trim(strings.TrimSpace(value), "`")
-			if key == followUpWhenKey || key == followUpTaskKey {
+			if slices.Contains(keys, key) {
 				return key, strings.TrimSpace(value), value != ""
 			}
 		}
