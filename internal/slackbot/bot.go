@@ -462,6 +462,9 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	if len(output.memoryScopes) > 0 {
 		resultText += "\n\n📝 " + strings.Join(output.memoryScopes, "・") + "メモリを更新しました。"
 	}
+	if output.playbookNoteNotice != "" {
+		resultText += "\n\n" + output.playbookNoteNotice
+	}
 	if notice := b.scheduleFollowUp(trigger, output); notice != "" {
 		resultText += "\n\n" + notice
 	}
@@ -523,6 +526,9 @@ type workOutput struct {
 	questions []string
 	// pullURLs are the pull requests the turn asked the bot to watch.
 	pullURLs []string
+	// playbookNoteNotice tells the thread what became of the playbook note
+	// the turn wrote.
+	playbookNoteNotice string
 }
 
 // attachmentNotice tells the user which files did not reach Slack, so the
@@ -571,12 +577,9 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	// a resumed session already holds them, so only the request is sent.
 	var turnPrompt string
 	if threadID == "" {
-		currentPlaybooks := b.playbooks
-		if b.config.PlaybooksDir != "" {
-			currentPlaybooks, err = playbook.List(b.config.PlaybooksDir)
-			if err != nil {
-				return workOutput{}, false, fmt.Errorf("reload playbooks: %w", err)
-			}
+		currentPlaybooks, err := b.currentPlaybooks()
+		if err != nil {
+			return workOutput{}, false, fmt.Errorf("reload playbooks: %w", err)
 		}
 		// memoryMu is only held around the memory access itself, so other
 		// turns can read memory while this one runs. The memory directory is
@@ -660,6 +663,7 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	}
 	resultText, output.questions, output.waiting = codex.SplitQuestions(resultText)
 	resultText, output.pullURLs = codex.SplitPullWatches(resultText)
+	resultText, playbookNote, playbookNoteInvalid := codex.SplitPlaybookNote(resultText)
 	resultText, memoryAppends, memoryOutputValid := codex.SplitMemoryAppends(resultText)
 	output.text = codex.SanitizeSlackOutput(resultText)
 	if !memoryOutputValid {
@@ -696,6 +700,7 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		}
 		b.memoryMu.Unlock()
 	}
+	output.playbookNoteNotice = b.savePlaybookNote(eventKey, playbookNote, playbookNoteInvalid, sharedWritable)
 	// Upload while the thread's work lock and lease are held, so a later
 	// turn in the same thread cannot replace the files mid-upload.
 	if len(attachmentPaths) > 0 {
