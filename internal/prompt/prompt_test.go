@@ -140,7 +140,7 @@ func TestBuildTurnPromptIncludesWorkingRules(t *testing.T) {
 
 func TestFollowUpPrompts(t *testing.T) {
 	turn := BuildTurnPrompt(memory.Context{}, nil, "", "U1", "do it", nil, nil, false)
-	for _, want := range []string{"## フォローアップ", "- いつ:", "- やること:", "5m後から7日後まで", "10回まで"} {
+	for _, want := range []string{"## フォローアップ", "- いつ:", "- やること:", "5m後から7日後まで", "10回まで", "## 回答待ち"} {
 		if !strings.Contains(turn, want) {
 			t.Errorf("turn prompt does not contain %q", want)
 		}

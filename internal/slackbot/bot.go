@@ -430,6 +430,9 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		resultText += "\n\n" + notice
 		final = state.Interrupted
 	}
+	if output.waiting {
+		resultText += "\n\n" + b.waitingNotice(trigger.authorID, channel, threadTS, output.questions)
+	}
 	if err := b.post(ctx, channel, threadTS, resultText); err != nil {
 		log.Printf("slackbot: post work result %q: %v", eventKey, err)
 		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, workFailureMessage)
@@ -440,7 +443,14 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, workFailureMessage)
 		return
 	}
-	b.finalReaction(ctx, channel, timestamp, final == state.Done)
+	reaction := finishedReaction
+	switch {
+	case final != state.Done:
+		reaction = failedReaction
+	case output.waiting:
+		reaction = waitingReaction
+	}
+	b.finalReaction(ctx, channel, timestamp, reaction)
 }
 
 // workOutput is what a completed work turn hands back for posting.
@@ -456,6 +466,9 @@ type workOutput struct {
 	// reports a follow-up section the bot could not read.
 	followUp        *codex.FollowUpRequest
 	followUpInvalid bool
+	// waiting reports that the turn stopped to ask the requester questions.
+	waiting   bool
+	questions []string
 }
 
 // attachmentNotice tells the user which files did not reach Slack, so the
@@ -585,6 +598,7 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	if output.followUpInvalid {
 		log.Printf("slackbot: ignore malformed follow-up output %q", eventKey)
 	}
+	resultText, output.questions, output.waiting = codex.SplitQuestions(resultText)
 	resultText, memoryAppends, memoryOutputValid := codex.SplitMemoryAppends(resultText)
 	output.text = codex.SanitizeSlackOutput(resultText)
 	if !memoryOutputValid {
@@ -812,16 +826,20 @@ func (b *Bot) fail(ctx context.Context, eventKey string, from, to state.State, c
 	if err := b.post(ctx, channel, threadTS, message); err != nil {
 		log.Printf("slackbot: post failure %q: %v", eventKey, err)
 	}
-	b.finalReaction(ctx, channel, timestamp, false)
+	b.finalReaction(ctx, channel, timestamp, failedReaction)
 }
 
-// Completed requests receive ✅. Only failed
-// and interrupted outcomes receive ❌.
-func (b *Bot) finalReaction(ctx context.Context, channel, timestamp string, success bool) {
-	name := "x"
-	if success {
-		name = "white_check_mark"
-	}
+// Terminal reactions on a request: ✅ when it is done, 🙋 when the turn is
+// waiting for the requester's answer, and ❌ only when it failed or was
+// interrupted.
+const (
+	finishedReaction = "white_check_mark"
+	waitingReaction  = "raising_hand"
+	failedReaction   = "x"
+)
+
+// finalReaction replaces the request's 👀 with its terminal reaction.
+func (b *Bot) finalReaction(ctx context.Context, channel, timestamp, name string) {
 	// Add the terminal reaction first so a transient API failure cannot leave
 	// the message with no status reaction.
 	b.addReaction(ctx, channel, timestamp, name)

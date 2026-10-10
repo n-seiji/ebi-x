@@ -57,6 +57,7 @@ const (
 	followUpHeading            = "## フォローアップ"
 	followUpWhenKey            = "いつ"
 	followUpTaskKey            = "やること"
+	questionsHeading           = "## 回答待ち"
 	// CheckoutRequestHeading asks the bot to prepare the thread's checkouts
 	// and continue the same session in them.
 	CheckoutRequestHeading = "## 作業用クローン要求"
@@ -353,4 +354,43 @@ func cutFollowUpField(item string) (key, value string, ok bool) {
 		}
 	}
 	return "", "", false
+}
+
+// SplitQuestions removes the section where a turn asks the requester
+// something it cannot continue without. The section is its heading followed
+// by bullet lines, one question each, and ends at the first other line.
+// waiting reports that the heading was present, even with no bullets, so a
+// turn that stopped to ask is never shown as finished. Only the first
+// section counts; later copies of the heading are removed with their bullets.
+func SplitQuestions(text string) (rest string, questions []string, waiting bool) {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	prose := proseLines(lines)
+	kept := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); i++ {
+		if !prose[i] || strings.TrimSpace(lines[i]) != questionsHeading {
+			kept = append(kept, lines[i])
+			continue
+		}
+		first := !waiting
+		waiting = true
+		for i+1 < len(lines) {
+			trimmed := strings.TrimSpace(lines[i+1])
+			if trimmed == "" {
+				i++
+				continue
+			}
+			item, ok := strings.CutPrefix(trimmed, "- ")
+			if !prose[i+1] || !ok {
+				break
+			}
+			if item = strings.TrimSpace(item); item != "" && first {
+				questions = append(questions, item)
+			}
+			i++
+		}
+	}
+	if !waiting {
+		return text, nil, false
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n")), questions, true
 }
