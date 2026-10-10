@@ -20,6 +20,11 @@ func isStopCommand(message string) bool {
 	return ok
 }
 
+// threadRef names a Slack thread in the bot's per-thread records.
+func threadRef(channel, threadTS string) string {
+	return channel + ":" + threadTS
+}
+
 // trackRequest makes a request stoppable from its thread until the returned
 // function is called.
 func (b *Bot) trackRequest(ctx context.Context, threadKey, eventKey string) (context.Context, func()) {
@@ -51,7 +56,7 @@ func (b *Bot) trackRequest(ctx context.Context, threadKey, eventKey string) (con
 // only gets a reaction.
 func (b *Bot) stopThread(ctx context.Context, channel, threadTS, timestamp string) {
 	b.runningMu.Lock()
-	requests := b.running[channel+":"+threadTS]
+	requests := b.running[threadRef(channel, threadTS)]
 	for _, cancel := range requests {
 		cancel(errStoppedByUser)
 	}

@@ -349,8 +349,17 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	if !claimed {
 		return
 	}
-	ctx, untrack := b.trackRequest(ctx, channel+":"+threadTS, eventKey)
+	// stopCtx ends when the request is stopped from Slack. Only waiting and
+	// the Codex turn use it; Slack calls keep ctx, so a stop never keeps the
+	// bot from reporting.
+	stopCtx, untrack := b.trackRequest(ctx, threadRef(channel, threadTS), eventKey)
 	defer untrack()
+	failure := func(message string) string {
+		if errors.Is(context.Cause(stopCtx), errStoppedByUser) {
+			return stoppedMessage
+		}
+		return message
+	}
 	if trigger.source == mentionTrigger {
 		b.startThreadSubscription(ctx, channel, threadTS)
 	}
@@ -371,8 +380,8 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	lock := b.keyedLock(b.threadLocks, threadKey)
 	lock.Lock()
 	defer lock.Unlock()
-	if err := ctx.Err(); err != nil {
-		b.fail(ctx, eventKey, state.Received, state.Failed, channel, threadTS, timestamp, workStartFailureMessage)
+	if err := stopCtx.Err(); err != nil {
+		b.fail(ctx, eventKey, state.Received, state.Failed, channel, threadTS, timestamp, failure(workStartFailureMessage))
 		return
 	}
 	defer b.clearStatus(ctx, channel, threadTS)
@@ -387,21 +396,16 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		}
 		slackThread = formatThreadContext(threadMessages, timestamp)
 	}
-	output, started, workErr := b.work(ctx, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread, trigger)
+	output, started, workErr := b.work(ctx, stopCtx, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread, trigger)
 	if !started {
 		log.Printf("slackbot: start work %q: %v", eventKey, workErr)
-		b.fail(ctx, eventKey, state.Received, state.Failed, channel, threadTS, timestamp, workStartFailureMessage)
+		b.fail(ctx, eventKey, state.Received, state.Failed, channel, threadTS, timestamp, failure(workStartFailureMessage))
 		return
 	}
 	if workErr != nil {
 		log.Printf("slackbot: work turn %q: %v", eventKey, workErr)
-		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, workFailureMessage)
+		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, failure(workFailureMessage))
 		return
-	}
-	// A stop that arrives after the turn finished does not discard its
-	// result.
-	if errors.Is(context.Cause(ctx), errStoppedByUser) {
-		ctx = context.WithoutCancel(ctx)
 	}
 	resultText := output.text
 	if resultText == "" {
@@ -467,9 +471,9 @@ func (o workOutput) attachmentNotice() string {
 
 // work runs one complete request in the Slack thread's Codex session. started reports whether the event
 // reached the working state; when it did not, nothing was run and the event
-// may be retried.
-func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread string, trigger processingTrigger) (output workOutput, started bool, err error) {
-	release, err := b.acquireWork(ctx, threadKey, channel, threadTS)
+// may be retried. stopCtx bounds the waiting and the turn; ctx the rest.
+func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread string, trigger processingTrigger) (output workOutput, started bool, err error) {
+	release, err := b.acquireWork(stopCtx, threadKey, channel, threadTS)
 	if err != nil {
 		return workOutput{}, false, err
 	}
@@ -477,7 +481,7 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 
 	// Checkouts are cloned only when the turn asks for them, so a request
 	// that only reads code or answers a question does not create any.
-	lease, err := b.config.Workspaces.Acquire(ctx, workspaceID, false)
+	lease, err := b.config.Workspaces.Acquire(stopCtx, workspaceID, false)
 	if err != nil {
 		return workOutput{}, false, fmt.Errorf("prepare workspace: %w", err)
 	}
@@ -539,7 +543,7 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 		}
 		return nil
 	}
-	finalText, err := b.runWorkTurn(ctx, threadID, lease, sharedWritable, otherThreads, turnPrompt, persistThread, onActivity)
+	finalText, err := b.runWorkTurn(stopCtx, threadID, lease, sharedWritable, otherThreads, turnPrompt, persistThread, onActivity)
 	if err != nil {
 		return workOutput{}, true, err
 	}
@@ -551,12 +555,12 @@ func (b *Bot) work(ctx context.Context, eventKey, channel, threadTS, threadKey, 
 		// Release is idempotent, so the deferred call is a no-op for this
 		// lease if acquiring the next one fails.
 		lease.Release()
-		next, err := b.config.Workspaces.Acquire(ctx, workspaceID, true)
+		next, err := b.config.Workspaces.Acquire(stopCtx, workspaceID, true)
 		if err != nil {
 			return workOutput{}, true, fmt.Errorf("prepare requested checkouts: %w", err)
 		}
 		lease = next
-		finalText, err = b.runWorkTurn(ctx, sessionID, lease, sharedWritable, otherThreads, prompt.BuildCheckoutsReadyPrompt(lease.Checkouts), persistThread, onActivity)
+		finalText, err = b.runWorkTurn(stopCtx, sessionID, lease, sharedWritable, otherThreads, prompt.BuildCheckoutsReadyPrompt(lease.Checkouts), persistThread, onActivity)
 		if err != nil {
 			return workOutput{}, true, err
 		}
@@ -696,8 +700,7 @@ func (b *Bot) acquireWork(ctx context.Context, threadKey, channel, threadTS stri
 		}
 	}
 
-	stopQueuedStatus := b.keepStatus(ctx, channel, threadTS, queuedStatus)
-	defer stopQueuedStatus()
+	defer b.startStatus(ctx, channel, threadTS, queuedStatus).Stop()
 	lock.Lock()
 	// Prefer cancellation over a slot that frees up at the same moment, so a
 	// shutdown does not start queued work.
@@ -802,12 +805,6 @@ func (b *Bot) runTurn(ctx context.Context, threadID, sandbox, cwd string, roots,
 }
 
 func (b *Bot) fail(ctx context.Context, eventKey string, from, to state.State, channel, threadTS, timestamp, message string) {
-	// A request stopped from Slack says so, and its context is cancelled, so
-	// the notice is posted without it.
-	if errors.Is(context.Cause(ctx), errStoppedByUser) {
-		ctx = context.WithoutCancel(ctx)
-		message = stoppedMessage
-	}
 	if err := b.store.Transition(eventKey, from, to); err != nil {
 		log.Printf("slackbot: transition %q to %s: %v", eventKey, to, err)
 	}
