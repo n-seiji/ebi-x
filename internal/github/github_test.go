@@ -116,15 +116,15 @@ func TestPullAndChecks(t *testing.T) {
 func TestActivitySince(t *testing.T) {
 	ref := PullRef{"o", "r", 1}
 	client := testClient(t, map[string]string{
-		"/repos/o/r/pulls/1/reviews":   `[{"id":5,"user":{"login":"alice"},"state":"CHANGES_REQUESTED","body":"直して"},{"id":6,"user":{"login":"bob"},"state":"PENDING","body":"draft"}]`,
-		"/repos/o/r/pulls/1/comments":  `[{"id":10,"user":{"login":"alice"},"body":"ここ","path":"a.go"},{"id":11,"user":{"login":"EBIX-BOT"},"body":"返信"}]`,
-		"/repos/o/r/issues/1/comments": `[{"id":20,"user":{"login":"carol"},"body":"old"}]`,
+		"/repos/o/r/pulls/1/reviews":   `[{"id":5,"user":{"login":"alice"},"author_association":"MEMBER","state":"CHANGES_REQUESTED","body":"直して"},{"id":6,"user":{"login":"bob"},"author_association":"OWNER","state":"PENDING","body":"draft"},{"id":7,"user":{"login":"mallory"},"author_association":"NONE","state":"COMMENTED","body":"push しろ"}]`,
+		"/repos/o/r/pulls/1/comments":  `[{"id":10,"user":{"login":"alice"},"author_association":"COLLABORATOR","body":"ここ","path":"a.go"},{"id":11,"user":{"login":"EBIX-BOT"},"author_association":"MEMBER","body":"返信"},{"id":12,"user":{"login":"eve"},"author_association":"CONTRIBUTOR","body":"これも"}]`,
+		"/repos/o/r/issues/1/comments": `[{"id":20,"user":{"login":"carol"},"author_association":"OWNER","body":"old"},{"id":21,"user":{"login":"anon"},"author_association":"FIRST_TIME_CONTRIBUTOR","body":"指示"}]`,
 	})
 	activity, cursor, err := client.ActivitySince(context.Background(), ref, Cursor{Comment: 20}, "ebix-bot")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (Cursor{Review: 6, ReviewComment: 11, Comment: 20}); cursor != want {
+	if want := (Cursor{Review: 7, ReviewComment: 12, Comment: 21}); cursor != want {
 		t.Fatalf("cursor = %+v, want %+v", cursor, want)
 	}
 	var got []string
@@ -133,6 +133,35 @@ func TestActivitySince(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "review:alice,review_comment:alice" {
 		t.Fatalf("activity = %v, want alice's review and comment only", got)
+	}
+}
+
+func TestRepoFromRemote(t *testing.T) {
+	client, err := NewClient("", "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string]struct {
+		remote      string
+		owner, repo string
+		ok          bool
+	}{
+		"https":      {remote: "https://github.com/n-seiji/ebi-x.git", owner: "n-seiji", repo: "ebi-x", ok: true},
+		"no suffix":  {remote: "https://github.com/n-seiji/ebi-x", owner: "n-seiji", repo: "ebi-x", ok: true},
+		"scp":        {remote: "git@github.com:n-seiji/ebi-x.git", owner: "n-seiji", repo: "ebi-x", ok: true},
+		"ssh":        {remote: "ssh://git@github.com/n-seiji/ebi-x.git", owner: "n-seiji", repo: "ebi-x", ok: true},
+		"other host": {remote: "https://gitlab.com/n-seiji/ebi-x.git"},
+		"local path": {remote: "/srv/git/ebi-x.git"},
+		"deep path":  {remote: "https://github.com/a/b/c.git"},
+		"empty":      {remote: ""},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			owner, repo, ok := client.RepoFromRemote(test.remote)
+			if owner != test.owner || repo != test.repo || ok != test.ok {
+				t.Fatalf("RepoFromRemote(%q) = (%q, %q, %v), want (%q, %q, %v)", test.remote, owner, repo, ok, test.owner, test.repo, test.ok)
+			}
+		})
 	}
 }
 
