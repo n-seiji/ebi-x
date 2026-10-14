@@ -405,3 +405,48 @@ func TestFollowUpDueAt(t *testing.T) {
 		t.Errorf("FollowUpRange() = %q", got)
 	}
 }
+
+func TestSplitQuestions(t *testing.T) {
+	tests := []struct {
+		name          string
+		text          string
+		wantRest      string
+		wantQuestions []string
+		wantWaiting   bool
+	}{
+		{name: "none", text: "答え", wantRest: "答え"},
+		{
+			name:          "section before memory",
+			text:          "調べました。\n\n## 回答待ち\n- 本番に適用してよいですか？\n\n## チャンネルメモリ追記\n- x",
+			wantRest:      "調べました。\n\n## チャンネルメモリ追記\n- x",
+			wantQuestions: []string{"本番に適用してよいですか？"},
+			wantWaiting:   true,
+		},
+		{
+			name:        "heading without bullets",
+			text:        "本文\n## 回答待ち\n続きの文章",
+			wantRest:    "本文\n続きの文章",
+			wantWaiting: true,
+		},
+		{
+			name:          "only the first section's questions",
+			text:          "本文\n## 回答待ち\n- a\n## 回答待ち\n- b",
+			wantRest:      "本文",
+			wantQuestions: []string{"a"},
+			wantWaiting:   true,
+		},
+		{
+			name:     "heading in a code block",
+			text:     "例:\n```\n## 回答待ち\n- a\n```",
+			wantRest: "例:\n```\n## 回答待ち\n- a\n```",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rest, questions, waiting := SplitQuestions(test.text)
+			if rest != test.wantRest || !reflect.DeepEqual(questions, test.wantQuestions) || waiting != test.wantWaiting {
+				t.Fatalf("SplitQuestions() = (%q, %q, %v), want (%q, %q, %v)", rest, questions, waiting, test.wantRest, test.wantQuestions, test.wantWaiting)
+			}
+		})
+	}
+}
