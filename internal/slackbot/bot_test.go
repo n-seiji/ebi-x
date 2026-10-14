@@ -262,6 +262,13 @@ func (s *fakeSlack) SetStatus(_ context.Context, _, _, status string) error {
 	return nil
 }
 
+func (s *fakeSlack) SetSuggestedPrompts(_ context.Context, channel string, prompts []suggestedPrompt) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, slackCall{kind: "prompts:" + channel, text: fmt.Sprint(len(prompts))})
+	return nil
+}
+
 func (s *fakeSlack) AddReaction(_ context.Context, _, _, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

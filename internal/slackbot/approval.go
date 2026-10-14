@@ -155,8 +155,12 @@ func (b *Bot) rejectUnapproved(ctx context.Context, event *slackevents.AppMentio
 // postApprovalRequest asks the approval channel about subject. Approvers
 // answer in the request's thread.
 func (b *Bot) postApprovalRequest(ctx context.Context, subject approvalSubject, event *slackevents.AppMentionEvent) error {
+	where := "<#" + event.Channel + "> で mention しました。"
+	if isDirectMessage(event.Channel) {
+		where = "ebi-x に DM で依頼しました。"
+	}
 	text := "🔐 ebi-x の利用許可の依頼\n対象: " + subject.label() +
-		"\n<@" + event.User + "> が <#" + event.Channel + "> で mention しました。" +
+		"\n<@" + event.User + "> が " + where +
 		"\n\nこのスレッドで ebi-x に mention して「" + approveCommand + "」か「" + denyCommand + "」と返信してください。"
 	timestamp, err := b.api.PostMessage(ctx, b.config.ApprovalChannelID, "", text)
 	if err != nil {
