@@ -58,6 +58,7 @@ const (
 	followUpWhenKey            = "いつ"
 	followUpTaskKey            = "やること"
 	questionsHeading           = "## 回答待ち"
+	pullWatchHeading           = "## PR の見守り"
 	// CheckoutRequestHeading asks the bot to prepare the thread's checkouts
 	// and continue the same session in them.
 	CheckoutRequestHeading = "## 作業用クローン要求"
@@ -393,4 +394,45 @@ func SplitQuestions(text string) (rest string, questions []string, waiting bool)
 		return text, nil, false
 	}
 	return strings.TrimSpace(strings.Join(kept, "\n")), questions, true
+}
+
+// SplitPullWatches removes the section that asks the bot to watch pull
+// requests. The section is its heading followed by bullet lines, one pull
+// request URL each, and ends at the first other line. Every copy of the
+// heading is removed with its bullets; the URLs of all of them are returned
+// once each, and the bot decides which are pull requests it can watch.
+func SplitPullWatches(text string) (rest string, urls []string) {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	prose := proseLines(lines)
+	kept := make([]string, 0, len(lines))
+	found := false
+	seen := make(map[string]bool)
+	for i := 0; i < len(lines); i++ {
+		if !prose[i] || strings.TrimSpace(lines[i]) != pullWatchHeading {
+			kept = append(kept, lines[i])
+			continue
+		}
+		found = true
+		for i+1 < len(lines) {
+			trimmed := strings.TrimSpace(lines[i+1])
+			if trimmed == "" {
+				i++
+				continue
+			}
+			item, ok := strings.CutPrefix(trimmed, "- ")
+			if !prose[i+1] || !ok {
+				break
+			}
+			item = strings.Trim(strings.TrimSpace(item), "`<>")
+			if item != "" && !seen[item] {
+				seen[item] = true
+				urls = append(urls, item)
+			}
+			i++
+		}
+	}
+	if !found {
+		return text, nil
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n")), urls
 }

@@ -40,7 +40,12 @@ type Config struct {
 	AdminUserID        string
 	CodexCommand       string
 	CodexModel         string
-	CodexTimeout       time.Duration
+	// GitHubToken lets the bot read pull requests it watches; watching is
+	// off without it. GitHubAPIURL is the API to use, github.com's when
+	// empty.
+	GitHubToken  string
+	GitHubAPIURL string
+	CodexTimeout time.Duration
 	// MaxParallelWork is how many work turns for different Slack threads may
 	// run at once.
 	MaxParallelWork int
@@ -260,6 +265,8 @@ func Load() (*Config, error) {
 		AdminUserID:                adminUserID,
 		CodexCommand:               codexCommand,
 		CodexModel:                 strings.TrimSpace(os.Getenv("CODEX_MODEL")),
+		GitHubToken:                strings.TrimSpace(os.Getenv("EBIX_GITHUB_TOKEN")),
+		GitHubAPIURL:               strings.TrimSpace(os.Getenv("EBIX_GITHUB_API_URL")),
 		CodexTimeout:               codexTimeout,
 		MaxParallelWork:            maxParallelWork,
 		SharedWriteChannelIDs:      sharedWriteChannelIDs,

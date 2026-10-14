@@ -611,6 +611,7 @@ printf '{"type":"turn.completed"}\n'
 	}
 	t.Setenv("SLACK_BOT_TOKEN", "xoxb-secret")
 	t.Setenv("SLACK_APP_TOKEN", "xapp-secret")
+	t.Setenv("EBIX_GITHUB_TOKEN", "ghp-secret")
 	t.Setenv("EBIX_TEST_VISIBLE", "kept")
 
 	runner := &Runner{Command: script, DeniedReadPaths: []string{"/protected"}}
@@ -622,7 +623,7 @@ printf '{"type":"turn.completed"}\n'
 		t.Fatal(err)
 	}
 	if strings.Contains(string(env), "secret") || !strings.Contains(string(env), "EBIX_TEST_VISIBLE=kept") {
-		t.Fatalf("codex environment = %q, want Slack tokens removed and others kept", env)
+		t.Fatalf("codex environment = %q, want the bot's tokens removed and others kept", env)
 	}
 	args, err := os.ReadFile(argsFile)
 	if err != nil {

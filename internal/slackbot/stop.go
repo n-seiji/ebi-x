@@ -67,14 +67,22 @@ func (b *Bot) stopThread(ctx context.Context, channel, threadTS, timestamp strin
 	if err != nil {
 		log.Printf("slackbot: cancel follow-up %s: %v", key, err)
 	}
+	stoppedWatches := b.stopPullWatches(channel, threadTS)
 	if stopped > 0 {
 		log.Printf("slackbot: stopping %d request(s) in %s", stopped, key)
 		b.addReaction(ctx, channel, timestamp, "ok_hand")
 		return
 	}
-	message := nothingToStopMessage
+	var stoppedParts []string
 	if cancelledFollowUp {
-		message = followUpStoppedMessage
+		stoppedParts = append(stoppedParts, followUpStoppedMessage)
+	}
+	if stoppedWatches {
+		stoppedParts = append(stoppedParts, pullWatchStoppedMessage)
+	}
+	message := nothingToStopMessage
+	if len(stoppedParts) > 0 {
+		message = strings.Join(stoppedParts, "\n")
 	}
 	if err := b.post(ctx, channel, threadTS, message); err != nil {
 		log.Printf("slackbot: post stop result: %v", err)

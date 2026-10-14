@@ -13,6 +13,7 @@ import (
 
 	"github.com/n-seiji/ebi-x/internal/codex"
 	"github.com/n-seiji/ebi-x/internal/config"
+	"github.com/n-seiji/ebi-x/internal/github"
 	"github.com/n-seiji/ebi-x/internal/playbook"
 	"github.com/n-seiji/ebi-x/internal/policy"
 	"github.com/n-seiji/ebi-x/internal/slackbot"
@@ -65,6 +66,33 @@ func main() {
 		CodexHome:             cfg.CodexHome,
 		DeveloperInstructions: policy.Instructions(),
 	}
+	var githubAPI slackbot.GitHub
+	githubLogin := ""
+	var githubRepos []string
+	if cfg.GitHubToken != "" {
+		client, err := github.NewClient(cfg.GitHubAPIURL, cfg.GitHubToken)
+		if err != nil {
+			log.Fatalf("configure GitHub: %v", err)
+		}
+		loginCtx, cancelLogin := context.WithTimeout(context.Background(), 30*time.Second)
+		githubLogin, err = client.Login(loginCtx)
+		cancelLogin()
+		if err != nil {
+			// The watch still works; only the token user's own comments
+			// may then wake it.
+			log.Printf("read GitHub token user: %v", err)
+		}
+		githubAPI = client
+		for _, remote := range workspaces.OriginURLs() {
+			if owner, repo, ok := client.RepoFromRemote(remote); ok {
+				githubRepos = append(githubRepos, owner+"/"+repo)
+			}
+		}
+		if len(githubRepos) == 0 {
+			log.Printf("no writable root has an origin on GitHub; no pull request can be watched")
+		}
+		log.Printf("watching pull requests of %v on GitHub as %q", githubRepos, githubLogin)
+	}
 	bot := slackbot.New(nil, store, runner, slackbot.Config{
 		AllowedUserIDs:             cfg.AllowedUserIDs,
 		AllowedChannelIDs:          cfg.AllowedChannelIDs,
@@ -85,6 +113,9 @@ func main() {
 		MaxParallelWork:            cfg.MaxParallelWork,
 		SharedWriteChannelIDs:      cfg.SharedWriteChannelIDs,
 		Workspaces:                 workspaces,
+		GitHub:                     githubAPI,
+		GitHubLogin:                githubLogin,
+		GitHubRepos:                githubRepos,
 	}, playbooks)
 
 	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

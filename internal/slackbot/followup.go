@@ -54,8 +54,9 @@ func (b *Bot) scheduleFollowUp(trigger processingTrigger, output workOutput) str
 		return fmt.Sprintf(followUpScheduledNotice, formatFollowUpTime(next.DueAt), next.Task)
 	}
 	// A due follow-up was taken from the store before it ran, so only a
-	// person's request can still have one pending.
-	if trigger.followUp == nil {
+	// person's request can still have one pending. A pull request event
+	// leaves it alone: it did not come from the plan that made it.
+	if trigger.source == mentionTrigger || trigger.source == messageTrigger {
 		previous, deleted, err := b.store.DeleteFollowUp(threadKey)
 		if err != nil {
 			log.Printf("slackbot: cancel follow-up %q: %v", threadKey, err)

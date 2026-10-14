@@ -152,6 +152,18 @@ func (m *Manager) Repositories() []string {
 	return repos
 }
 
+// OriginURLs returns the origin remotes of the repositories threads work on
+// through checkouts, which their branches are pushed to.
+func (m *Manager) OriginURLs() []string {
+	var urls []string
+	for _, r := range m.roots {
+		if r.name != "" && r.originURL != "" {
+			urls = append(urls, r.originURL)
+		}
+	}
+	return urls
+}
+
 // ThreadID derives a filesystem- and branch-safe identifier for a Slack thread.
 func ThreadID(channel, threadTS string) (string, error) {
 	if !memory.ValidChannelID(channel) || !validTimestamp(threadTS) {

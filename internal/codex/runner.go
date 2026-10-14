@@ -34,6 +34,9 @@ const (
 var secretEnvNames = map[string]struct{}{
 	"SLACK_BOT_TOKEN": {},
 	"SLACK_APP_TOKEN": {},
+	// The bot reads watched pull requests with it; the agent uses its own
+	// credentials, if any.
+	"EBIX_GITHUB_TOKEN": {},
 }
 
 // Runner executes Codex CLI turns.
@@ -171,7 +174,7 @@ func codexHomeDenied(home string) ([]string, error) {
 	return denied, nil
 }
 
-// filterEnv returns env without the Slack credentials.
+// filterEnv returns env without the bot's own credentials.
 func filterEnv(env []string) []string {
 	filtered := make([]string, 0, len(env))
 	for _, entry := range env {

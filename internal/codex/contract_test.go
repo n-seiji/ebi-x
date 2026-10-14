@@ -450,3 +450,39 @@ func TestSplitQuestions(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitPullWatches(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		wantRest string
+		wantURLs []string
+	}{
+		{name: "none", text: "答え", wantRest: "答え"},
+		{
+			name:     "section before memory",
+			text:     "PR を作りました。\n\n## PR の見守り\n- https://github.com/o/r/pull/1\n- `https://github.com/o/r/pull/2`\n\n## チャンネルメモリ追記\n- x",
+			wantRest: "PR を作りました。\n\n## チャンネルメモリ追記\n- x",
+			wantURLs: []string{"https://github.com/o/r/pull/1", "https://github.com/o/r/pull/2"},
+		},
+		{
+			name:     "repeated sections and URLs",
+			text:     "本文\n## PR の見守り\n- <https://github.com/o/r/pull/1>\n## PR の見守り\n- https://github.com/o/r/pull/1",
+			wantRest: "本文",
+			wantURLs: []string{"https://github.com/o/r/pull/1"},
+		},
+		{
+			name:     "heading in a code block",
+			text:     "```\n## PR の見守り\n- x\n```",
+			wantRest: "```\n## PR の見守り\n- x\n```",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rest, urls := SplitPullWatches(test.text)
+			if rest != test.wantRest || !reflect.DeepEqual(urls, test.wantURLs) {
+				t.Fatalf("SplitPullWatches() = (%q, %q), want (%q, %q)", rest, urls, test.wantRest, test.wantURLs)
+			}
+		})
+	}
+}
