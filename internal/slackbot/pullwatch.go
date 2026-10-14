@@ -30,6 +30,8 @@ const (
 	pullWatchInvalidNotice  = "⚠️ 次の URL は見守れる PR として読み取れなかったため、見守っていません。"
 	pullWatchFailedNotice   = "⚠️ 次の PR の状態を GitHub から読めなかったため、見守っていません。"
 	pullWatchClosedNotice   = "次の PR はマージ済みか閉じられているため、見守っていません。"
+	pullWatchRepoNotice     = "⚠️ 次の PR は ebi-x が作業するリポジトリのものではないため、見守っていません。"
+	pullWatchTakenNotice    = "⚠️ 次の PR は別のスレッドで見守っているため、ここでは見守っていません。"
 	pullWatchTooManyNotice  = "⚠️ 一度に見守れる PR は%d件までのため、残りは見守っていません。"
 	pullWatchWakeMessage    = "🔔 PR に動きがありました（%s）: %s。対応を始めます。"
 	pullMergedMessage       = "🎉 PR がマージされました: %s\nPR の見守りを終了します。"
@@ -63,7 +65,7 @@ func (b *Bot) watchPulls(ctx context.Context, trigger processingTrigger, urls []
 	if !b.pullWatchEnabled() {
 		return pullWatchDisabledNotice
 	}
-	var started, invalid, failed, closed []string
+	var started, invalid, foreign, taken, failed, closed []string
 	tooMany := false
 	for i, raw := range urls {
 		if i >= maxPullWatchesPerTurn {
@@ -73,6 +75,17 @@ func (b *Bot) watchPulls(ctx context.Context, trigger processingTrigger, urls []
 		ref, ok := b.config.GitHub.ParsePullURL(raw)
 		if !ok {
 			invalid = append(invalid, shortDetail(raw))
+			continue
+		}
+		if !b.pullRepoWatchable(ref) {
+			foreign = append(foreign, ref.String())
+			continue
+		}
+		// One watch per pull request: another thread's watch is not moved
+		// here, so its events keep reaching the thread that started it.
+		if previous, ok := b.store.GetPullWatch(ref.String()); ok &&
+			(previous.Channel != trigger.channel || previous.ThreadTS != trigger.threadTS) {
+			taken = append(taken, ref.String())
 			continue
 		}
 		pull, err := b.config.GitHub.Pull(ctx, ref)
@@ -106,8 +119,7 @@ func (b *Bot) watchPulls(ctx context.Context, trigger processingTrigger, urls []
 		}
 		// A turn the watch itself started keeps counting toward the cap;
 		// a person's request in the thread starts the count again.
-		if previous, ok := b.store.GetPullWatch(watch.Key()); ok && trigger.source == pullWatchTrigger &&
-			previous.Channel == watch.Channel && previous.ThreadTS == watch.ThreadTS {
+		if previous, ok := b.store.GetPullWatch(watch.Key()); ok && trigger.source == pullWatchTrigger {
 			watch.Wakes = previous.Wakes
 			watch.CreatedAt = previous.CreatedAt
 		}
@@ -125,6 +137,12 @@ func (b *Bot) watchPulls(ctx context.Context, trigger processingTrigger, urls []
 	if len(invalid) > 0 {
 		notices = append(notices, pullWatchInvalidNotice+bulletList(invalid))
 	}
+	if len(foreign) > 0 {
+		notices = append(notices, pullWatchRepoNotice+bulletList(foreign))
+	}
+	if len(taken) > 0 {
+		notices = append(notices, pullWatchTakenNotice+bulletList(taken))
+	}
 	if len(failed) > 0 {
 		notices = append(notices, pullWatchFailedNotice+bulletList(failed))
 	}
@@ -135,6 +153,18 @@ func (b *Bot) watchPulls(ctx context.Context, trigger processingTrigger, urls []
 		notices = append(notices, fmt.Sprintf(pullWatchTooManyNotice, maxPullWatchesPerTurn))
 	}
 	return strings.Join(notices, "\n\n")
+}
+
+// pullRepoWatchable reports whether ref belongs to a repository threads work
+// on.
+func (b *Bot) pullRepoWatchable(ref github.PullRef) bool {
+	name := ref.Owner + "/" + ref.Repo
+	for _, repo := range b.config.GitHubRepos {
+		if strings.EqualFold(repo, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func bulletList(items []string) string {

@@ -150,6 +150,10 @@ type Config struct {
 	// GitHubLogin is the GitHub user behind GitHub's token, whose own
 	// reviews and comments do not wake a watch.
 	GitHubLogin string
+	// GitHubRepos are the owner/repo names whose pull requests may be
+	// watched: the repositories threads work on. A turn could otherwise watch
+	// any pull request the token can read and relay it into its channel.
+	GitHubRepos []string
 	// Workspaces gives each Slack thread its cwd and writable roots. When
 	// nil, every thread shares WorkspaceDir and WritableRoots.
 	Workspaces Workspaces

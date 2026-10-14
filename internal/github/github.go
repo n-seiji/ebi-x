@@ -82,6 +82,38 @@ func (c *Client) ParsePullURL(raw string) (PullRef, bool) {
 	return PullRef{Owner: parts[0], Repo: parts[1], Number: number}, true
 }
 
+// RepoFromRemote reads owner and repository from a git remote URL on the
+// client's GitHub host, in the https, ssh://, or scp-like git@host:owner/repo
+// form.
+func (c *Client) RepoFromRemote(remote string) (owner, repo string, ok bool) {
+	remote = strings.TrimSpace(remote)
+	var host, path string
+	if parsed, err := url.Parse(remote); err == nil && (parsed.Scheme == "https" || parsed.Scheme == "ssh") {
+		host, path = parsed.Hostname(), parsed.Path
+	} else if before, after, found := strings.Cut(remote, ":"); found && !strings.Contains(before, "/") {
+		_, host, _ = strings.Cut(before, "@")
+		if host == "" {
+			host = before
+		}
+		path = after
+	} else {
+		return "", "", false
+	}
+	if !strings.EqualFold(host, hostname(c.webHost)) {
+		return "", "", false
+	}
+	parts := strings.Split(strings.Trim(strings.TrimSuffix(strings.Trim(path, "/"), ".git"), "/"), "/")
+	if len(parts) != 2 || !validName(parts[0]) || !validName(parts[1]) {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+// hostname drops a port from host.
+func hostname(host string) string {
+	return (&url.URL{Host: host}).Hostname()
+}
+
 func validName(name string) bool {
 	if name == "" || name == "." || name == ".." {
 		return false
@@ -229,19 +261,27 @@ type Cursor struct {
 	Comment       int64 `json:"comment"`
 }
 
+// trustedAssociations are the author associations whose reviews and comments
+// wake a watch: people with write access to the repository. Anyone else can
+// comment on a public repository, and a woken turn may push to the pull
+// request, so their text must not start one.
+var trustedAssociations = map[string]bool{"OWNER": true, "MEMBER": true, "COLLABORATOR": true}
+
 // ActivitySince returns the reviews and comments newer than cursor, oldest
 // kind first, and the cursor that covers them. Items by ignoreAuthor, such
-// as the bot's own token user, advance the cursor but are not returned.
+// as the bot's own token user, and by authors without write access to the
+// repository advance the cursor but are not returned.
 func (c *Client) ActivitySince(ctx context.Context, ref PullRef, cursor Cursor, ignoreAuthor string) ([]Activity, Cursor, error) {
 	type item struct {
 		ID   int64 `json:"id"`
 		User struct {
 			Login string `json:"login"`
 		} `json:"user"`
-		State   string `json:"state"`
-		Body    string `json:"body"`
-		Path    string `json:"path"`
-		HTMLURL string `json:"html_url"`
+		AuthorAssociation string `json:"author_association"`
+		State             string `json:"state"`
+		Body              string `json:"body"`
+		Path              string `json:"path"`
+		HTMLURL           string `json:"html_url"`
 	}
 	lists := []struct {
 		kind string
@@ -266,7 +306,8 @@ func (c *Client) ActivitySince(ctx context.Context, ref PullRef, cursor Cursor, 
 				}
 				newest = max(newest, it.ID)
 				// A pending review is the reviewer's unsent draft.
-				if strings.EqualFold(it.User.Login, ignoreAuthor) || it.State == "PENDING" {
+				if strings.EqualFold(it.User.Login, ignoreAuthor) || it.State == "PENDING" ||
+					!trustedAssociations[it.AuthorAssociation] {
 					continue
 				}
 				activity = append(activity, Activity{

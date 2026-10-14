@@ -68,6 +68,7 @@ func main() {
 	}
 	var githubAPI slackbot.GitHub
 	githubLogin := ""
+	var githubRepos []string
 	if cfg.GitHubToken != "" {
 		client, err := github.NewClient(cfg.GitHubAPIURL, cfg.GitHubToken)
 		if err != nil {
@@ -82,7 +83,15 @@ func main() {
 			log.Printf("read GitHub token user: %v", err)
 		}
 		githubAPI = client
-		log.Printf("watching pull requests on GitHub as %q", githubLogin)
+		for _, remote := range workspaces.OriginURLs() {
+			if owner, repo, ok := client.RepoFromRemote(remote); ok {
+				githubRepos = append(githubRepos, owner+"/"+repo)
+			}
+		}
+		if len(githubRepos) == 0 {
+			log.Printf("no writable root has an origin on GitHub; no pull request can be watched")
+		}
+		log.Printf("watching pull requests of %v on GitHub as %q", githubRepos, githubLogin)
 	}
 	bot := slackbot.New(nil, store, runner, slackbot.Config{
 		AllowedUserIDs:             cfg.AllowedUserIDs,
@@ -106,6 +115,7 @@ func main() {
 		Workspaces:                 workspaces,
 		GitHub:                     githubAPI,
 		GitHubLogin:                githubLogin,
+		GitHubRepos:                githubRepos,
 	}, playbooks)
 
 	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

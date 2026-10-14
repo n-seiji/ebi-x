@@ -65,6 +65,7 @@ func newPullWatchBot(t *testing.T, store *fakeStore, api *fakeSlack, runner *fak
 	bot.now = func() time.Time { return pullWatchNow }
 	bot.config.GitHub = gh
 	bot.config.GitHubLogin = "ebix-bot"
+	bot.config.GitHubRepos = []string{"O/R"}
 	return bot
 }
 
@@ -112,6 +113,44 @@ func TestTurnStartsPullWatchFromCurrentState(t *testing.T) {
 	}
 	if !strings.Contains(runner.prompts[0], "## PR の見守り") {
 		t.Error("prompt does not describe the watch contract")
+	}
+}
+
+func TestPullWatchOnlyForWorkRepositories(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	runner := followUpRunner("PR を見ました。\n\n## PR の見守り\n- " + testPullURL)
+	bot := newPullWatchBot(t, store, api, runner, &fakeGitHub{pull: openPull("abc")})
+	bot.config.GitHubRepos = []string{"o/other"}
+
+	bot.HandleMention(context.Background(), mention())
+
+	if _, ok := store.GetPullWatch("o/r#7"); ok {
+		t.Fatal("a pull request outside the work repositories is watched")
+	}
+	if post := api.postTexts[len(api.postTexts)-1]; !strings.Contains(post, pullWatchRepoNotice) {
+		t.Fatalf("result post = %q, want the repository notice", post)
+	}
+}
+
+func TestPullWatchNotMovedFromAnotherThread(t *testing.T) {
+	store := &fakeStore{claim: true}
+	other := watched(github.ChecksPending, state.PullCursor{})
+	other.ThreadTS = "50.1"
+	if err := store.SetPullWatch(other); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeSlack{}
+	runner := followUpRunner("PR を見ました。\n\n## PR の見守り\n- " + testPullURL)
+	bot := newPullWatchBot(t, store, api, runner, &fakeGitHub{pull: openPull("abc")})
+
+	bot.HandleMention(context.Background(), mention())
+
+	if watch, _ := store.GetPullWatch("o/r#7"); watch.ThreadTS != "50.1" {
+		t.Fatalf("watch moved to thread %q, want it kept in 50.1", watch.ThreadTS)
+	}
+	if post := api.postTexts[len(api.postTexts)-1]; !strings.Contains(post, pullWatchTakenNotice) {
+		t.Fatalf("result post = %q, want the taken notice", post)
 	}
 }
 
