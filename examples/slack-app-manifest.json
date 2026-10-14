@@ -15,7 +15,15 @@
     },
     "agent_view": {
       "agent_description": "リポジトリの調査・修正・PR 作成や、成果物の作成を Codex で進めて、スレッドに報告します。"
-    }
+    },
+    "shortcuts": [
+      {
+        "name": "ebi-x に頼む",
+        "type": "message",
+        "callback_id": "ebix_request",
+        "description": "このメッセージについて ebi-x に調査や作業を頼みます"
+      }
+    ]
   },
   "oauth_config": {
     "scopes": {
@@ -24,6 +32,7 @@
         "assistant:write",
         "channels:history",
         "chat:write",
+        "commands",
         "files:write",
         "im:history",
         "reactions:read",
@@ -41,7 +50,7 @@
       ]
     },
     "interactivity": {
-      "is_enabled": false
+      "is_enabled": true
     },
     "org_deploy_enabled": false,
     "socket_mode_enabled": true,
