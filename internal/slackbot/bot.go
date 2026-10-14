@@ -119,11 +119,14 @@ type Config struct {
 	AllowWorkflows bool
 	// AllowedWorkflowIDs are the only workflows accepted when AllowWorkflows
 	// is set.
-	AllowedWorkflowIDs         []string
-	AdminUserID                string
-	WorkspaceDir               string
-	MemoryDir                  string
-	PlaybooksDir               string
+	AllowedWorkflowIDs []string
+	AdminUserID        string
+	WorkspaceDir       string
+	MemoryDir          string
+	PlaybooksDir       string
+	// ActionRulesFile holds the operator's rules on which actions need the
+	// requester's confirmation. Built-in rules apply when it is missing.
+	ActionRulesFile            string
 	CodexTimeout               time.Duration
 	ThreadSubscriptionReaction string
 	ThreadSubscriptionTTL      time.Duration
@@ -534,7 +537,7 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		if memErr != nil {
 			log.Printf("slackbot: read memory: %v", memErr)
 		}
-		turnPrompt = prompt.BuildTurnPrompt(memoryContext, currentPlaybooks, slackThread, trigger.authorID, trigger.message, lease.Checkouts, lease.PendingRepos, sharedWritable)
+		turnPrompt = prompt.BuildTurnPrompt(memoryContext, currentPlaybooks, readActionRules(b.config.ActionRulesFile), slackThread, trigger.authorID, trigger.message, lease.Checkouts, lease.PendingRepos, sharedWritable)
 	} else if trigger.followUp != nil {
 		turnPrompt = prompt.BuildFollowUpPrompt(trigger.followUp.Task, trigger.followUp.DueAt, b.now(), trigger.followUp.Chain, lease.Checkouts, lease.PendingRepos)
 	} else {

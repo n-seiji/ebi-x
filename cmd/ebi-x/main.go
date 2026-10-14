@@ -77,6 +77,7 @@ func main() {
 		WorkspaceDir:               cfg.WorkspaceDir,
 		MemoryDir:                  cfg.MemoryDir,
 		PlaybooksDir:               cfg.PlaybooksDir,
+		ActionRulesFile:            cfg.ActionRulesFile,
 		CodexTimeout:               cfg.CodexTimeout,
 		ThreadSubscriptionReaction: cfg.ThreadSubscriptionReaction,
 		ThreadSubscriptionTTL:      cfg.ThreadSubscriptionTTL,
