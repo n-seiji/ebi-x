@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/n-seiji/ebi-x/internal/state"
@@ -15,9 +16,14 @@ const (
 	denyCommand    = "拒否"
 
 	approvalRequestedMessage = "403 forbidden. まだ許可されていないため、承認を依頼しました。許可されたら、もう一度 mention してください。"
-	notApproverMessage       = "承認者（SLACK_APPROVER_USER_IDS）だけが操作できます。"
-	approvalUsageMessage     = "承認チャンネルでは、依頼のスレッドで「" + approveCommand + "」か「" + denyCommand + "」と mention することだけができます。"
-	approvalSaveFailMessage  = "記録の保存に失敗したため、操作していません。もう一度お試しください。"
+	approvalQueuedMessage    = "403 forbidden. まだ許可されていないため、承認を依頼しました。許可されたら、この依頼から始めます。"
+
+	// approvalResumeWindow is how long a mention waits for approval before
+	// it is no longer started on its own.
+	approvalResumeWindow    = 24 * time.Hour
+	notApproverMessage      = "承認者（SLACK_APPROVER_USER_IDS）だけが操作できます。"
+	approvalUsageMessage    = "承認チャンネルでは、依頼のスレッドで「" + approveCommand + "」か「" + denyCommand + "」と mention することだけができます。"
+	approvalSaveFailMessage = "記録の保存に失敗したため、操作していません。もう一度お試しください。"
 )
 
 var (
@@ -31,6 +37,7 @@ type Approvals interface {
 	ApprovalStatus(kind state.ApprovalKind, id string) state.ApprovalStatus
 	RequestApproval(kind state.ApprovalKind, id, requestedBy, requestChannel, requestThreadTS string, now time.Time) (bool, error)
 	SetApprovalRequestMessage(kind state.ApprovalKind, id, timestamp string) error
+	SetApprovalMention(kind state.ApprovalKind, id string, mention state.ApprovalMention) (bool, error)
 	FindApprovalByRequestMessage(timestamp string) (state.Approval, bool)
 	DecideApproval(kind state.ApprovalKind, id string, approve bool, decidedBy string, now time.Time) (state.Approval, bool, error)
 	DeleteApproval(kind state.ApprovalKind, id string) (bool, error)
@@ -121,7 +128,8 @@ func (b *Bot) rejectUnapproved(ctx context.Context, event *slackevents.AppMentio
 			return
 		}
 	}
-	requested := false
+	mention, resumable := waitingMention(event, b.config.BotUserID)
+	requested, queued := false, resumable
 	for _, subject := range missing {
 		created, err := b.config.Approvals.RequestApproval(subject.kind, subject.id, event.User, event.Channel, mentionThreadTS(event), b.now())
 		if err != nil {
@@ -131,6 +139,7 @@ func (b *Bot) rejectUnapproved(ctx context.Context, event *slackevents.AppMentio
 		if !created {
 			// Already waiting for a decision; do not ask twice.
 			requested = true
+			queued = queued && b.recordWaitingMention(subject, mention)
 			continue
 		}
 		if err := b.postApprovalRequest(ctx, subject, event); err != nil {
@@ -142,14 +151,43 @@ func (b *Bot) rejectUnapproved(ctx context.Context, event *slackevents.AppMentio
 			continue
 		}
 		requested = true
+		queued = queued && b.recordWaitingMention(subject, mention)
 	}
 	if !requested {
 		b.forbidden(ctx, event)
 		return
 	}
-	if err := b.post(ctx, event.Channel, mentionThreadTS(event), approvalRequestedMessage); err != nil {
+	reply := approvalRequestedMessage
+	if queued {
+		reply = approvalQueuedMessage
+	}
+	if err := b.post(ctx, event.Channel, mentionThreadTS(event), reply); err != nil {
 		log.Printf("slackbot: post approval requested response: %v", err)
 	}
+}
+
+// waitingMention returns the mention to start once it is approved. Workflow
+// mentions, empty mentions and stop commands are not kept.
+func waitingMention(event *slackevents.AppMentionEvent, botUserID string) (state.ApprovalMention, bool) {
+	text := stripBotMention(event.Text, botUserID)
+	if event.BotID != "" || text == "" || isStopCommand(text) {
+		return state.ApprovalMention{}, false
+	}
+	return state.ApprovalMention{
+		User:     event.User,
+		Channel:  event.Channel,
+		ThreadTS: mentionThreadTS(event),
+		TS:       event.TimeStamp,
+		Text:     text,
+	}, true
+}
+
+func (b *Bot) recordWaitingMention(subject approvalSubject, mention state.ApprovalMention) bool {
+	saved, err := b.config.Approvals.SetApprovalMention(subject.kind, subject.id, mention)
+	if err != nil {
+		log.Printf("slackbot: record waiting mention for %s: %v", subject.value(), err)
+	}
+	return saved
 }
 
 // postApprovalRequest asks the approval channel about subject. Approvers
@@ -180,16 +218,20 @@ func (b *Bot) handleApprovalCommand(ctx context.Context, event *slackevents.AppM
 	command := stripBotMention(event.Text, b.config.BotUserID)
 	request, inRequest := b.config.Approvals.FindApprovalByRequestMessage(event.ThreadTimeStamp)
 	var reply string
+	var resume *processingTrigger
 	switch {
 	case !b.isApprover(event.User):
 		reply = notApproverMessage
 	case !inRequest || (command != approveCommand && command != denyCommand):
 		reply = approvalUsageMessage
 	default:
-		reply = b.decideApproval(ctx, request, command == approveCommand, event.User)
+		reply, resume = b.decideApproval(ctx, request, command == approveCommand, event.User)
 	}
 	if err := b.post(ctx, event.Channel, mentionThreadTS(event), reply); err != nil {
 		log.Printf("slackbot: post approval command reply: %v", err)
+	}
+	if resume != nil {
+		b.processTrigger(ctx, *resume)
 	}
 }
 
@@ -198,25 +240,58 @@ func (b *Bot) isApprover(user string) bool {
 	return ok
 }
 
-// decideApproval approves or denies request. The first decision wins.
-func (b *Bot) decideApproval(ctx context.Context, request state.Approval, approve bool, user string) string {
+// decideApproval approves or denies request. The first decision wins. When
+// the approval lets the mention that waited for it run, it returns that
+// mention to start after the reply is posted.
+func (b *Bot) decideApproval(ctx context.Context, request state.Approval, approve bool, user string) (string, *processingTrigger) {
 	subject := approvalSubject{kind: request.Kind, id: request.ID}
 	approval, decided, err := b.config.Approvals.DecideApproval(subject.kind, subject.id, approve, user, b.now())
 	if err != nil {
 		log.Printf("slackbot: decide approval %s: %v", subject.value(), err)
-		return approvalSaveFailMessage
+		return approvalSaveFailMessage, nil
 	}
 	if !decided {
-		return subject.label() + " は、すでに" + decisionText(approval) + "。"
+		return subject.label() + " は、すでに" + decisionText(approval) + "。", nil
 	}
 	log.Printf("slackbot: %s %s by %q", approval.Status, subject.value(), user)
+	var resume *processingTrigger
 	if approval.Status == state.Approved && approval.RequestChannel != "" && approval.RequestThreadTS != "" {
-		notice := "✅ " + subject.label() + " が許可されました。もう一度 mention してください。"
+		notice := "✅ " + subject.label() + " が許可されました。"
+		switch waiting := b.waitingTrigger(approval); {
+		case waiting == nil:
+			notice += "もう一度 mention してください。"
+		case !b.userAllowed(waiting.authorID) || !b.channelAllowed(waiting.channel):
+			notice += "残りの許可を待っています。"
+		default:
+			notice += "依頼を始めます。"
+			resume = waiting
+		}
 		if err := b.post(ctx, approval.RequestChannel, approval.RequestThreadTS, notice); err != nil {
 			log.Printf("slackbot: notify approval %s: %v", subject.value(), err)
 		}
 	}
-	return statusIcon(approval.Status) + " " + subject.label() + ": " + decisionText(approval) + "。"
+	return statusIcon(approval.Status) + " " + subject.label() + ": " + decisionText(approval) + "。", resume
+}
+
+// waitingTrigger returns the mention that waited for approval, or nil when
+// there is none or it waited longer than approvalResumeWindow.
+func (b *Bot) waitingTrigger(approval state.Approval) *processingTrigger {
+	if approval.MentionText == "" || approval.RequestedBy == "" {
+		return nil
+	}
+	mentionedAt, err := strconv.ParseFloat(approval.MentionTS, 64)
+	if err != nil || b.now().Sub(time.Unix(int64(mentionedAt), 0)) > approvalResumeWindow {
+		return nil
+	}
+	return &processingTrigger{
+		source:      mentionTrigger,
+		authorID:    approval.RequestedBy,
+		channel:     approval.RequestChannel,
+		timestamp:   approval.MentionTS,
+		threadTS:    approval.RequestThreadTS,
+		message:     approval.MentionText,
+		threadReply: approval.RequestThreadTS != approval.MentionTS,
+	}
 }
 
 func statusIcon(status state.ApprovalStatus) string {

@@ -48,9 +48,13 @@ type Approval struct {
 	RequestThreadTS string `json:"request_thread_ts,omitempty"`
 	// RequestMessageTS is the request posted in the approval channel, whose
 	// thread approvers answer in.
-	RequestMessageTS string    `json:"request_message_ts,omitempty"`
-	DecidedBy        string    `json:"decided_by,omitempty"`
-	DecidedAt        time.Time `json:"decided_at,omitzero"`
+	RequestMessageTS string `json:"request_message_ts,omitempty"`
+	// MentionTS and MentionText are the latest mention that waited for this
+	// approval, so it can be started once everything it needs is approved.
+	MentionTS   string    `json:"mention_ts,omitempty"`
+	MentionText string    `json:"mention_text,omitempty"`
+	DecidedBy   string    `json:"decided_by,omitempty"`
+	DecidedAt   time.Time `json:"decided_at,omitzero"`
 }
 
 // ApprovalStatus returns the recorded status of kind and id, or "" when
@@ -145,6 +149,42 @@ func (s *Store) SetApprovalRequestMessage(kind ApprovalKind, id, timestamp strin
 		return fmt.Errorf("save approval request message %q: %w", key, err)
 	}
 	return nil
+}
+
+// SetApprovalMention records mention as the latest one waiting for the
+// pending request of kind and id; the origin thread moves to it. It reports
+// false without saving when the request is no longer pending.
+func (s *Store) SetApprovalMention(kind ApprovalKind, id string, mention ApprovalMention) (bool, error) {
+	s.approvalsMu.Lock()
+	defer s.approvalsMu.Unlock()
+
+	key := approvalKey(kind, id)
+	current, exists := s.approvals[key]
+	if !exists || current.Status != Pending {
+		return false, nil
+	}
+	next := current
+	next.RequestedBy = mention.User
+	next.RequestChannel = mention.Channel
+	next.RequestThreadTS = mention.ThreadTS
+	next.MentionTS = mention.TS
+	next.MentionText = mention.Text
+	s.approvals[key] = next
+	if err := s.saveApprovals(); err != nil {
+		s.approvals[key] = current
+		return false, fmt.Errorf("save approval mention %q: %w", key, err)
+	}
+	return true, nil
+}
+
+// ApprovalMention is a mention that waits for an approval.
+type ApprovalMention struct {
+	User     string
+	Channel  string
+	ThreadTS string
+	TS       string
+	// Text is the request with the bot mention removed.
+	Text string
 }
 
 // FindApprovalByRequestMessage returns the approval whose request was posted

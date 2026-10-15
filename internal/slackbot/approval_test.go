@@ -91,8 +91,102 @@ func TestUnknownUserMentionRequestsApprovalOnce(t *testing.T) {
 			origin = append(origin, post.text)
 		}
 	}
-	if got := strings.Join(origin, "|"); got != approvalRequestedMessage+"|"+approvalRequestedMessage {
+	if got := strings.Join(origin, "|"); got != approvalQueuedMessage+"|"+approvalQueuedMessage {
 		t.Fatalf("origin replies = %q, want approval requested twice", got)
+	}
+}
+
+func TestApprovalStartsTheWaitingMention(t *testing.T) {
+	runner := successfulTurnRunner()
+	bot, api, _, _ := newApprovalBot(t, runner)
+	bot.now = func() time.Time { return time.Unix(100, 0).Add(time.Hour) }
+	event := mention()
+	event.User = "U2"
+	event.ThreadTimeStamp = "90.1"
+	bot.HandleMention(context.Background(), event)
+
+	approvalCommand(bot, api, "UOWNER", "top-1", "許可")
+
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want the waiting mention started", runner.calls)
+	}
+	if len(runner.prompts) != 1 || !strings.Contains(runner.prompts[0], "do it") {
+		t.Fatalf("runner prompts = %q, want the waiting request", runner.prompts)
+	}
+	var notice string
+	for _, post := range api.posts {
+		if post.channel == "C1" && post.threadTS == "90.1" && strings.Contains(post.text, "許可されました") {
+			notice = post.text
+		}
+	}
+	if !strings.Contains(notice, "依頼を始めます") {
+		t.Fatalf("notice = %q, want the request to start", notice)
+	}
+}
+
+func TestApprovalWaitsForEveryMissingSubject(t *testing.T) {
+	runner := successfulTurnRunner()
+	bot, api, _, _ := newApprovalBot(t, runner)
+	bot.now = func() time.Time { return time.Unix(100, 0).Add(time.Hour) }
+	event := mention()
+	event.User = "U2"
+	event.Channel = "C2"
+	bot.HandleMention(context.Background(), event)
+
+	approvalCommand(bot, api, "UOWNER", "top-1", "許可")
+	if runner.calls != 0 {
+		t.Fatalf("runner calls = %d after one approval, want 0", runner.calls)
+	}
+	approvalCommand(bot, api, "UOWNER", "top-2", "許可")
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d after both approvals, want 1", runner.calls)
+	}
+	var notices []string
+	for _, post := range api.posts {
+		if post.channel == "C2" && strings.Contains(post.text, "許可されました") {
+			notices = append(notices, post.text)
+		}
+	}
+	if len(notices) != 2 || !strings.Contains(notices[0], "残りの許可を待っています") || !strings.Contains(notices[1], "依頼を始めます") {
+		t.Fatalf("notices = %q, want wait then start", notices)
+	}
+}
+
+func TestApprovalDoesNotStartOldOrEmptyMentions(t *testing.T) {
+	tests := []struct {
+		name      string
+		text      string
+		now       time.Time
+		wantReply string
+	}{
+		{name: "older than a day", text: "<@UBOT> do it", now: time.Unix(100, 0).Add(25 * time.Hour), wantReply: approvalQueuedMessage},
+		{name: "empty mention", text: "<@UBOT>", now: time.Unix(100, 0), wantReply: approvalRequestedMessage},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := successfulTurnRunner()
+			bot, api, _, _ := newApprovalBot(t, runner)
+			bot.now = func() time.Time { return time.Unix(100, 0) }
+			event := mention()
+			event.User = "U2"
+			event.Text = test.text
+			bot.HandleMention(context.Background(), event)
+			if got := api.posts[len(api.posts)-1].text; got != test.wantReply {
+				t.Fatalf("reply = %q, want %q", got, test.wantReply)
+			}
+			bot.now = func() time.Time { return test.now }
+
+			approvalCommand(bot, api, "UOWNER", "top-1", "許可")
+
+			if runner.calls != 0 {
+				t.Fatalf("runner calls = %d, want 0", runner.calls)
+			}
+			for _, post := range api.posts {
+				if post.channel == "C1" && strings.Contains(post.text, "許可されました") && !strings.Contains(post.text, "もう一度 mention") {
+					t.Fatalf("notice = %q, want a request to mention again", post.text)
+				}
+			}
+		})
 	}
 }
 
