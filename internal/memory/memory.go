@@ -62,11 +62,48 @@ func ReadContext(root, channelID, query string) (Context, error) {
 		value, err := Read(dir, query)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("read %s memory: %w", target.scope, err))
-			continue
 		}
 		target.set(value)
 	}
 	return result, errors.Join(errs...)
+}
+
+// ApplyScoped writes a memory section a turn proposed for scope: its topic
+// blocks to their topic files, and any text outside them to MEMORY.md. It
+// returns the topics changed and whether MEMORY.md was appended to. Like
+// AppendScoped, the directory comes from the authenticated channel ID.
+func ApplyScoped(root string, scope Scope, channelID, section string, now time.Time) (topics []string, appended bool, err error) {
+	updates, rest, err := ParseTopicUpdates(section)
+	if err != nil {
+		return nil, false, err
+	}
+	id := ""
+	if scope == ScopeChannel {
+		id = channelID
+	}
+	dir, err := ScopeDir(root, scope, id)
+	if err != nil {
+		return nil, false, err
+	}
+	var errs []error
+	for _, update := range updates {
+		slug, err := ApplyTopicUpdate(dir, update, now)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if slug != "" {
+			topics = append(topics, slug)
+		}
+	}
+	if rest != "" {
+		written, err := Append(dir, rest, now)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		appended = written != ""
+	}
+	return topics, appended, errors.Join(errs...)
 }
 
 // AppendScoped appends to the scope belonging to the current Slack request.
@@ -121,18 +158,17 @@ func ScopeDir(root string, scope Scope, id string) (string, error) {
 	}
 }
 
-// Read returns the memory file content capped at maxPromptBytes, keeping the
-// entries related to query and the newest ones when it is larger. A missing
-// file yields an empty string without error.
+// Read returns what a prompt carries from one scope directory: its topic
+// list, the related topics in full, and its untopiced MEMORY.md, capped at
+// maxPromptBytes. A missing file or topic directory yields nothing without
+// error; unreadable topics are reported and left out.
 func Read(dir, query string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(dir, FileName))
-	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
-	return recall(string(data), query, maxPromptBytes), nil
+	topics, topicsErr := LoadTopics(dir)
+	return renderScope(topics, string(data), query, maxPromptBytes), topicsErr
 }
 
 // Append validates and appends one entry to the memory file under a heading

@@ -1742,6 +1742,41 @@ func TestWorkMemoryAppendWarnsWhenMemoryOutgrowsPrompt(t *testing.T) {
 	}
 }
 
+func TestWorkMemoryTopicBlockWritesTopicFile(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	runner := &fakeRunner{responses: []runnerResponse{
+		{result: &codex.TurnResult{
+			Completed: true,
+			Messages: []string{strings.Join([]string{
+				"Work completed.",
+				"## 全体メモリ追記",
+				"### transaction-lookup",
+				"説明: 取引の問い合わせを調べるとき",
+				"- 短縮IDでもまず調べる",
+			}, "\n")},
+		}},
+		{result: &codex.TurnResult{Completed: true, Messages: []string{"done"}}},
+	}}
+	bot := newTestBot(t, store, api, runner)
+	bot.HandleMention(context.Background(), mention())
+
+	data, err := os.ReadFile(filepath.Join(bot.config.MemoryDir, "topics", "transaction-lookup.md"))
+	if err != nil {
+		t.Fatalf("read topic: %v", err)
+	}
+	if !strings.Contains(string(data), "description: 取引の問い合わせを調べるとき") || !strings.Contains(string(data), "- 短縮IDでもまず調べる") {
+		t.Fatalf("topic = %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(bot.config.MemoryDir, "MEMORY.md")); !os.IsNotExist(err) {
+		t.Fatalf("MEMORY.md should not be written, stat err = %v", err)
+	}
+	posts := strings.Join(api.postTexts, "|")
+	if !strings.Contains(posts, "全体（話題「transaction-lookup」）メモリを更新しました") {
+		t.Fatalf("posts = %q, want topic update notice", posts)
+	}
+}
+
 func TestUserMemoryOutputIsNotAccepted(t *testing.T) {
 	store := &fakeStore{claim: true}
 	api := &fakeSlack{}
