@@ -688,17 +688,20 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 			if target.entry == "" {
 				continue
 			}
-			written, err := memory.AppendScoped(
+			topics, appended, err := memory.ApplyScoped(
 				b.config.MemoryDir, target.scope, channel, target.entry, b.now(),
 			)
 			if err != nil {
-				log.Printf("slackbot: append %s memory %q: %v", target.scope, eventKey, err)
+				log.Printf("slackbot: write %s memory %q: %v", target.scope, eventKey, err)
+			}
+			if len(topics) > 0 {
+				output.memoryScopes = append(output.memoryScopes, target.label+"（話題「"+strings.Join(topics, "」「")+"」）")
+			} else if appended {
+				output.memoryScopes = append(output.memoryScopes, target.label)
+			}
+			if !appended {
 				continue
 			}
-			if written == "" {
-				continue
-			}
-			output.memoryScopes = append(output.memoryScopes, target.label)
 			over, err := memory.ExceedsPromptLimit(b.config.MemoryDir, target.scope, channel)
 			if err != nil {
 				log.Printf("slackbot: check %s memory size %q: %v", target.scope, eventKey, err)
