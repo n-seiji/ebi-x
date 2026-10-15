@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"log"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -69,8 +70,12 @@ func main() {
 	var githubAPI slackbot.GitHub
 	githubLogin := ""
 	var githubRepos []string
-	if cfg.GitHubToken != "" {
-		client, err := github.NewClient(cfg.GitHubAPIURL, cfg.GitHubToken)
+	githubToken := cfg.GitHubToken
+	if githubToken == "" {
+		githubToken = pushToken(cfg.GitHubAPIURL, workspaces.OriginURLs())
+	}
+	if githubToken != "" {
+		client, err := github.NewClient(cfg.GitHubAPIURL, githubToken)
 		if err != nil {
 			log.Fatalf("configure GitHub: %v", err)
 		}
@@ -187,4 +192,37 @@ func collectIdleCheckouts(ctx context.Context, workspaces *workspace.Manager, id
 		case <-ticker.C:
 		}
 	}
+}
+
+// pushToken returns the token the work turns push to a GitHub origin with,
+// so watching needs no token of its own. It is empty when every origin uses
+// SSH or git has no stored credential for it.
+func pushToken(apiURL string, origins []string) string {
+	client, err := github.NewClient(apiURL, "")
+	if err != nil {
+		return ""
+	}
+	for _, origin := range origins {
+		if _, _, ok := client.RepoFromRemote(origin); !ok {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		token, err := github.PushToken(ctx, origin)
+		cancel()
+		if err == nil {
+			return token
+		}
+		log.Printf("read the push credential for %s: %v", redactURL(origin), err)
+	}
+	return ""
+}
+
+// redactURL drops any credential embedded in a remote URL before logging it.
+func redactURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.User == nil {
+		return raw
+	}
+	parsed.User = nil
+	return parsed.String()
 }
