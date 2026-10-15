@@ -32,6 +32,9 @@ func TestBuildTurnPrompt(t *testing.T) {
 				t.Errorf("prompt missing %q", want)
 			}
 		}
+		if strings.Contains(got, "原則こちらに書いてください") != shared {
+			t.Errorf("global memory default = %v, want %v", !shared, shared)
+		}
 		if strings.Contains(got, "## 全体メモリ追記") != shared {
 			t.Errorf("global memory permission = %v, want %v", !shared, shared)
 		}
