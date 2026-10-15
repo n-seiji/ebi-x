@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -18,6 +19,8 @@ const FileName = "MEMORY.md"
 const (
 	// maxPromptBytes caps how much memory content is injected into prompts.
 	maxPromptBytes = 8 << 10
+	// PromptLimitKB is maxPromptBytes in kilobytes, for messages.
+	PromptLimitKB = maxPromptBytes >> 10
 	// MaxAppendBytes caps the size of one appended entry.
 	MaxAppendBytes = 4 << 10
 )
@@ -68,7 +71,7 @@ func ReadContext(root, channelID string) (Context, error) {
 // AppendScoped appends to the scope belonging to the current Slack request.
 // IDs are never supplied by the model; the bot passes the authenticated event
 // channel ID so an output cannot select another scope's directory.
-func AppendScoped(root string, scope Scope, channelID, entry string) (string, error) {
+func AppendScoped(root string, scope Scope, channelID, entry string, now time.Time) (string, error) {
 	id := ""
 	switch scope {
 	case ScopeChannel:
@@ -78,7 +81,28 @@ func AppendScoped(root string, scope Scope, channelID, entry string) (string, er
 	if err != nil {
 		return "", err
 	}
-	return Append(dir, entry)
+	return Append(dir, entry, now)
+}
+
+// ExceedsPromptLimit reports whether the scope's memory file has grown past
+// what is injected into prompts, so its oldest entries are no longer read.
+func ExceedsPromptLimit(root string, scope Scope, channelID string) (bool, error) {
+	id := ""
+	if scope == ScopeChannel {
+		id = channelID
+	}
+	dir, err := ScopeDir(root, scope, id)
+	if err != nil {
+		return false, err
+	}
+	info, err := os.Stat(filepath.Join(dir, FileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return info.Size() > maxPromptBytes, nil
 }
 
 // ScopeDir resolves a memory scope to a directory below root.
@@ -113,14 +137,17 @@ func Read(dir string) (string, error) {
 	return strings.TrimSpace(text), nil
 }
 
-// Append validates and appends one entry to the memory file, creating the
-// directory and file when needed. It returns the entry actually written.
+// Append validates and appends one entry to the memory file under a heading
+// with the day it was written, creating the directory and file when needed.
+// The date lets a later turn tell which of two conflicting entries is newer
+// and lets an operator find what to remove. It returns the entry actually
+// written, without the heading.
 //
 // Append does not serialize concurrent callers; callers must do so themselves
 // (the Slack bot holds its memory lock around the call). When Close reports an
 // error the entry may already be on disk, but Append still returns the error
 // and an empty entry; it never retries the write on its own.
-func Append(dir, entry string) (written string, err error) {
+func Append(dir, entry string, now time.Time) (written string, err error) {
 	entry = strings.TrimSpace(entry)
 	if entry == "" {
 		return "", nil
@@ -140,7 +167,7 @@ func Append(dir, entry string) (written string, err error) {
 			written, err = "", closeErr
 		}
 	}()
-	if _, err := file.WriteString("\n" + entry + "\n"); err != nil {
+	if _, err := file.WriteString("\n### " + now.Format(time.DateOnly) + "\n" + entry + "\n"); err != nil {
 		return "", err
 	}
 	return entry, nil
