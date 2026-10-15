@@ -497,9 +497,9 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	b.finalReaction(ctx, channel, timestamp, reaction)
 }
 
-// memoryOverflowNotice asks the operator to tidy a memory file whose oldest
-// entries no longer reach prompts. Arguments: scope label, limit in KB, path.
-const memoryOverflowNotice = "⚠️ %sメモリが%dKBを超えたため、古い項目は次のスレッドから読まれません。`%s` の不要な項目や重複を整理してください。"
+// memoryOverflowNotice asks the operator to tidy a memory file that no
+// longer reaches prompts whole. Arguments: scope label, limit in KB, path.
+const memoryOverflowNotice = "⚠️ %sメモリが%dKBを超えたため、次のスレッドからは依頼に関係しそうな項目と新しい項目だけが読まれます。`%s` の不要な項目や重複を整理してください。"
 
 // workOutput is what a completed work turn hands back for posting.
 type workOutput struct {
@@ -586,7 +586,7 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		// intentionally not a writable root: the agent proposes memory
 		// entries through the output contract and the bot writes them.
 		b.memoryMu.RLock()
-		memoryContext, memErr := memory.ReadContext(b.config.MemoryDir, channel)
+		memoryContext, memErr := memory.ReadContext(b.config.MemoryDir, channel, trigger.message+"\n"+slackThread)
 		b.memoryMu.RUnlock()
 		if memErr != nil {
 			log.Printf("slackbot: read memory: %v", memErr)

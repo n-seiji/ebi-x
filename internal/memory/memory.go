@@ -40,9 +40,10 @@ type Context struct {
 }
 
 // ReadContext reads global memory plus the memory belonging to the current
-// Slack channel. Successfully read scopes are returned even when a different
-// scope fails.
-func ReadContext(root, channelID string) (Context, error) {
+// Slack channel. query is the text of the request; when a file is too large
+// for the prompt, the entries related to it are kept. Successfully read scopes
+// are returned even when a different scope fails.
+func ReadContext(root, channelID, query string) (Context, error) {
 	var result Context
 	var errs []error
 	for _, target := range []struct {
@@ -58,7 +59,7 @@ func ReadContext(root, channelID string) (Context, error) {
 			errs = append(errs, err)
 			continue
 		}
-		value, err := Read(dir)
+		value, err := Read(dir, query)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("read %s memory: %w", target.scope, err))
 			continue
@@ -120,9 +121,10 @@ func ScopeDir(root string, scope Scope, id string) (string, error) {
 	}
 }
 
-// Read returns the memory file content capped at maxPromptBytes. A missing
+// Read returns the memory file content capped at maxPromptBytes, keeping the
+// entries related to query and the newest ones when it is larger. A missing
 // file yields an empty string without error.
-func Read(dir string) (string, error) {
+func Read(dir, query string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(dir, FileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
@@ -130,11 +132,7 @@ func Read(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	text := string(data)
-	if len(text) > maxPromptBytes {
-		text = "(前半はサイズ上限のため省略)\n" + truncateTailRunes(text, maxPromptBytes)
-	}
-	return strings.TrimSpace(text), nil
+	return recall(string(data), query, maxPromptBytes), nil
 }
 
 // Append validates and appends one entry to the memory file under a heading

@@ -10,7 +10,7 @@ import (
 )
 
 func TestReadMissingFileReturnsEmpty(t *testing.T) {
-	got, err := Read(t.TempDir())
+	got, err := Read(t.TempDir(), "")
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
@@ -24,7 +24,7 @@ func TestReadReturnsTrimmedContent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, FileName), []byte("# Memory\n学び\n\n"), 0o644); err != nil {
 		t.Fatalf("write memory: %v", err)
 	}
-	got, err := Read(dir)
+	got, err := Read(dir, "")
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
@@ -39,7 +39,7 @@ func TestReadCapsOversizedContent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(content), 0o644); err != nil {
 		t.Fatalf("write memory: %v", err)
 	}
-	got, err := Read(dir)
+	got, err := Read(dir, "")
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
@@ -72,14 +72,14 @@ func TestReadContextReadsOnlyGlobalAndChannelScopes(t *testing.T) {
 		}
 	}
 
-	got, err := ReadContext(root, "C456")
+	got, err := ReadContext(root, "C456", "")
 	if err != nil {
 		t.Fatalf("ReadContext() error = %v", err)
 	}
 	if got.Global != "### 2026-10-15\nglobal fact" || got.Channel != "### 2026-10-15\nchannel convention" {
 		t.Fatalf("ReadContext() = %#v", got)
 	}
-	other, err := ReadContext(root, "C999")
+	other, err := ReadContext(root, "C999", "")
 	if err != nil {
 		t.Fatalf("ReadContext(other) error = %v", err)
 	}
@@ -111,7 +111,7 @@ func TestReadContextReturnsOtherScopesWhenOneFails(t *testing.T) {
 	if _, err := AppendScoped(root, ScopeGlobal, "C1", "global fact", testNow); err != nil {
 		t.Fatalf("append global: %v", err)
 	}
-	got, err := ReadContext(root, "unsafe/channel")
+	got, err := ReadContext(root, "unsafe/channel", "")
 	if err == nil {
 		t.Fatalf("ReadContext() error = %v, want validation error", err)
 	}
