@@ -263,7 +263,11 @@ Devin が自分の PR の CI 失敗やレビュー指摘に対応するのにな
 
 ### 有効にする手順
 
-`.env` の `EBIX_GITHUB_TOKEN` に、見守る PR を読めるトークンを設定します（PR・チェック・コミットステータスの読み取り権限で足ります）。GitHub Enterprise Server では `EBIX_GITHUB_API_URL` に `https://<host>/api/v3` を設定します。トークンは bot だけが使い、Codex には渡しません。未設定なら見守りは無効で、プロンプトにも出力契約を載せません。
+追加の設定は要りません。bot は起動時に、作業ターンが push に使うのと同じ認証情報（`EBIX_WRITABLE_ROOTS` のうち GitHub にある origin への、git の credential helper に保存されたトークン）を `git credential fill` で読み、それで PR を読みます。プロンプトは出さず、`gh auth` も使いません。origin が SSH の場合や、保存された認証情報がない場合は見守りは無効で、プロンプトにも出力契約を載せません。
+
+別のトークンを使いたい場合だけ、`.env` の `EBIX_GITHUB_TOKEN` に設定します（PR・チェック・コミットステータスの読み取り権限で足ります。Codex には渡しません）。GitHub Enterprise Server では `EBIX_GITHUB_API_URL` に `https://<host>/api/v3` を設定します。
+
+トークンの持ち主自身のコメントでは作業を再開しません（後述）。push に自分の個人トークンを使っている場合、自分のレビューでは再開せず、CI の失敗とほかの人のレビューで再開します。
 
 見守れるのは、`EBIX_WRITABLE_ROOTS` のうち origin がこの GitHub にあるリポジトリ（スレッドごとのクローンで作業するもの）の PR だけです。トークンがほかのリポジトリを読めても、その PR は見守りません。読み取り権限は見守るリポジトリだけに絞った fine-grained token をおすすめします。
 
