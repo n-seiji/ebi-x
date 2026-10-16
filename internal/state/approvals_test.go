@@ -169,3 +169,30 @@ func mustRequestApproval(t *testing.T, store *Store, id string) {
 		t.Fatalf("RequestApproval(%q) = %v, %v; want created", id, created, err)
 	}
 }
+
+func TestApprovalMentionIsKeptOnlyWhilePending(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	mustRequestApproval(t, store, "U2")
+	mention := ApprovalMention{User: "U2", Channel: "C2", ThreadTS: "200.1", TS: "200.2", Text: "do it"}
+	if saved, err := store.SetApprovalMention(ApprovalUser, "U2", mention); err != nil || !saved {
+		t.Fatalf("SetApprovalMention() = %v, %v; want saved", saved, err)
+	}
+	reloaded, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore() after write error = %v", err)
+	}
+	got, _ := reloaded.GetApproval(ApprovalUser, "U2")
+	if got.RequestChannel != "C2" || got.RequestThreadTS != "200.1" || got.MentionTS != "200.2" || got.MentionText != "do it" {
+		t.Fatalf("approval = %+v, want the latest mention", got)
+	}
+	if _, _, err := reloaded.DecideApproval(ApprovalUser, "U2", true, "UOWNER", time.Now()); err != nil {
+		t.Fatalf("DecideApproval() error = %v", err)
+	}
+	if saved, err := reloaded.SetApprovalMention(ApprovalUser, "U2", mention); err != nil || saved {
+		t.Fatalf("SetApprovalMention() after decision = %v, %v; want not saved", saved, err)
+	}
+}
