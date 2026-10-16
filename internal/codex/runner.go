@@ -77,7 +77,7 @@ func (r *Runner) Run(
 	onThreadStarted func(id string) error,
 	onActivity func(Activity),
 ) (*TurnResult, error) {
-	config, err := loadLocalConfig(r.ConfigPath)
+	configOverrides, err := loadConfigOverrides(r.ConfigPath)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +86,7 @@ func (r *Runner) Run(
 		return nil, err
 	}
 	denied := append(append(append([]string(nil), r.DeniedReadPaths...), homeDenied...), deniedPaths...)
-	args := buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, denied, r.Model, joinInstructions(r.DeveloperInstructions, config.MCPNote), config.Overrides)
+	args := buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, denied, r.Model, r.DeveloperInstructions, configOverrides)
 	for _, arg := range args {
 		if len(arg) > maxArgBytes {
 			// Running with a truncated deny list would expose protected paths.
@@ -185,16 +185,6 @@ func filterEnv(env []string) []string {
 		filtered = append(filtered, entry)
 	}
 	return filtered
-}
-
-func joinInstructions(parts ...string) string {
-	var kept []string
-	for _, part := range parts {
-		if part = strings.TrimSpace(part); part != "" {
-			kept = append(kept, part)
-		}
-	}
-	return strings.Join(kept, "\n\n")
 }
 
 func buildArgs(threadID, sandbox, cwd string, writableRoots, deniedReadPaths []string, model, developerInstructions string) []string {

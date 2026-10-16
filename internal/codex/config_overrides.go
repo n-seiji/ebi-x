@@ -3,6 +3,7 @@ package codex
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"slices"
@@ -14,44 +15,29 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// localConfig is what ebi-x takes from the local Codex TOML file.
-type localConfig struct {
-	// Overrides are deterministic command-line overrides. The caller keeps
-	// --ignore-user-config enabled and appends ebi-x's mandatory security
-	// overrides after these values.
-	Overrides []string
-	// MCPNote tells the model which MCP tools the operator left out, so a
-	// missing tool is not reported as a failed connection.
-	MCPNote string
-}
-
 // loadConfigOverrides converts a local Codex TOML file into deterministic
-// command-line overrides.
+// command-line overrides. The caller keeps --ignore-user-config enabled and
+// appends ebi-x's mandatory security overrides after these values.
 func loadConfigOverrides(path string) ([]string, error) {
-	config, err := loadLocalConfig(path)
-	return config.Overrides, err
-}
-
-func loadLocalConfig(path string) (localConfig, error) {
 	if path == "" {
-		return localConfig{}, nil
+		return nil, nil
 	}
 	var config map[string]any
 	if _, err := toml.DecodeFile(path, &config); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return localConfig{}, nil
+			return nil, nil
 		}
-		return localConfig{}, fmt.Errorf("parse local Codex config %q: %w", path, err)
+		return nil, fmt.Errorf("parse local Codex config %q: %w", path, err)
 	}
 
 	var overrides []string
 	if err := flattenConfig(nil, config, &overrides); err != nil {
-		return localConfig{}, fmt.Errorf("encode local Codex config %q: %w", path, err)
+		return nil, fmt.Errorf("encode local Codex config %q: %w", path, err)
 	}
 	servers, _ := config["mcp_servers"].(map[string]any)
 	overrides = append(overrides, bigQueryReadOnlyOverrides(servers)...)
 	sort.Strings(overrides)
-	return localConfig{Overrides: overrides, MCPNote: mcpToolNote(servers)}, nil
+	return overrides, nil
 }
 
 // bigQueryReadOnlyOverrides keeps the SQL tool of MCP Toolbox's prebuilt
@@ -61,16 +47,12 @@ func loadLocalConfig(path string) (localConfig, error) {
 // only SELECT statements are accepted.
 func bigQueryReadOnlyOverrides(servers map[string]any) []string {
 	var overrides []string
-	for _, name := range sortedKeys(servers) {
+	for _, name := range slices.Sorted(maps.Keys(servers)) {
 		server, _ := servers[name].(map[string]any)
-		if !isToolboxBigQuery(server) || !exposesTool(server, "execute_sql") {
-			continue
-		}
 		env, _ := server["env"].(map[string]any)
-		if _, ok := env["BIGQUERY_WRITE_MODE"]; ok {
-			continue
-		}
-		if _, ok := env["BIGQUERY_READONLY"]; ok {
+		_, writeMode := env["BIGQUERY_WRITE_MODE"]
+		_, readOnly := env["BIGQUERY_READONLY"]
+		if writeMode || readOnly || !isToolboxBigQuery(server) || !exposesTool(server, "execute_sql") {
 			continue
 		}
 		path := []string{"mcp_servers", name, "env", "BIGQUERY_WRITE_MODE"}
@@ -80,13 +62,9 @@ func bigQueryReadOnlyOverrides(servers map[string]any) []string {
 }
 
 func isToolboxBigQuery(server map[string]any) bool {
-	if server == nil {
-		return false
-	}
-	if env, ok := server["env"].(map[string]any); ok {
-		if _, ok := env["BIGQUERY_PROJECT"]; ok {
-			return true
-		}
+	env, _ := server["env"].(map[string]any)
+	if _, ok := env["BIGQUERY_PROJECT"]; ok {
+		return true
 	}
 	args := stringList(server["args"])
 	for i, arg := range args {
@@ -108,45 +86,6 @@ func exposesTool(server map[string]any, tool string) bool {
 	return !slices.Contains(stringList(server["disabled_tools"]), tool)
 }
 
-// mcpToolNote lists the MCP servers whose tools the local config limits.
-func mcpToolNote(servers map[string]any) string {
-	var lines []string
-	for _, name := range sortedKeys(servers) {
-		server, _ := servers[name].(map[string]any)
-		if server == nil {
-			continue
-		}
-		if enabled, ok := server["enabled"].(bool); ok && !enabled {
-			continue
-		}
-		var limits []string
-		if _, ok := server["enabled_tools"]; ok {
-			limits = append(limits, "使えるのは "+joinTools(stringList(server["enabled_tools"]))+" だけ")
-		}
-		if disabled := stringList(server["disabled_tools"]); len(disabled) > 0 {
-			limits = append(limits, joinTools(disabled)+" は使えない")
-		}
-		if len(limits) == 0 {
-			continue
-		}
-		lines = append(lines, "- "+name+": "+strings.Join(limits, "、"))
-	}
-	if len(lines) == 0 {
-		return ""
-	}
-	return "# MCP ツールの公開範囲\n\n" +
-		"次の MCP サーバーは、運用者の設定（EBIX_HOME/.codex/config.toml の enabled_tools / disabled_tools）で使えるツールを限定しています。\n\n" +
-		strings.Join(lines, "\n") + "\n\n" +
-		"必要なツールがこの範囲にないときは、MCP への接続失敗ではなく設定で公開していないためです。「接続できない」と報告せず、どのサーバーのどのツールが公開されていないか、運用者が設定に追加すれば使えることを依頼者に伝え、公開されているツールでできる範囲を進めてください。"
-}
-
-func joinTools(tools []string) string {
-	if len(tools) == 0 {
-		return "（なし）"
-	}
-	return strings.Join(tools, ", ")
-}
-
 func stringList(value any) []string {
 	items, _ := value.([]any)
 	list := make([]string, 0, len(items))
@@ -156,15 +95,6 @@ func stringList(value any) []string {
 		}
 	}
 	return list
-}
-
-func sortedKeys(value map[string]any) []string {
-	keys := make([]string, 0, len(value))
-	for key := range value {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func flattenConfig(prefix []string, value map[string]any, overrides *[]string) error {
@@ -300,13 +230,8 @@ func encodeTOMLValue(value any) (string, error) {
 }
 
 func encodeInlineTable(value map[string]any) (string, error) {
-	keys := make([]string, 0, len(value))
-	for key := range value {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	items := make([]string, 0, len(keys))
-	for _, key := range keys {
+	items := make([]string, 0, len(value))
+	for _, key := range slices.Sorted(maps.Keys(value)) {
 		encoded, err := encodeTOMLValue(value[key])
 		if err != nil {
 			return "", err

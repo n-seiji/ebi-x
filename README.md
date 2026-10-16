@@ -415,21 +415,20 @@ playbook は作った時点の情報のまま古くなりがちです（作成�
 
 ## MCP ツール（BigQuery など）
 
-Codex の MCP サーバーは `EBIX_HOME/.codex/config.toml` に書きます（`~/.codex/config.toml` は読み込みません）。`enabled_tools` / `disabled_tools` で公開するツールを絞った場合、ebi-x はその範囲を developer instructions で Codex に伝えます。必要なツールが公開されていないときは「MCP に接続できない」ではなく「設定で公開されていない」と案内します（新しいスレッドから反映されます）。
+Codex の MCP サーバーは `EBIX_HOME/.codex/config.toml` に書きます（`~/.codex/config.toml` は読み込みません）。`enabled_tools` / `disabled_tools` で公開していないツールが必要になったとき、Codex は「MCP に接続できない」ではなく「公開されていない」と案内します。
 
-### BigQuery で読み取り専用の SQL を使う
+### BigQuery で SQL を使う
 
-[MCP Toolbox](https://github.com/googleapis/genai-toolbox) の prebuilt BigQuery サーバーを使っている場合、メタデータの4ツールだけでは実データを調べられません。`enabled_tools` に `execute_sql` を追加してください。ほかの更新・管理用ツールは追加しません。
+[MCP Toolbox](https://github.com/googleapis/genai-toolbox) の prebuilt BigQuery サーバーは、`enabled_tools` で絞らなければ `execute_sql` を含む全ツールを公開します。メタデータの4ツールに絞っていると実データを調べられないので、`enabled_tools` の行を削除してください。
 
 ```toml
 [mcp_servers.bigquery]
-# command / args / env の既存の設定はそのまま
-enabled_tools = ["list_dataset_ids", "get_dataset_info", "list_table_ids", "get_table_info", "execute_sql"]
+# command / args / env の既存の設定はそのまま。enabled_tools は書かない
 ```
 
-Toolbox の `execute_sql` は既定ではどんな文でも実行できます。そのため ebi-x は、`execute_sql` を公開している Toolbox BigQuery サーバー（`env` に `BIGQUERY_PROJECT` があるか、`--prebuilt bigquery` で起動するもの）に `BIGQUERY_WRITE_MODE` も `BIGQUERY_READONLY` も書かれていなければ、`env.BIGQUERY_WRITE_MODE="blocked"` を付けて起動します。この状態では SELECT 文だけが実行できます。認証・課金プロジェクトは既存の設定をそのまま使い、`.env` の追加は不要です。
+Toolbox の `execute_sql` は既定ではどんな文でも実行できます。そのため ebi-x は、`execute_sql` を公開している Toolbox BigQuery サーバー（`env` に `BIGQUERY_PROJECT` があるか、`--prebuilt bigquery` で起動するもの）に `BIGQUERY_WRITE_MODE` も `BIGQUERY_READONLY` も書かれていなければ、`env.BIGQUERY_WRITE_MODE="blocked"` を付けて起動します。この状態では SELECT 文だけが実行できます。サーバーをラッパースクリプト経由で起動していて上の条件に当たらない場合は、`env` に `BIGQUERY_WRITE_MODE = "blocked"` を自分で書いてください。認証・課金プロジェクトは既存の設定をそのまま使い、`.env` の追加は不要です。
 
-Google Cloud のリモート BigQuery MCP（`https://bigquery.googleapis.com/mcp`）を使う場合は、`execute_sql` ではなく `execute_sql_readonly` を追加してください。
+Google Cloud のリモート BigQuery MCP（`https://bigquery.googleapis.com/mcp`）の場合は、更新もできる `execute_sql` を `disabled_tools = ["execute_sql"]` で外し、`execute_sql_readonly` を使ってください。
 
 ## メモリ
 
