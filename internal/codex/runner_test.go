@@ -212,6 +212,153 @@ enabled_tools = ["list_dataset_ids", "get_table_info"]
 	}
 }
 
+func TestLoadLocalConfigNotesLimitedMCPTools(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	content := `[mcp_servers.bigquery]
+command = "npx"
+enabled_tools = ["list_dataset_ids", "get_table_info"]
+
+[mcp_servers.docs]
+command = "docs"
+disabled_tools = ["delete_page"]
+
+[mcp_servers.off]
+enabled = false
+enabled_tools = []
+
+[mcp_servers.open]
+command = "open"
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadLocalConfig(path)
+	if err != nil {
+		t.Fatalf("loadLocalConfig() error = %v", err)
+	}
+	for _, want := range []string{
+		"- bigquery: 使えるのは list_dataset_ids, get_table_info だけ",
+		"- docs: delete_page は使えない",
+		"接続失敗ではなく",
+	} {
+		if !strings.Contains(got.MCPNote, want) {
+			t.Errorf("MCPNote = %q, want it to contain %q", got.MCPNote, want)
+		}
+	}
+	for _, unwanted := range []string{"off:", "open:"} {
+		if strings.Contains(got.MCPNote, unwanted) {
+			t.Errorf("MCPNote = %q, want no line for %q", got.MCPNote, unwanted)
+		}
+	}
+}
+
+func TestLoadLocalConfigWithoutLimitsHasNoNote(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[mcp_servers.open]\ncommand = \"open\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadLocalConfig(path)
+	if err != nil {
+		t.Fatalf("loadLocalConfig() error = %v", err)
+	}
+	if got.MCPNote != "" {
+		t.Fatalf("MCPNote = %q, want empty", got.MCPNote)
+	}
+}
+
+func TestLoadConfigOverridesKeepsBigQuerySQLReadOnly(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{
+			name: "execute_sql enabled without write mode",
+			content: `[mcp_servers.bigquery]
+command = "npx"
+args = ["-y", "@toolbox-sdk/server", "--prebuilt", "bigquery", "--stdio"]
+env = { BIGQUERY_PROJECT = "example-project" }
+enabled_tools = ["list_dataset_ids", "execute_sql"]
+`,
+			want: true,
+		},
+		{
+			name: "all tools exposed",
+			content: `[mcp_servers.bigquery]
+command = "toolbox"
+args = ["--prebuilt=bigquery", "--stdio"]
+`,
+			want: true,
+		},
+		{
+			name: "execute_sql not enabled",
+			content: `[mcp_servers.bigquery]
+env = { BIGQUERY_PROJECT = "example-project" }
+enabled_tools = ["list_dataset_ids"]
+`,
+		},
+		{
+			name: "execute_sql disabled",
+			content: `[mcp_servers.bigquery]
+env = { BIGQUERY_PROJECT = "example-project" }
+disabled_tools = ["execute_sql"]
+`,
+		},
+		{
+			name: "write mode chosen by operator",
+			content: `[mcp_servers.bigquery]
+env = { BIGQUERY_PROJECT = "example-project", BIGQUERY_WRITE_MODE = "protected" }
+enabled_tools = ["execute_sql"]
+`,
+		},
+		{
+			name: "readonly chosen by operator",
+			content: `[mcp_servers.bigquery]
+env = { BIGQUERY_PROJECT = "example-project", BIGQUERY_READONLY = "true" }
+enabled_tools = ["execute_sql"]
+`,
+		},
+		{
+			name: "other server",
+			content: `[mcp_servers.sql]
+command = "sql"
+enabled_tools = ["execute_sql"]
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tt.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := loadConfigOverrides(path)
+			if err != nil {
+				t.Fatalf("loadConfigOverrides() error = %v", err)
+			}
+			forced := false
+			for _, override := range got {
+				if strings.HasSuffix(override, `.env.BIGQUERY_WRITE_MODE="blocked"`) {
+					forced = true
+				}
+			}
+			if forced != tt.want {
+				t.Fatalf("loadConfigOverrides() = %#v, want blocked write mode %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestJoinInstructions(t *testing.T) {
+	if got := joinInstructions("policy", "", " note "); got != "policy\n\nnote" {
+		t.Fatalf("joinInstructions() = %q", got)
+	}
+	if got := joinInstructions("policy", ""); got != "policy" {
+		t.Fatalf("joinInstructions() = %q", got)
+	}
+}
+
 func TestLoadConfigOverridesMissingFile(t *testing.T) {
 	got, err := loadConfigOverrides(filepath.Join(t.TempDir(), "missing.toml"))
 	if err != nil {
