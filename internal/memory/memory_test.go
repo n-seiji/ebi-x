@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -66,7 +67,7 @@ func TestReadContextReadsOnlyGlobalAndChannelScopes(t *testing.T) {
 		{scope: ScopeChannel, text: "channel convention"},
 	}
 	for _, entry := range entries {
-		if _, err := AppendScoped(root, entry.scope, "C456", entry.text); err != nil {
+		if _, err := AppendScoped(root, entry.scope, "C456", entry.text, testNow); err != nil {
 			t.Fatalf("AppendScoped(%s) error = %v", entry.scope, err)
 		}
 	}
@@ -75,14 +76,14 @@ func TestReadContextReadsOnlyGlobalAndChannelScopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadContext() error = %v", err)
 	}
-	if got.Global != "global fact" || got.Channel != "channel convention" {
+	if got.Global != "### 2026-10-15\nglobal fact" || got.Channel != "### 2026-10-15\nchannel convention" {
 		t.Fatalf("ReadContext() = %#v", got)
 	}
 	other, err := ReadContext(root, "C999")
 	if err != nil {
 		t.Fatalf("ReadContext(other) error = %v", err)
 	}
-	if other.Global != "global fact" || other.Channel != "" {
+	if other.Global != "### 2026-10-15\nglobal fact" || other.Channel != "" {
 		t.Fatalf("ReadContext(other) = %#v", other)
 	}
 }
@@ -107,35 +108,35 @@ func TestScopeDirRejectsUnsafeIDs(t *testing.T) {
 
 func TestReadContextReturnsOtherScopesWhenOneFails(t *testing.T) {
 	root := t.TempDir()
-	if _, err := AppendScoped(root, ScopeGlobal, "C1", "global fact"); err != nil {
+	if _, err := AppendScoped(root, ScopeGlobal, "C1", "global fact", testNow); err != nil {
 		t.Fatalf("append global: %v", err)
 	}
 	got, err := ReadContext(root, "unsafe/channel")
 	if err == nil {
 		t.Fatalf("ReadContext() error = %v, want validation error", err)
 	}
-	if got.Global != "global fact" {
+	if got.Global != "### 2026-10-15\nglobal fact" {
 		t.Fatalf("ReadContext() global = %q", got.Global)
 	}
 }
 
 func TestAppendCreatesAndAppends(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "memory")
-	first, err := Append(dir, "一つ目の学び\n")
+	first, err := Append(dir, "一つ目の学び\n", testNow)
 	if err != nil {
 		t.Fatalf("Append() error = %v", err)
 	}
 	if first != "一つ目の学び" {
 		t.Fatalf("Append() = %q", first)
 	}
-	if _, err := Append(dir, "二つ目の学び"); err != nil {
+	if _, err := Append(dir, "二つ目の学び", testNow); err != nil {
 		t.Fatalf("Append() error = %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, FileName))
 	if err != nil {
 		t.Fatalf("read memory: %v", err)
 	}
-	want := "\n一つ目の学び\n\n二つ目の学び\n"
+	want := "\n### 2026-10-15\n一つ目の学び\n\n### 2026-10-15\n二つ目の学び\n"
 	if string(data) != want {
 		t.Fatalf("memory file = %q, want %q", data, want)
 	}
@@ -143,7 +144,7 @@ func TestAppendCreatesAndAppends(t *testing.T) {
 
 func TestAppendSkipsEmptyEntry(t *testing.T) {
 	dir := t.TempDir()
-	written, err := Append(dir, "  \n ")
+	written, err := Append(dir, "  \n ", testNow)
 	if err != nil {
 		t.Fatalf("Append() error = %v", err)
 	}
@@ -157,7 +158,7 @@ func TestAppendSkipsEmptyEntry(t *testing.T) {
 
 func TestAppendTruncatesOversizedEntry(t *testing.T) {
 	dir := t.TempDir()
-	written, err := Append(dir, strings.Repeat("界", MaxAppendBytes))
+	written, err := Append(dir, strings.Repeat("界", MaxAppendBytes), testNow)
 	if err != nil {
 		t.Fatalf("Append() error = %v", err)
 	}
@@ -169,5 +170,32 @@ func TestAppendTruncatesOversizedEntry(t *testing.T) {
 	}
 	if !strings.Contains(written, "切り詰め") {
 		t.Error("Append() missing truncation marker")
+	}
+}
+
+var testNow = time.Date(2026, 10, 15, 21, 0, 0, 0, time.Local)
+
+func TestExceedsPromptLimit(t *testing.T) {
+	root := t.TempDir()
+	over, err := ExceedsPromptLimit(root, ScopeChannel, "C1")
+	if err != nil || over {
+		t.Fatalf("ExceedsPromptLimit() on missing file = %v, %v; want false, nil", over, err)
+	}
+	if _, err := AppendScoped(root, ScopeChannel, "C1", "short fact", testNow); err != nil {
+		t.Fatalf("AppendScoped() error = %v", err)
+	}
+	if over, err := ExceedsPromptLimit(root, ScopeChannel, "C1"); err != nil || over {
+		t.Fatalf("ExceedsPromptLimit() on small file = %v, %v; want false, nil", over, err)
+	}
+	for range 3 {
+		if _, err := AppendScoped(root, ScopeChannel, "C1", strings.Repeat("a", MaxAppendBytes), testNow); err != nil {
+			t.Fatalf("AppendScoped() error = %v", err)
+		}
+	}
+	if over, err := ExceedsPromptLimit(root, ScopeChannel, "C1"); err != nil || !over {
+		t.Fatalf("ExceedsPromptLimit() on large file = %v, %v; want true, nil", over, err)
+	}
+	if over, err := ExceedsPromptLimit(root, ScopeGlobal, "C1"); err != nil || over {
+		t.Fatalf("ExceedsPromptLimit() on other scope = %v, %v; want false, nil", over, err)
 	}
 }

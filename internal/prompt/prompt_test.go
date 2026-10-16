@@ -26,10 +26,14 @@ func TestBuildTurnPrompt(t *testing.T) {
 			"<message_text>\n対象ファイルを更新し、テストを実行する\n</message_text>", "/src/app → /thread/app", "ebi-x/thread",
 			"## 添付ファイル", "PDF・PNG・JPEG・GIF・WebP・pptx", "100MB", "10件", "添付しました", "Slackのトークンやコマンドで自分で送信しない",
 			"## チャンネルメモリ追記", "メモリファイルを直接編集しない", "1800字以内", "表は3列以内",
+			"進め方や判断を直された", "- 訂正: ", "すでに書かれていること", "追記した日付", "（理由: …）",
 		} {
 			if !strings.Contains(got, want) {
 				t.Errorf("prompt missing %q", want)
 			}
+		}
+		if strings.Contains(got, "原則こちらに書いてください") != shared {
+			t.Errorf("global memory default = %v, want %v", !shared, shared)
 		}
 		if strings.Contains(got, "## 全体メモリ追記") != shared {
 			t.Errorf("global memory permission = %v, want %v", !shared, shared)

@@ -452,6 +452,9 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	if len(output.memoryScopes) > 0 {
 		resultText += "\n\n📝 " + strings.Join(output.memoryScopes, "・") + "メモリを更新しました。"
 	}
+	for _, notice := range output.memoryOverflowNotices {
+		resultText += "\n\n" + notice
+	}
 	if output.playbookNoteNotice != "" {
 		resultText += "\n\n" + output.playbookNoteNotice
 	}
@@ -494,10 +497,17 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	b.finalReaction(ctx, channel, timestamp, reaction)
 }
 
+// memoryOverflowNotice asks the operator to tidy a memory file whose oldest
+// entries no longer reach prompts. Arguments: scope label, limit in KB, path.
+const memoryOverflowNotice = "⚠️ %sメモリが%dKBを超えたため、古い項目は次のスレッドから読まれません。`%s` の不要な項目や重複を整理してください。"
+
 // workOutput is what a completed work turn hands back for posting.
 type workOutput struct {
 	text         string
 	memoryScopes []string
+	// memoryOverflowNotices tell the thread that a memory file the turn
+	// appended to has outgrown what prompts read.
+	memoryOverflowNotices []string
 	// attachmentOutputInvalid reports an attachment section the bot could not
 	// read, so no files were sent.
 	attachmentOutputInvalid bool
@@ -667,10 +677,11 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		targets := []struct {
 			scope memory.Scope
 			label string
+			path  string
 			entry string
 		}{
-			{scope: memory.ScopeGlobal, label: "全体", entry: memoryAppends.Global},
-			{scope: memory.ScopeChannel, label: "チャンネル", entry: memoryAppends.Channel},
+			{scope: memory.ScopeGlobal, label: "全体", path: "data/memory/MEMORY.md", entry: memoryAppends.Global},
+			{scope: memory.ScopeChannel, label: "チャンネル", path: "data/memory/channels/" + channel + "/MEMORY.md", entry: memoryAppends.Channel},
 		}
 		b.memoryMu.Lock()
 		for _, target := range targets {
@@ -678,14 +689,23 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 				continue
 			}
 			written, err := memory.AppendScoped(
-				b.config.MemoryDir, target.scope, channel, target.entry,
+				b.config.MemoryDir, target.scope, channel, target.entry, b.now(),
 			)
 			if err != nil {
 				log.Printf("slackbot: append %s memory %q: %v", target.scope, eventKey, err)
 				continue
 			}
-			if written != "" {
-				output.memoryScopes = append(output.memoryScopes, target.label)
+			if written == "" {
+				continue
+			}
+			output.memoryScopes = append(output.memoryScopes, target.label)
+			over, err := memory.ExceedsPromptLimit(b.config.MemoryDir, target.scope, channel)
+			if err != nil {
+				log.Printf("slackbot: check %s memory size %q: %v", target.scope, eventKey, err)
+				continue
+			}
+			if over {
+				output.memoryOverflowNotices = append(output.memoryOverflowNotices, fmt.Sprintf(memoryOverflowNotice, target.label, memory.PromptLimitKB, target.path))
 			}
 		}
 		b.memoryMu.Unlock()

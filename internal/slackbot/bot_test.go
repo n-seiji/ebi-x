@@ -1647,7 +1647,7 @@ func TestTurnPromptInjectsMemoryContent(t *testing.T) {
 		{scope: memory.ScopeChannel, text: "チャンネルの慣習"},
 	}
 	for _, entry := range entries {
-		if _, err := memory.AppendScoped(bot.config.MemoryDir, entry.scope, "C1", entry.text); err != nil {
+		if _, err := memory.AppendScoped(bot.config.MemoryDir, entry.scope, "C1", entry.text, time.Now()); err != nil {
 			t.Fatalf("append %s memory: %v", entry.scope, err)
 		}
 	}
@@ -1714,6 +1714,31 @@ func TestWorkMemoryAppendIsWrittenByBot(t *testing.T) {
 		if strings.Contains(posts, private) {
 			t.Fatalf("posts = %q, should not expose memory content %q", posts, private)
 		}
+	}
+}
+
+func TestWorkMemoryAppendWarnsWhenMemoryOutgrowsPrompt(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	runner := &fakeRunner{responses: []runnerResponse{
+		{result: &codex.TurnResult{
+			Completed: true,
+			Messages:  []string{"Work completed.\n## チャンネルメモリ追記\n- 短縮IDでもまず調べる"},
+		}},
+	}}
+	bot := newTestBot(t, store, api, runner)
+	for range 3 {
+		if _, err := memory.AppendScoped(bot.config.MemoryDir, memory.ScopeChannel, "C1", strings.Repeat("a", memory.MaxAppendBytes), time.Now()); err != nil {
+			t.Fatalf("append channel memory: %v", err)
+		}
+	}
+	bot.HandleMention(context.Background(), mention())
+	posts := strings.Join(api.postTexts, "|")
+	if !strings.Contains(posts, "チャンネルメモリを更新しました") || !strings.Contains(posts, "チャンネルメモリが8KBを超えた") || !strings.Contains(posts, "data/memory/channels/C1/MEMORY.md") {
+		t.Fatalf("posts = %q, want memory update and overflow notice", posts)
+	}
+	if strings.Contains(posts, "全体メモリが") {
+		t.Fatalf("posts = %q, global memory was not appended and should not warn", posts)
 	}
 }
 
@@ -2635,7 +2660,7 @@ func TestResumedSessionReceivesOnlyTheRequest(t *testing.T) {
 	if err := os.WriteFile(path, []byte("---\nname: example\ndescription: first-version\n---\nBody"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := memory.AppendScoped(bot.config.MemoryDir, memory.ScopeChannel, "C1", "channel-fact"); err != nil {
+	if _, err := memory.AppendScoped(bot.config.MemoryDir, memory.ScopeChannel, "C1", "channel-fact", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 2 {
