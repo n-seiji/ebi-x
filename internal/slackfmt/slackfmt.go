@@ -223,3 +223,45 @@ func PlainText(text string) string {
 	}
 	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
+
+// slackLinkPattern matches Slack's <target|label> link syntax, which the
+// model sometimes writes even though the bot posts Markdown.
+var slackLinkPattern = regexp.MustCompile(`<([^<>|\s]+)\|([^<>]*)>`)
+
+// HideLocalPaths keeps paths on the bot's machine out of Slack, where no
+// reader can open them. A link to a local file keeps only its label, and a
+// path under home is shown relative to home, so the operator can still find
+// it without the machine's home directory showing.
+func HideLocalPaths(text, home string) string {
+	text = linkPattern.ReplaceAllStringFunc(text, func(link string) string {
+		match := linkPattern.FindStringSubmatch(link)
+		if !localTarget(match[2]) {
+			return link
+		}
+		return match[1]
+	})
+	text = slackLinkPattern.ReplaceAllStringFunc(text, func(link string) string {
+		match := slackLinkPattern.FindStringSubmatch(link)
+		if !localTarget(match[1]) {
+			return link
+		}
+		return match[2]
+	})
+	home = strings.TrimRight(home, "/")
+	if home == "" {
+		return text
+	}
+	return strings.ReplaceAll(text, home+"/", "")
+}
+
+// localTarget reports whether a link target names a file on this machine
+// rather than a URL.
+func localTarget(target string) bool {
+	switch {
+	case strings.HasPrefix(target, "//"):
+		return false
+	case strings.HasPrefix(target, "/"), strings.HasPrefix(target, "~/"), strings.HasPrefix(target, "file:"):
+		return true
+	}
+	return false
+}

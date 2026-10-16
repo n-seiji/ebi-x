@@ -2816,3 +2816,25 @@ func TestUnreadablePlaybookCatalogDoesNotStartExecution(t *testing.T) {
 		t.Fatalf("runner calls=%d, state=%s; want retryable failure before execution", runner.calls, store.current)
 	}
 }
+
+func TestAnswerHidesLocalPaths(t *testing.T) {
+	runner := &fakeRunner{responses: []runnerResponse{{result: &codex.TurnResult{
+		Completed: true,
+		Messages:  []string{"根拠：[調査手順](/home/ebi/data/playbooks/a.md)\n作業コピー：/home/ebi/data/workspace/C1-100.1/repo"},
+	}}}}
+	api := &fakeSlack{}
+	bot := newTestBot(t, &fakeStore{claim: true}, api, runner)
+	bot.config.EBIXHome = "/home/ebi"
+
+	bot.HandleMention(context.Background(), mention())
+
+	var answer string
+	for _, post := range api.posts {
+		if strings.Contains(post.text, "作業コピー") {
+			answer = post.text
+		}
+	}
+	if !strings.Contains(answer, "根拠：調査手順\n作業コピー：data/workspace/C1-100.1/repo") || strings.Contains(answer, "/home/ebi") {
+		t.Fatalf("answer = %q, want local paths hidden", answer)
+	}
+}

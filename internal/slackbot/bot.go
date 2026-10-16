@@ -136,9 +136,12 @@ type Config struct {
 	// is set.
 	AllowedWorkflowIDs []string
 	AdminUserID        string
-	WorkspaceDir       string
-	MemoryDir          string
-	PlaybooksDir       string
+	// EBIXHome is ebi-x's own directory. Paths under it are shown relative
+	// to it in Slack.
+	EBIXHome     string
+	WorkspaceDir string
+	MemoryDir    string
+	PlaybooksDir string
 	// ActionRulesFile holds the operator's rules on which actions need the
 	// requester's confirmation. Built-in rules apply when it is missing.
 	ActionRulesFile            string
@@ -933,6 +936,7 @@ func neutralizeBroadcasts(text string) string {
 }
 
 func (b *Bot) post(ctx context.Context, channel, threadTS, text string) error {
+	text = slackfmt.HideLocalPaths(text, b.config.EBIXHome)
 	for _, chunk := range slackfmt.Split(text, maxSlackMessageRunes) {
 		if err := b.retrySlack(ctx, func() error {
 			_, err := b.api.PostMessage(ctx, channel, threadTS, chunk)

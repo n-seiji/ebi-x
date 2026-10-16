@@ -143,3 +143,48 @@ func TestPlainTextRemovesMarkdownSyntax(t *testing.T) {
 		})
 	}
 }
+
+func TestHideLocalPaths(t *testing.T) {
+	const home = "/Users/pc-001/ghq/github.com/n-seiji/ebiii"
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "markdown link to a local file keeps its label",
+			text: "根拠：[問い合わせ調査手順](/Users/pc-001/ghq/github.com/n-seiji/ebiii/data/playbooks/miive-inquiry-answer.md)",
+			want: "根拠：問い合わせ調査手順",
+		},
+		{
+			name: "slack link to a local file keeps its label",
+			text: "<" + home + "/data/playbooks/a.md|スライド作成playbook>を確認",
+			want: "スライド作成playbookを確認",
+		},
+		{
+			name: "file and home-relative links",
+			text: "[a](file:///tmp/a.md) と [b](~/notes/b.md)",
+			want: "a と b",
+		},
+		{
+			name: "bare path under home becomes relative",
+			text: "作業コピーを保持しています：\n" + home + "/data/workspace/C09-1.2/.codex-worktrees/alert/miive-server",
+			want: "作業コピーを保持しています：\ndata/workspace/C09-1.2/.codex-worktrees/alert/miive-server",
+		},
+		{
+			name: "urls are kept",
+			text: "[PR #1](https://github.com/o/r/pull/1) と <https://example.test/a|資料> と [x](//cdn.test/x)",
+			want: "[PR #1](https://github.com/o/r/pull/1) と <https://example.test/a|資料> と [x](//cdn.test/x)",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := HideLocalPaths(test.text, home); got != test.want {
+				t.Fatalf("HideLocalPaths() = %q, want %q", got, test.want)
+			}
+		})
+	}
+	if got := HideLocalPaths("/srv/x を見た", ""); got != "/srv/x を見た" {
+		t.Fatalf("HideLocalPaths() without home = %q, want bare paths kept", got)
+	}
+}
