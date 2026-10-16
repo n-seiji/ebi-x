@@ -3,8 +3,10 @@ package codex
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,8 +34,67 @@ func loadConfigOverrides(path string) ([]string, error) {
 	if err := flattenConfig(nil, config, &overrides); err != nil {
 		return nil, fmt.Errorf("encode local Codex config %q: %w", path, err)
 	}
+	servers, _ := config["mcp_servers"].(map[string]any)
+	overrides = append(overrides, bigQueryReadOnlyOverrides(servers)...)
 	sort.Strings(overrides)
 	return overrides, nil
+}
+
+// bigQueryReadOnlyOverrides keeps the SQL tool of MCP Toolbox's prebuilt
+// BigQuery server read-only. Toolbox allows any statement unless its write
+// mode says otherwise, so a server exposing execute_sql without an explicit
+// BIGQUERY_WRITE_MODE or BIGQUERY_READONLY runs in "blocked" mode, where
+// only SELECT statements are accepted.
+func bigQueryReadOnlyOverrides(servers map[string]any) []string {
+	var overrides []string
+	for _, name := range slices.Sorted(maps.Keys(servers)) {
+		server, _ := servers[name].(map[string]any)
+		env, _ := server["env"].(map[string]any)
+		_, writeMode := env["BIGQUERY_WRITE_MODE"]
+		_, readOnly := env["BIGQUERY_READONLY"]
+		if writeMode || readOnly || !isToolboxBigQuery(server) || !exposesTool(server, "execute_sql") {
+			continue
+		}
+		path := []string{"mcp_servers", name, "env", "BIGQUERY_WRITE_MODE"}
+		overrides = append(overrides, encodeDottedKey(path)+`="blocked"`)
+	}
+	return overrides
+}
+
+func isToolboxBigQuery(server map[string]any) bool {
+	env, _ := server["env"].(map[string]any)
+	if _, ok := env["BIGQUERY_PROJECT"]; ok {
+		return true
+	}
+	args := stringList(server["args"])
+	for i, arg := range args {
+		if arg == "--prebuilt=bigquery" || (arg == "--prebuilt" && i+1 < len(args) && args[i+1] == "bigquery") {
+			return true
+		}
+	}
+	return false
+}
+
+// exposesTool reports whether Codex offers the tool of an enabled server.
+func exposesTool(server map[string]any, tool string) bool {
+	if enabled, ok := server["enabled"].(bool); ok && !enabled {
+		return false
+	}
+	if _, ok := server["enabled_tools"]; ok && !slices.Contains(stringList(server["enabled_tools"]), tool) {
+		return false
+	}
+	return !slices.Contains(stringList(server["disabled_tools"]), tool)
+}
+
+func stringList(value any) []string {
+	items, _ := value.([]any)
+	list := make([]string, 0, len(items))
+	for _, item := range items {
+		if s, ok := item.(string); ok {
+			list = append(list, s)
+		}
+	}
+	return list
 }
 
 func flattenConfig(prefix []string, value map[string]any, overrides *[]string) error {
@@ -169,13 +230,8 @@ func encodeTOMLValue(value any) (string, error) {
 }
 
 func encodeInlineTable(value map[string]any) (string, error) {
-	keys := make([]string, 0, len(value))
-	for key := range value {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	items := make([]string, 0, len(keys))
-	for _, key := range keys {
+	items := make([]string, 0, len(value))
+	for _, key := range slices.Sorted(maps.Keys(value)) {
 		encoded, err := encodeTOMLValue(value[key])
 		if err != nil {
 			return "", err

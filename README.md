@@ -413,6 +413,23 @@ playbook は作った時点の情報のまま古くなりがちです（作成�
 - 表示されるのは playbook ファイルの更新日時より後のメモだけです。playbook 本文の修正（承認が必要）でメモの内容を取り込むと、取り込んだメモは表示されなくなります。日付のない行は運用者のメモとして常に表示します。1つの playbook につき新しい順に2KBまで表示します。
 - 本文と同じく全チャンネルに影響するため、追記できるのは `EBIX_SHARED_WRITE_CHANNEL_IDS` のチャンネルだけです。メモのファイルはメモリと同じく Codex からは読み書きできず、botだけが書き込みます。
 
+## MCP ツール（BigQuery など）
+
+Codex の MCP サーバーは `EBIX_HOME/.codex/config.toml` に書きます（`~/.codex/config.toml` は読み込みません）。`enabled_tools` / `disabled_tools` で公開していないツールが必要になったとき、Codex は「MCP に接続できない」ではなく「公開されていない」と案内します。
+
+### BigQuery で SQL を使う
+
+[MCP Toolbox](https://github.com/googleapis/genai-toolbox) の prebuilt BigQuery サーバーは、`enabled_tools` で絞らなければ `execute_sql` を含む全ツールを公開します。メタデータの4ツールに絞っていると実データを調べられないので、`enabled_tools` の行を削除してください。
+
+```toml
+[mcp_servers.bigquery]
+# command / args / env の既存の設定はそのまま。enabled_tools は書かない
+```
+
+Toolbox の `execute_sql` は既定ではどんな文でも実行できます。そのため ebi-x は、`execute_sql` を公開している Toolbox BigQuery サーバー（`env` に `BIGQUERY_PROJECT` があるか、`--prebuilt bigquery` で起動するもの）に `BIGQUERY_WRITE_MODE` も `BIGQUERY_READONLY` も書かれていなければ、`env.BIGQUERY_WRITE_MODE="blocked"` を付けて起動します。この状態では SELECT 文だけが実行できます。サーバーをラッパースクリプト経由で起動していて上の条件に当たらない場合は、`env` に `BIGQUERY_WRITE_MODE = "blocked"` を自分で書いてください。認証・課金プロジェクトは既存の設定をそのまま使い、`.env` の追加は不要です。
+
+Google Cloud のリモート BigQuery MCP（`https://bigquery.googleapis.com/mcp`）の場合は、更新もできる `execute_sql` を `disabled_tools = ["execute_sql"]` で外し、`execute_sql_readonly` を使ってください。
+
 ## メモリ
 
 ebi-x は作業で得た長期的に有用な情報を、次の2スコープに分けて保存します。
