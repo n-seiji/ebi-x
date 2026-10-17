@@ -37,6 +37,9 @@ const (
 type Context struct {
 	Global  string
 	Channel string
+	// CopyDir is where the turn can search the full memory, or "" when the
+	// thread has no copy.
+	CopyDir string
 }
 
 // ReadContext reads global memory plus the memory belonging to the current

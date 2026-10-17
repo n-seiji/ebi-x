@@ -1742,6 +1742,59 @@ func TestWorkMemoryAppendWarnsWhenMemoryOutgrowsPrompt(t *testing.T) {
 	}
 }
 
+func TestWorkCopiesMemoryIntoThreadWorkspace(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	base := t.TempDir()
+	runner := &fakeRunner{responses: []runnerResponse{
+		{result: &codex.TurnResult{Completed: true, Messages: []string{"done"}}},
+	}}
+	bot := New(api, store, runner, Config{
+		AllowedUserIDs:    []string{"U1"},
+		AllowedChannelIDs: []string{"C1"},
+		WorkspaceDir:      "/unused",
+		MemoryDir:         filepath.Join(base, "memory"),
+		CodexTimeout:      time.Minute,
+		BotUserID:         "UBOT",
+		Workspaces:        dirWorkspaces{base: base},
+	}, nil)
+	if _, err := memory.AppendScoped(bot.config.MemoryDir, memory.ScopeGlobal, "C1", "全体の学び", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memory.AppendScoped(bot.config.MemoryDir, memory.ScopeChannel, "C2", "別チャンネルの学び", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	bot.HandleMention(context.Background(), mention())
+
+	dir := filepath.Join(base, "workspace", "C1-100.1", memory.CopyDirName)
+	data, err := os.ReadFile(filepath.Join(dir, memory.GlobalCopyName))
+	if err != nil || !strings.Contains(string(data), "全体の学び") {
+		t.Fatalf("global copy = %q, %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, memory.ChannelCopyName)); !os.IsNotExist(err) {
+		t.Fatalf("channel copy should not exist for a channel without memory, stat err = %v", err)
+	}
+	if len(runner.prompts) != 1 || !strings.Contains(runner.prompts[0], dir) || !strings.Contains(runner.prompts[0], "grep") {
+		t.Fatalf("turn prompt should point at the memory copy %s", dir)
+	}
+}
+
+func TestWorkSharedWorkspaceGetsNoMemoryCopy(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{}
+	runner := &fakeRunner{responses: []runnerResponse{
+		{result: &codex.TurnResult{Completed: true, Messages: []string{"done"}}},
+	}}
+	bot := newTestBot(t, store, api, runner)
+	if _, err := memory.AppendScoped(bot.config.MemoryDir, memory.ScopeChannel, "C1", "チャンネルの学び", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	bot.HandleMention(context.Background(), mention())
+	if strings.Contains(runner.prompts[0], memory.CopyDirName) {
+		t.Fatal("a workspace shared by every thread must not get a memory copy")
+	}
+}
+
 func TestUserMemoryOutputIsNotAccepted(t *testing.T) {
 	store := &fakeStore{claim: true}
 	api := &fakeSlack{}

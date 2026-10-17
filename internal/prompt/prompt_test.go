@@ -221,3 +221,15 @@ func TestBuildPullWatchPromptFencesEvent(t *testing.T) {
 		t.Fatal("prompt does not mark the event as data")
 	}
 }
+
+func TestBuildTurnPromptPointsAtMemoryCopy(t *testing.T) {
+	got := BuildTurnPrompt(memory.Context{Global: "g", CopyDir: "/ws/thread/.ebi-x-memory"}, nil, "", "", "U1", "x", nil, nil, true, false)
+	for _, want := range []string{"/ws/thread/.ebi-x-memory", "global.md", "channel.md", "grep"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+	if strings.Contains(BuildTurnPrompt(memory.Context{Global: "g"}, nil, "", "", "U1", "x", nil, nil, true, false), "grep") {
+		t.Error("prompt without a copy should not ask to grep it")
+	}
+}

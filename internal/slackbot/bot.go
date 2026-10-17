@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -499,7 +500,7 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 
 // memoryOverflowNotice asks the operator to tidy a memory file whose oldest
 // entries no longer reach prompts. Arguments: scope label, limit in KB, path.
-const memoryOverflowNotice = "⚠️ %sメモリが%dKBを超えたため、古い項目は次のスレッドから読まれません。`%s` の不要な項目や重複を整理してください。"
+const memoryOverflowNotice = "⚠️ %sメモリが%dKBを超えたため、プロンプトには新しい側だけが入ります（全文は作業中に検索されます）。`%s` の不要な項目や重複を整理してください。"
 
 // workOutput is what a completed work turn hands back for posting.
 type workOutput struct {
@@ -573,6 +574,23 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	// channels may change them.
 	_, sharedWritable := b.sharedWriteChannels[channel]
 
+	// Every turn refreshes the thread's copy of its memory, so a resumed
+	// session can search what other threads learned since it started. A
+	// workspace shared by every thread gets no copy, because it would show
+	// one channel's memory to the others.
+	memoryCopyDir := ""
+	if b.config.MemoryDir != "" && !lease.Shared {
+		dir := filepath.Join(lease.Dir, memory.CopyDirName)
+		b.memoryMu.RLock()
+		copyErr := memory.WriteCopy(b.config.MemoryDir, channel, dir)
+		b.memoryMu.RUnlock()
+		if copyErr != nil {
+			log.Printf("slackbot: copy memory for %q: %v", eventKey, copyErr)
+		} else {
+			memoryCopyDir = dir
+		}
+	}
+
 	// A new session receives the memory, playbook catalog, and rules once;
 	// a resumed session already holds them, so only the request is sent.
 	var turnPrompt string
@@ -591,6 +609,7 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		if memErr != nil {
 			log.Printf("slackbot: read memory: %v", memErr)
 		}
+		memoryContext.CopyDir = memoryCopyDir
 		turnPrompt = prompt.BuildTurnPrompt(memoryContext, currentPlaybooks, readActionRules(b.config.ActionRulesFile), slackThread, trigger.authorID, trigger.message, lease.Checkouts, lease.PendingRepos, sharedWritable, b.pullWatchEnabled())
 	} else if trigger.source == pullWatchTrigger {
 		turnPrompt = prompt.BuildPullWatchPrompt(trigger.message, lease.Checkouts, lease.PendingRepos)
