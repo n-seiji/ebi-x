@@ -67,6 +67,8 @@ type SlackAPI interface {
 	// OpenRequestModal opens the "ebi-x に頼む" modal for a message shortcut.
 	OpenRequestModal(ctx context.Context, triggerID, metadata, quoted string) error
 	PostEphemeral(ctx context.Context, channel, user, text string) error
+	// JoinChannel joins a public channel.
+	JoinChannel(ctx context.Context, channel string) error
 }
 
 // ThreadMessage is the Slack thread data supplied to a first turn.

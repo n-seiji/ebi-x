@@ -287,6 +287,8 @@ type fakeSlack struct {
 	uploads           []fakeUpload
 	uploadErrs        []error
 	posts             []fakePost
+	joinErr           error
+	joined            []string
 	// topTimestamp, when set, is returned for top-level posts instead of
 	// the default placeholder, for flows that run work in the new thread.
 	topTimestamp string
@@ -381,6 +383,16 @@ func (s *fakeSlack) OpenRequestModal(_ context.Context, triggerID, metadata, quo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, slackCall{kind: "modal:" + triggerID, text: metadata + "\n" + quoted})
+	return nil
+}
+
+func (s *fakeSlack) JoinChannel(_ context.Context, channel string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.joinErr != nil {
+		return s.joinErr
+	}
+	s.joined = append(s.joined, channel)
 	return nil
 }
 
