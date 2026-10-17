@@ -25,6 +25,7 @@ const slackFormatRules = `- Markdown記法（見出し・太字・箇条書き�
 - 表は3列以内にしてください。それ以上の比較は、見出しを付けた箇条書きにしてください。
 - 箇条書きのネストは2段までにしてください。
 - 根拠のリンクは本文に散らさず、末尾にまとめてください。
+- Slackの読み手はこのPCのファイルを開けません。ローカルのファイルへのリンクやフルパスは書かないでください。根拠には GitHub・Notion などのURLを使い、URLがないファイル（playbookや作業コピー）は名前だけを書いてください。
 `
 
 // workingRules are how the agent works through a request. They follow the

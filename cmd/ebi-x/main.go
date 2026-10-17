@@ -107,6 +107,7 @@ func main() {
 		AllowWorkflows:             cfg.AllowWorkflows,
 		AllowedWorkflowIDs:         cfg.AllowedWorkflowIDs,
 		AdminUserID:                cfg.AdminUserID,
+		EBIXHome:                   cfg.EBIXHome,
 		WorkspaceDir:               cfg.WorkspaceDir,
 		MemoryDir:                  cfg.MemoryDir,
 		PlaybooksDir:               cfg.PlaybooksDir,
