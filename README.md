@@ -29,7 +29,7 @@ ebi-x を使えるuser・channel・Workflowは、`.env` の許可リスト（固
 
 ### 承認チャンネル
 
-`SLACK_APPROVAL_CHANNEL_ID` にチャンネル（パブリックでも可）を、`SLACK_APPROVER_USER_IDS` に承認者を設定し、Botをそのチャンネルに招待すると、許可されていないuser・channel・Workflowからのmentionを Slack 上で許可できます。追加のscopeやApp設定は不要です。
+`SLACK_APPROVAL_CHANNEL_ID` にチャンネル（パブリックでも可）を、`SLACK_APPROVER_USER_IDS` に承認者を設定し、Botをそのチャンネルに招待すると、許可されていないuser・channel・Workflowからのmentionを Slack 上で許可できます。許可するだけなら追加のscopeやApp設定は不要です（「参加」には `channels:join` が要ります。下記）。
 
 ```
 #sales
@@ -49,6 +49,7 @@ ebi-x を使えるuser・channel・Workflowは、`.env` の許可リスト（固
 - 許可を待っていたmentionは、必要な許可がすべて揃った時点で自動で始めます。もう一度 mention する必要はありません。userとchannelの両方を待っているときは、片方が許可されると「残りの許可を待っています」と伝えます。同じ相手の許可を待つmentionが複数あれば、最後のものだけを始めます。24時間より前のmention、本文のないmention、Workflowからのmentionは自動では始めず、これまで通り「もう一度 mention してください」と伝えます。
 - 承認者は依頼のスレッドで `@ebi-x 許可` か `@ebi-x 拒否` と mention します。承認チャンネルではこれ以外の操作はできず、作業の依頼も受け付けません（使い方を返すだけです）。
 - 操作できるのは `SLACK_APPROVER_USER_IDS` の人だけです。
+- Slack は、bot が参加していないチャンネルの mention を bot に届けません（Workflow からの mention は招待の確認も出ないため、何も起きません）。承認者が承認チャンネルで `@ebi-x 参加 #チャンネル` と mention すると、ebi-x がそのパブリックチャンネルに参加し、同時にそのチャンネルを許可します。そのチャンネルの許可を待っていた mention があれば、そのまま始めます。拒否したチャンネルには参加しません。プライベートチャンネルには自分で参加できないため、メンバーが ebi-x を招待してください。この操作には Slack アプリの `channels:join` scope が必要です（`examples/slack-app-manifest.json` に含めています）。
 - 最初の決定が優先されます。拒否した相手は記録され、次からは確認せずに拒否します。
 - 決定は `data/state/approvals.json` に、誰がいつ決めたかと一緒に保存します。決定を取り消すときは、ebi-x を止めてこのファイルから該当する項目を消してください。`data/state` はCodexから読み書きできないため（後述）、エージェントが自分で許可を書き足すことはできません。
 

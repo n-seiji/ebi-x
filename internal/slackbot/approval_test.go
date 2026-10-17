@@ -483,3 +483,85 @@ func decide(t *testing.T, approvals *state.Store, kind state.ApprovalKind, id st
 		t.Fatalf("DecideApproval(%s, %s) = %v, %v; want decided", kind, id, decided, err)
 	}
 }
+
+func TestApproverJoinsAndApprovesPublicChannel(t *testing.T) {
+	bot, api, _, approvals := newApprovalBot(t, &fakeRunner{})
+
+	reply := approvalCommand(bot, api, "UOWNER", "", "参加 <#C9|times-shion>")
+
+	if !strings.Contains(reply, "✅ チャンネル <#C9> に参加し、<@UOWNER> が許可しました") {
+		t.Fatalf("reply = %q, want joined and approved", reply)
+	}
+	if len(api.joined) != 1 || api.joined[0] != "C9" {
+		t.Fatalf("joined = %v, want C9", api.joined)
+	}
+	if got := approvals.ApprovalStatus(state.ApprovalChannel, "C9"); got != state.Approved {
+		t.Fatalf("status = %q, want approved", got)
+	}
+	announced := false
+	for _, post := range api.posts {
+		if post.channel == "C9" && strings.Contains(post.text, "ebi-x が参加しました") {
+			announced = true
+		}
+	}
+	if !announced {
+		t.Fatalf("posts = %+v, want a note in the joined channel", api.posts)
+	}
+}
+
+func TestJoinStartsTheMentionWaitingForTheChannel(t *testing.T) {
+	runner := successfulTurnRunner()
+	bot, api, _, _ := newApprovalBot(t, runner)
+	bot.now = func() time.Time { return time.Unix(100, 0).Add(time.Hour) }
+	event := mention()
+	event.Channel = "C2"
+	bot.HandleMention(context.Background(), event)
+
+	approvalCommand(bot, api, "UOWNER", "", "参加 <#C2>")
+
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want the waiting mention started", runner.calls)
+	}
+}
+
+func TestJoinIsRefusedWhenNotPossible(t *testing.T) {
+	tests := []struct {
+		name      string
+		user      string
+		configure func(*fakeSlack, *state.Store)
+		want      string
+	}{
+		{name: "non-approver", user: "U1", want: notApproverMessage},
+		{name: "private channel", user: "UOWNER", configure: func(api *fakeSlack, _ *state.Store) {
+			api.joinErr = fmt.Errorf("method_not_supported_for_channel_type")
+		}, want: "プライベートチャンネルのため"},
+		{name: "denied channel", user: "UOWNER", configure: func(_ *fakeSlack, approvals *state.Store) {
+			if _, err := approvals.RequestApproval(state.ApprovalChannel, "C9", "U1", "C9", "1.1", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := approvals.DecideApproval(state.ApprovalChannel, "C9", false, "UOWNER", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "拒否済みのため参加しません"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bot, api, _, approvals := newApprovalBot(t, &fakeRunner{})
+			if test.configure != nil {
+				test.configure(api, approvals)
+			}
+
+			reply := approvalCommand(bot, api, test.user, "", "参加 <#C9>")
+
+			if !strings.Contains(reply, test.want) {
+				t.Fatalf("reply = %q, want %q", reply, test.want)
+			}
+			if got := approvals.ApprovalStatus(state.ApprovalChannel, "C9"); got == state.Approved {
+				t.Fatal("channel approved, want not")
+			}
+			if test.name != "private channel" && len(api.joined) != 0 {
+				t.Fatalf("joined = %v, want none", api.joined)
+			}
+		})
+	}
+}

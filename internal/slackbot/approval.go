@@ -22,7 +22,7 @@ const (
 	// it is no longer started on its own.
 	approvalResumeWindow    = 24 * time.Hour
 	notApproverMessage      = "承認者（SLACK_APPROVER_USER_IDS）だけが操作できます。"
-	approvalUsageMessage    = "承認チャンネルでは、依頼のスレッドで「" + approveCommand + "」か「" + denyCommand + "」と mention することだけができます。"
+	approvalUsageMessage    = "承認チャンネルでは、依頼のスレッドで「" + approveCommand + "」か「" + denyCommand + "」と mention するか、「" + joinCommand + " #チャンネル」と mention して ebi-x をパブリックチャンネルに参加させることだけができます。"
 	approvalSaveFailMessage = "記録の保存に失敗したため、操作していません。もう一度お試しください。"
 )
 
@@ -38,6 +38,7 @@ type Approvals interface {
 	RequestApproval(kind state.ApprovalKind, id, requestedBy, requestChannel, requestThreadTS string, now time.Time) (bool, error)
 	SetApprovalRequestMessage(kind state.ApprovalKind, id, timestamp string) error
 	SetApprovalMention(kind state.ApprovalKind, id string, mention state.ApprovalMention) (bool, error)
+	GetApproval(kind state.ApprovalKind, id string) (state.Approval, bool)
 	FindApprovalByRequestMessage(timestamp string) (state.Approval, bool)
 	DecideApproval(kind state.ApprovalKind, id string, approve bool, decidedBy string, now time.Time) (state.Approval, bool, error)
 	DeleteApproval(kind state.ApprovalKind, id string) (bool, error)
@@ -219,9 +220,12 @@ func (b *Bot) handleApprovalCommand(ctx context.Context, event *slackevents.AppM
 	request, inRequest := b.config.Approvals.FindApprovalByRequestMessage(event.ThreadTimeStamp)
 	var reply string
 	var resume *processingTrigger
+	joinTarget, isJoin := joinRequest(command)
 	switch {
 	case !b.isApprover(event.User):
 		reply = notApproverMessage
+	case isJoin:
+		reply, resume = b.joinChannel(ctx, joinTarget, event.User)
 	case !inRequest || (command != approveCommand && command != denyCommand):
 		reply = approvalUsageMessage
 	default:
