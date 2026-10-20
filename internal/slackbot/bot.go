@@ -98,6 +98,8 @@ type Store interface {
 	GetPullWatch(key string) (state.PullWatch, bool)
 	SetPullWatch(watch state.PullWatch) error
 	DeletePullWatches(match func(state.PullWatch) bool) ([]state.PullWatch, error)
+	UsageAlerts() map[string]int
+	SetUsageAlerts(alerts map[string]int) error
 }
 
 // Runner executes one Codex turn. deniedPaths are hidden from the turn in
@@ -170,6 +172,10 @@ type Config struct {
 	// Workspaces gives each Slack thread its cwd and writable roots. When
 	// nil, every thread shares WorkspaceDir and WritableRoots.
 	Workspaces Workspaces
+	// Usage reads the Codex account's usage. When it is set, low usage is
+	// announced in ApprovalChannelID and a turn stopped by the usage limit
+	// says when to ask again.
+	Usage UsageReader
 }
 
 // Bot handles Slack mentions.
@@ -194,8 +200,11 @@ type Bot struct {
 	// processing or waiting to process, keyed by thread and then event.
 	runningMu sync.Mutex
 	running   map[string]map[string]runningRequest
-	now       func() time.Time
-	sleep     func(context.Context, time.Duration) error
+	// usageMu serializes usage announcements from the poll and from turns
+	// that hit the limit.
+	usageMu sync.Mutex
+	now     func() time.Time
+	sleep   func(context.Context, time.Duration) error
 }
 
 type triggerSource uint8
@@ -445,7 +454,11 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	}
 	if workErr != nil {
 		log.Printf("slackbot: work turn %q: %v", eventKey, workErr)
-		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, failure(workFailureMessage))
+		message := workFailureMessage
+		if errors.Is(workErr, codex.ErrUsageLimit) {
+			message = b.usageLimitFailure(ctx)
+		}
+		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, failure(message))
 		return
 	}
 	resultText := output.text
@@ -715,6 +728,9 @@ func (b *Bot) runWorkTurn(ctx context.Context, threadID string, lease *workspace
 	}
 	if result == nil || !result.Completed || len(result.Messages) == 0 {
 		if result != nil && result.Err != "" {
+			if codex.IsUsageLimitMessage(result.Err) {
+				return "", fmt.Errorf("work turn incomplete: %s: %w", result.Err, codex.ErrUsageLimit)
+			}
 			return "", fmt.Errorf("work turn incomplete: %s", result.Err)
 		}
 		return "", errors.New("work turn incomplete")
@@ -1163,6 +1179,7 @@ func RunSocketMode(acceptCtx, turnCtx context.Context, botToken, appToken string
 	wg.Go(func() { bot.runFollowUps(acceptCtx, turnCtx, wg) })
 	wg.Go(func() { bot.runPullWatches(acceptCtx, turnCtx, wg) })
 	wg.Go(func() { bot.runSchedules(acceptCtx, turnCtx, wg) })
+	wg.Go(func() { bot.runUsageWatch(acceptCtx) })
 	socketClient := socketmode.New(client)
 	runErr := make(chan error, 1)
 	go func() {
