@@ -20,6 +20,9 @@ const (
 	homeTitle     = "*ebi-x の作業*\nあなたが依頼した作業の今の状況です。ホームを開き直すと最新になります。"
 	homeForbidden = "*ebi-x の作業*\nebi-x を使う許可がないため、作業はありません。"
 	homeEmpty     = "ありません。"
+
+	homeSettingsTitle = "⚙️ あなたの個人設定"
+	homeSettingsHelp  = "ebi-x への依頼の中で「返事は短くして、今後もそうして」のように頼むと設定され、「個人設定から〇〇を消して」で変更や削除ができます。この一覧はあなたにだけ表示されます。"
 )
 
 // homeThread is one thread listed on the Home tab.
@@ -95,10 +98,25 @@ func (b *Bot) publishHome(ctx context.Context, userID string) {
 	sections = append(sections, b.homeSection(ctx, links, "🔁 定期実行", schedules, func(item homeThread) string {
 		return item.detail
 	}))
+	sections = append(sections, homeUserSettings(b.readUserSettings(userID)))
 	sections = append(sections, "_更新: "+formatFollowUpTime(b.now())+"_")
 	if err := b.api.PublishHome(ctx, userID, sections); err != nil {
 		log.Printf("slackbot: publish home for %q: %v", userID, err)
 	}
+}
+
+// homeUserSettings lists the user's own settings. The Home tab is the one
+// place they are shown, since only its owner sees it.
+func homeUserSettings(settings []string) string {
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "*%s（%d）*", homeSettingsTitle, len(settings))
+	if len(settings) == 0 {
+		builder.WriteString("\n" + homeEmpty)
+	}
+	for _, setting := range settings {
+		builder.WriteString("\n• " + setting)
+	}
+	return builder.String() + "\n_" + homeSettingsHelp + "_"
 }
 
 // homeSection lists items under title, each with a link to its thread.

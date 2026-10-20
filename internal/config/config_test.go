@@ -835,3 +835,42 @@ func TestLoadRejectsWritableRootOverlappingBotDirectories(t *testing.T) {
 		})
 	}
 }
+
+// Runtime data, including memory and user settings, must never be
+// committed: it lives under data/, which the repository ignores.
+func TestRuntimeDataIsGitIgnored(t *testing.T) {
+	ignore, err := os.ReadFile(filepath.Join("..", "..", ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains("\n"+string(ignore)+"\n", "\n/data/\n") {
+		t.Fatal(".gitignore does not ignore /data/")
+	}
+	home := t.TempDir()
+	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
+	t.Setenv("SLACK_APP_TOKEN", "xapp-test")
+	t.Setenv("SLACK_ALLOWED_USER_IDS", "U1")
+	t.Setenv("SLACK_ALLOWED_CHANNEL_IDS", "C1")
+	t.Setenv("EBIX_HOME", home)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	under := func(path string) bool {
+		for _, base := range []string{home, data} {
+			if rel, err := filepath.Rel(filepath.Join(base, "data"), path); err == nil && !strings.HasPrefix(rel, "..") {
+				return true
+			}
+		}
+		return false
+	}
+	for _, path := range []string{cfg.WorkspaceDir, cfg.CheckoutsDir, cfg.MemoryDir, cfg.PlaybooksDir, cfg.StateDir, cfg.ActionRulesFile} {
+		if !under(path) {
+			t.Errorf("%s is outside the ignored data directory", path)
+		}
+	}
+}

@@ -482,6 +482,11 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, workFailureMessage)
 		return
 	}
+	if output.userSettingsNotice != "" {
+		if err := b.api.PostEphemeral(ctx, channel, trigger.authorID, output.userSettingsNotice); err != nil {
+			log.Printf("slackbot: post user settings notice %q: %v", eventKey, err)
+		}
+	}
 	if err := b.store.Transition(eventKey, state.Working, final); err != nil {
 		log.Printf("slackbot: finish work %q: %v", eventKey, err)
 		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, workFailureMessage)
@@ -501,6 +506,9 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 type workOutput struct {
 	text         string
 	memoryScopes []string
+	// userSettingsNotice tells the requester, and only them, that their
+	// settings changed.
+	userSettingsNotice string
 	// attachmentOutputInvalid reports an attachment section the bot could not
 	// read, so no files were sent.
 	attachmentOutputInvalid bool
@@ -569,6 +577,7 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	// A new session receives the memory, playbook catalog, and rules once;
 	// a resumed session already holds them, so only the request is sent.
 	var turnPrompt string
+	settings := b.readUserSettings(trigger.authorID)
 	if threadID == "" {
 		currentPlaybooks, err := b.currentPlaybooks()
 		if err != nil {
@@ -584,13 +593,13 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		if memErr != nil {
 			log.Printf("slackbot: read memory: %v", memErr)
 		}
-		turnPrompt = prompt.BuildTurnPrompt(memoryContext, currentPlaybooks, readActionRules(b.config.ActionRulesFile), slackThread, trigger.authorID, trigger.message, lease.Checkouts, lease.PendingRepos, sharedWritable, b.pullWatchEnabled())
+		turnPrompt = prompt.BuildTurnPrompt(memoryContext, currentPlaybooks, readActionRules(b.config.ActionRulesFile), slackThread, trigger.authorID, trigger.message, settings, lease.Checkouts, lease.PendingRepos, sharedWritable, b.pullWatchEnabled())
 	} else if trigger.source == pullWatchTrigger {
 		turnPrompt = prompt.BuildPullWatchPrompt(trigger.message, lease.Checkouts, lease.PendingRepos)
 	} else if trigger.followUp != nil {
 		turnPrompt = prompt.BuildFollowUpPrompt(trigger.followUp.Task, trigger.followUp.DueAt, b.now(), trigger.followUp.Chain, lease.Checkouts, lease.PendingRepos)
 	} else {
-		turnPrompt = prompt.BuildResumePrompt(trigger.authorID, trigger.message, lease.Checkouts, lease.PendingRepos, b.pendingFollowUp(threadRef(channel, threadTS)))
+		turnPrompt = prompt.BuildResumePrompt(trigger.authorID, trigger.message, settings, lease.Checkouts, lease.PendingRepos, b.pendingFollowUp(threadRef(channel, threadTS)))
 	}
 
 	if err := b.store.Transition(eventKey, state.Received, state.Working); err != nil {
@@ -656,6 +665,12 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	}
 	resultText, output.questions, output.waiting = codex.SplitQuestions(resultText)
 	resultText, output.pullURLs = codex.SplitPullWatches(resultText)
+	resultText, userSettings, userSettingsPresent, userSettingsInvalid := codex.SplitUserSettings(resultText)
+	if userSettingsInvalid {
+		log.Printf("slackbot: ignore malformed user settings output %q", eventKey)
+	} else if userSettingsPresent {
+		output.userSettingsNotice = b.saveUserSettings(eventKey, trigger, userSettings)
+	}
 	resultText, playbookNote, playbookNoteInvalid := codex.SplitPlaybookNote(resultText)
 	resultText, memoryAppends, memoryOutputValid := codex.SplitMemoryAppends(resultText)
 	output.text = codex.SanitizeSlackOutput(resultText)

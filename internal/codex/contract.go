@@ -60,6 +60,11 @@ const (
 	followUpTaskKey            = "やること"
 	questionsHeading           = "## 回答待ち"
 	pullWatchHeading           = "## PR の見守り"
+	// UserSettingsHeading replaces the requester's own settings.
+	UserSettingsHeading = "## 個人設定"
+	// userSettingsClear is the only bullet of a section that removes every
+	// setting.
+	userSettingsClear = "なし"
 	// CheckoutRequestHeading asks the bot to prepare the thread's checkouts
 	// and continue the same session in them.
 	CheckoutRequestHeading = "## 作業用クローン要求"
@@ -441,4 +446,52 @@ func SplitPullWatches(text string) (rest string, urls []string) {
 		return text, nil
 	}
 	return strings.TrimSpace(strings.Join(kept, "\n")), urls
+}
+
+// SplitUserSettings removes the section that replaces the requester's own
+// settings. The section is its heading followed by bullet lines, one setting
+// each, and ends at the first other line; the single bullet "なし" removes
+// every setting. present reports the heading. Every copy of the heading is
+// removed with its bullets so none reaches Slack, and invalid reports more
+// than one copy or a heading without bullets, which change nothing.
+func SplitUserSettings(text string) (rest string, settings []string, present, invalid bool) {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	prose := proseLines(lines)
+	kept := make([]string, 0, len(lines))
+	count := 0
+	for i := 0; i < len(lines); i++ {
+		if !prose[i] || strings.TrimSpace(lines[i]) != UserSettingsHeading {
+			kept = append(kept, lines[i])
+			continue
+		}
+		count++
+		for i+1 < len(lines) {
+			trimmed := strings.TrimSpace(lines[i+1])
+			if trimmed == "" {
+				i++
+				continue
+			}
+			item, ok := strings.CutPrefix(trimmed, "- ")
+			if !prose[i+1] || !ok {
+				break
+			}
+			if item = strings.TrimSpace(item); item != "" && count == 1 {
+				settings = append(settings, item)
+			}
+			i++
+		}
+	}
+	if count == 0 {
+		return text, nil, false, false
+	}
+	rest = strings.TrimSpace(strings.Join(kept, "\n"))
+	// A heading without bullets says nothing, so it must not clear the
+	// settings.
+	if count > 1 || len(settings) == 0 {
+		return rest, nil, true, true
+	}
+	if len(settings) == 1 && settings[0] == userSettingsClear {
+		settings = nil
+	}
+	return rest, settings, true, false
 }
