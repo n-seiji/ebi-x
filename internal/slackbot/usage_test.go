@@ -3,6 +3,7 @@ package slackbot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -167,7 +168,7 @@ func TestUsageLimitFailureNamesReset(t *testing.T) {
 	limits := usageLimits(100, 40)
 	bot := newUsageBot(t, &fakeStore{}, api, &fakeUsage{limits: limits})
 	message := bot.usageLimitFailure(context.Background())
-	if !strings.Contains(message, formatFollowUpTime(limits.Primary.ResetTime())+"以降に") {
+	if !strings.Contains(message, adminNotifiedText+formatFollowUpTime(limits.Primary.ResetTime())+"以降に") {
 		t.Fatalf("message = %q", message)
 	}
 	if len(api.posts) != 1 || api.posts[0].channel != "CAPPROVAL" {
@@ -176,9 +177,58 @@ func TestUsageLimitFailureNamesReset(t *testing.T) {
 }
 
 func TestUsageLimitFailureWithoutUsage(t *testing.T) {
-	bot := newUsageBot(t, &fakeStore{}, &fakeSlack{}, &fakeUsage{err: errors.New("api key")})
-	if message := bot.usageLimitFailure(context.Background()); !strings.Contains(message, usageLimitRetryLater) {
+	api := &fakeSlack{}
+	bot := newUsageBot(t, &fakeStore{}, api, &fakeUsage{err: errors.New("api key")})
+	for range 2 {
+		if message := bot.usageLimitFailure(context.Background()); !strings.Contains(message, adminNotifiedText+usageLimitRetryLater) {
+			t.Fatalf("message = %q", message)
+		}
+	}
+	// The second failure within the hour does not repeat the alert.
+	if len(api.posts) != 1 || api.posts[0].channel != "CAPPROVAL" || api.posts[0].text != usageLimitAdminAlert {
+		t.Fatalf("posts = %+v, want one alert", api.posts)
+	}
+}
+
+func TestUsageLimitFailureWithoutApprovalChannel(t *testing.T) {
+	api := &fakeSlack{}
+	bot := newTestBot(t, &fakeStore{}, api, &fakeRunner{})
+	if message := bot.usageLimitFailure(context.Background()); !strings.Contains(message, adminContactText) {
 		t.Fatalf("message = %q", message)
+	}
+	if len(api.posts) != 0 {
+		t.Fatalf("posts = %+v, want none", api.posts)
+	}
+}
+
+func TestWorkTurnNotSignedInAlertsAdmin(t *testing.T) {
+	for _, response := range []runnerResponse{
+		{result: &codex.TurnResult{ThreadID: "thread-1", Err: "Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again."}},
+		{err: fmt.Errorf("codex exec: unexpected status 401 Unauthorized: %w", codex.ErrNotSignedIn)},
+	} {
+		api := &fakeSlack{}
+		runner := &fakeRunner{responses: []runnerResponse{response}}
+		bot := newTestBot(t, &fakeStore{claim: true}, api, runner)
+		bot.config.ApprovalChannelID = "CAPPROVAL"
+		now := time.Date(2026, 10, 20, 9, 0, 0, 0, time.Local)
+		bot.now = func() time.Time { return now }
+
+		bot.HandleMention(context.Background(), mention())
+
+		var alerts, replies []string
+		for _, post := range api.posts {
+			if post.channel == "CAPPROVAL" {
+				alerts = append(alerts, post.text)
+			} else {
+				replies = append(replies, post.text)
+			}
+		}
+		if len(alerts) != 1 || alerts[0] != authAdminAlert {
+			t.Fatalf("alerts = %q", alerts)
+		}
+		if want := fmt.Sprintf(authFailureMessage, adminNotifiedText); len(replies) != 1 || replies[0] != want {
+			t.Fatalf("replies = %q, want %q", replies, want)
+		}
 	}
 }
 

@@ -26,6 +26,27 @@ func IsUsageLimitMessage(message string) bool {
 	return strings.Contains(strings.ToLower(message), "usage limit")
 }
 
+// ErrNotSignedIn marks a turn that failed because Codex is not signed in or
+// its sign-in can no longer be refreshed.
+var ErrNotSignedIn = errors.New("codex is not signed in")
+
+// notSignedInPhrases are how Codex words a missing or expired sign-in, as in
+// "Your access token could not be refreshed... Please log out and sign in
+// again." or "401 Unauthorized".
+var notSignedInPhrases = []string{"sign in again", "not logged in", "401 unauthorized", "access token could not be refreshed"}
+
+// IsNotSignedInMessage reports whether an error message says Codex is not
+// signed in.
+func IsNotSignedInMessage(message string) bool {
+	lower := strings.ToLower(message)
+	for _, phrase := range notSignedInPhrases {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 // RateLimitWindow is one usage window of the Codex account, such as the
 // 5-hour or the weekly limit.
 type RateLimitWindow struct {

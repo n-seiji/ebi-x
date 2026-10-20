@@ -31,9 +31,21 @@ const (
 	// usageLimitFailureMessage replaces workFailureMessage when the turn
 	// stopped on the usage limit, so the requester knows why and when to
 	// ask again.
-	usageLimitFailureMessage = "⚠️ Codex の利用上限に達したため、作業を完了できませんでした。%s、新しい mention で依頼し直してください。途中までの変更が作業領域に残っている場合があります。"
+	usageLimitFailureMessage = "⚠️ Codex の利用上限に達したため、作業を完了できませんでした。%s%s、新しい mention で依頼し直してください。途中までの変更が作業領域に残っている場合があります。"
 	usageLimitRetryAt        = "%s以降に"
 	usageLimitRetryLater     = "利用枠がリセットされてから"
+	// usageLimitAdminAlert tells the approval channel when the reset time
+	// could not be read, so the limit is not announced by recordUsage.
+	usageLimitAdminAlert = "🚫 Codex の利用上限に達したため、ebi-x は作業できません。利用枠がリセットされるまでお待ちください。"
+	// authFailureMessage replaces workFailureMessage when Codex is not
+	// signed in or its sign-in expired.
+	authFailureMessage = "⚠️ ebi-x の Codex のログインが切れているため、作業できませんでした。%s復旧したら、新しい mention で依頼し直してください。"
+	authAdminAlert     = "🔑 ebi-x の Codex のログインが切れているため、作業できません。ebi-x を動かしている環境で `codex login` を実行して、ログインし直してください。"
+	adminNotifiedText  = "管理者に知らせたので、お待ちください。"
+	adminContactText   = "管理者に連絡してください。"
+	// adminAlertInterval is the shortest gap between two alerts of the same
+	// kind, so every failing request does not repeat it.
+	adminAlertInterval = time.Hour
 )
 
 // usageThresholds are the remaining percentages announced once per window
@@ -234,30 +246,67 @@ func usageDailySummary(usage state.Usage) string {
 
 // usageLimitFailure returns the failure message for a turn that hit the
 // usage limit, naming when the exhausted window resets when Codex says so.
-// It also announces the exhausted window.
+// The approval channel is told about the exhausted window.
 func (b *Bot) usageLimitFailure(ctx context.Context) string {
 	retry := usageLimitRetryLater
-	if b.config.Usage == nil {
-		return fmt.Sprintf(usageLimitFailureMessage, retry)
-	}
-	limits, err := b.readUsage(ctx)
-	if err != nil {
-		log.Printf("slackbot: read Codex usage after the usage limit: %v", err)
-		return fmt.Sprintf(usageLimitFailureMessage, retry)
-	}
-	var latest time.Time
-	for _, window := range limits.Windows() {
-		if at := window.ResetTime(); window.UsedPercent >= 100 && at.After(latest) {
-			latest = at
+	var limits *codex.RateLimits
+	if b.config.Usage != nil {
+		var err error
+		if limits, err = b.readUsage(ctx); err != nil {
+			log.Printf("slackbot: read Codex usage after the usage limit: %v", err)
+			limits = nil
 		}
 	}
-	if !latest.IsZero() {
-		retry = fmt.Sprintf(usageLimitRetryAt, formatFollowUpTime(latest))
+	if limits != nil {
+		var latest time.Time
+		for _, window := range limits.Windows() {
+			if at := window.ResetTime(); window.UsedPercent >= 100 && at.After(latest) {
+				latest = at
+			}
+		}
+		if !latest.IsZero() {
+			retry = fmt.Sprintf(usageLimitRetryAt, formatFollowUpTime(latest))
+		}
 	}
+	notice := adminContactText
 	if b.config.ApprovalChannelID != "" {
-		b.recordUsage(ctx, limits)
+		notice = adminNotifiedText
+		if limits != nil {
+			b.recordUsage(ctx, limits)
+		} else {
+			b.alertAdmin(ctx, "usage", usageLimitAdminAlert)
+		}
 	}
-	return fmt.Sprintf(usageLimitFailureMessage, retry)
+	return fmt.Sprintf(usageLimitFailureMessage, notice, retry)
+}
+
+// authFailure returns the failure message for a turn that failed because
+// Codex is not signed in, telling the approval channel.
+func (b *Bot) authFailure(ctx context.Context) string {
+	if b.config.ApprovalChannelID == "" {
+		return fmt.Sprintf(authFailureMessage, adminContactText)
+	}
+	b.alertAdmin(ctx, "auth", authAdminAlert)
+	return fmt.Sprintf(authFailureMessage, adminNotifiedText)
+}
+
+// alertAdmin posts text in the approval channel unless an alert of the same
+// kind was posted within adminAlertInterval.
+func (b *Bot) alertAdmin(ctx context.Context, kind, text string) {
+	b.usageMu.Lock()
+	defer b.usageMu.Unlock()
+	now := b.now()
+	if last, ok := b.adminAlerts[kind]; ok && now.Sub(last) < adminAlertInterval {
+		return
+	}
+	if err := b.post(ctx, b.config.ApprovalChannelID, "", text); err != nil {
+		log.Printf("slackbot: post %s alert: %v", kind, err)
+		return
+	}
+	if b.adminAlerts == nil {
+		b.adminAlerts = make(map[string]time.Time)
+	}
+	b.adminAlerts[kind] = now
 }
 
 // usageWindowKeys are the window slots, shorter first.
