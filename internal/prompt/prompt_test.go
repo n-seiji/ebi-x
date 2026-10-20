@@ -37,6 +37,9 @@ func TestBuildTurnPrompt(t *testing.T) {
 		if !shared && !strings.Contains(got, "playbook は読み取り専用") {
 			t.Error("untrusted channel lacks playbook restriction")
 		}
+		if strings.Contains(got, "「## 回答待ち」で依頼者に承認を確認") != shared {
+			t.Errorf("playbook fold approval rule = %v, want %v", !shared, shared)
+		}
 		if strings.Contains(got, "## playbook メモ追記") != shared {
 			t.Errorf("playbook note permission = %v, want %v", !shared, shared)
 		}

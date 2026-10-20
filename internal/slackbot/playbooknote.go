@@ -4,12 +4,21 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strings"
 
 	"github.com/n-seiji/ebi-x/internal/codex"
 	"github.com/n-seiji/ebi-x/internal/playbook"
 )
 
-const playbookNoteInvalidNotice = "⚠️ playbook メモの指定を読み取れなかったため、保存していません。"
+const (
+	playbookNoteInvalidNotice = "⚠️ playbook メモの指定を読み取れなかったため、保存していません。"
+	// playbookFoldThreshold is how many notes a playbook gathers before the
+	// bot suggests folding them into its body. Notes are meant to bridge
+	// edits, not to replace them, so the lesson ends up in the playbook
+	// itself, where every later turn follows it.
+	playbookFoldThreshold = 3
+	playbookFoldNotice    = "メモが%d件たまっています。本文に取り込む場合は、このスレッドで「playbook「%s」にメモを取り込んで」と頼んでください。変更案を見せて、承認を確認してから書き換えます。"
+)
 
 // playbookNotesDir keeps the playbook notes beside the memory, which the
 // agent can neither read nor write directly.
@@ -71,5 +80,24 @@ func (b *Bot) savePlaybookNote(eventKey string, note *codex.PlaybookNote, invali
 	if written == "" {
 		return ""
 	}
-	return fmt.Sprintf("📝 playbook「%s」のメモを更新しました: %s", target.Name, written)
+	notice := fmt.Sprintf("📝 playbook「%s」のメモを更新しました: %s", target.Name, written)
+	if count := b.playbookNoteCount(target.Name); count >= playbookFoldThreshold {
+		notice += "\n" + fmt.Sprintf(playbookFoldNotice, count, target.Name)
+	}
+	return notice
+}
+
+// playbookNoteCount reports how many notes the playbook named name shows,
+// that is, the notes written since its body last changed.
+func (b *Bot) playbookNoteCount(name string) int {
+	playbooks, err := b.currentPlaybooks()
+	if err != nil {
+		log.Printf("slackbot: count playbook notes of %q: %v", name, err)
+		return 0
+	}
+	item, ok := playbook.Find(playbooks, name)
+	if !ok || item.Notes == "" {
+		return 0
+	}
+	return len(strings.Split(item.Notes, "\n"))
 }

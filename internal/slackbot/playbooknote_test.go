@@ -83,3 +83,20 @@ func TestMalformedPlaybookNote(t *testing.T) {
 		t.Fatalf("posts = %q, want the result and the malformed notice", posts)
 	}
 }
+
+func TestPlaybookNotesSuggestFoldingOnceTheyGather(t *testing.T) {
+	note := func(text string) string {
+		return "作りました。\n## playbook メモ追記\n- 対象: slides\n- 内容: " + text
+	}
+	bot, api, _ := newPlaybookNoteBot(t, note("一つ目"), note("二つ目"), note("三つ目"))
+	for i, ts := range []string{"100.1", "200.1", "300.1"} {
+		bot.HandleMention(context.Background(), mentionAt(ts, ""))
+		suggested := strings.Contains(api.postTexts[len(api.postTexts)-1], "本文に取り込む場合は")
+		if suggested != (i == 2) {
+			t.Fatalf("note %d: fold suggestion = %v, posts %q", i+1, suggested, api.postTexts)
+		}
+	}
+	if last := api.postTexts[len(api.postTexts)-1]; !strings.Contains(last, "メモが3件たまっています") || !strings.Contains(last, "playbook「slides」にメモを取り込んで") {
+		t.Fatalf("last post = %q, want the fold suggestion", last)
+	}
+}
