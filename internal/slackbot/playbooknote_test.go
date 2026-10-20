@@ -83,3 +83,76 @@ func TestMalformedPlaybookNote(t *testing.T) {
 		t.Fatalf("posts = %q, want the result and the malformed notice", posts)
 	}
 }
+
+func playbookNote(text string) string {
+	return "作りました。\n## playbook メモ追記\n- 対象: slides\n- 内容: " + text
+}
+
+func lastThreadPost(api *fakeSlack, threadTS string) string {
+	for i := len(api.posts) - 1; i >= 0; i-- {
+		if api.posts[i].threadTS == threadTS {
+			return api.posts[i].text
+		}
+	}
+	return ""
+}
+
+func TestPlaybookNotesFoldOnceTheyGather(t *testing.T) {
+	bot, api, runner := newPlaybookNoteBot(t, playbookNote("一つ目"), playbookNote("二つ目"), playbookNote("三つ目"), "納品の目安を2週後に更新しました。", "次の作業です。")
+	bot.config.ApprovalChannelID = "CADMIN"
+	path := filepath.Join(bot.config.PlaybooksDir, "slides.md")
+	runner.onRun = func(call int) {
+		if call != 4 {
+			return
+		}
+		if err := os.WriteFile(path, []byte("---\nname: slides\ndescription: スライドを作る\n---\n初回の納品は2週後"), 0o600); err != nil {
+			t.Error(err)
+		}
+		folded := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+		if err := os.Chtimes(path, folded, folded); err != nil {
+			t.Error(err)
+		}
+	}
+	for i, ts := range []string{"100.1", "200.1", "300.1"} {
+		bot.HandleMention(context.Background(), mentionAt(ts, ""))
+		if folded := strings.Contains(lastThreadPost(api, ts), "本文に取り込みました"); folded != (i == 2) {
+			t.Fatalf("note %d: folded = %v, posts %q", i+1, folded, api.postTexts)
+		}
+	}
+	if runner.calls != 4 || !strings.Contains(runner.prompts[3], "依頼者への確認は不要") || !strings.Contains(runner.prompts[3], "三つ目") {
+		t.Fatalf("fold turn not run: calls %d, prompts %q", runner.calls, runner.prompts)
+	}
+	if runner.threadIDs[3] != "codex-thread" {
+		t.Errorf("fold ran in session %q, want the note turn's session", runner.threadIDs[3])
+	}
+	var admin []string
+	for _, post := range api.posts {
+		if post.channel == "CADMIN" {
+			admin = append(admin, post.text)
+		}
+	}
+	if len(admin) != 1 || !strings.Contains(admin[0], "playbook「slides」にメモ3件を取り込みました") || !strings.Contains(admin[0], "納品の目安を2週後に更新しました。") {
+		t.Fatalf("admin posts = %q, want one fold record", admin)
+	}
+
+	bot.HandleMention(context.Background(), mentionAt("400.1", ""))
+	if got := runner.prompts[len(runner.prompts)-1]; strings.Contains(got, "<playbook_notes>") {
+		t.Errorf("folded notes still shown:\n%s", got)
+	}
+}
+
+func TestPlaybookFoldThatChangesNothingIsNotRecorded(t *testing.T) {
+	bot, api, _ := newPlaybookNoteBot(t, playbookNote("一つ目"), playbookNote("二つ目"), playbookNote("三つ目"), "一時的な事情だけなので本文は変えませんでした。")
+	bot.config.ApprovalChannelID = "CADMIN"
+	for _, ts := range []string{"100.1", "200.1", "300.1"} {
+		bot.HandleMention(context.Background(), mentionAt(ts, ""))
+	}
+	if last := lastThreadPost(api, "300.1"); !strings.Contains(last, "本文は変わりませんでした: 一時的な事情だけなので本文は変えませんでした。") {
+		t.Fatalf("last post = %q, want the skipped notice", last)
+	}
+	for _, post := range api.posts {
+		if post.channel == "CADMIN" {
+			t.Fatalf("admin post %q for a fold that changed nothing", post.text)
+		}
+	}
+}

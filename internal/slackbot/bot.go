@@ -472,6 +472,9 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	if output.playbookNoteNotice != "" {
 		resultText += "\n\n" + output.playbookNoteNotice
 	}
+	if output.playbookFold != nil {
+		resultText += "\n" + output.playbookFold.notice()
+	}
 	if notice := b.scheduleFollowUp(trigger, output); notice != "" {
 		resultText += "\n\n" + notice
 	}
@@ -496,6 +499,7 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, workFailureMessage)
 		return
 	}
+	b.recordPlaybookFold(ctx, output.playbookFold, channel, threadTS)
 	if output.userSettingsNotice != "" {
 		if err := b.api.PostEphemeral(ctx, channel, trigger.authorID, output.userSettingsNotice); err != nil {
 			log.Printf("slackbot: post user settings notice %q: %v", eventKey, err)
@@ -541,6 +545,9 @@ type workOutput struct {
 	questions []string
 	// pullURLs are the pull requests the turn asked the bot to watch.
 	pullURLs []string
+	// playbookFold is the fold of a playbook's notes into its body this
+	// request caused, if any.
+	playbookFold *playbookFold
 	// playbookNoteNotice tells the thread what became of the playbook note
 	// the turn wrote.
 	playbookNoteNotice string
@@ -722,7 +729,11 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		}
 		b.memoryMu.Unlock()
 	}
-	output.playbookNoteNotice = b.savePlaybookNote(eventKey, playbookNote, playbookNoteInvalid, sharedWritable)
+	var foldTarget *playbook.Playbook
+	output.playbookNoteNotice, foldTarget = b.savePlaybookNote(eventKey, playbookNote, playbookNoteInvalid, sharedWritable)
+	if foldTarget != nil && sessionID != "" {
+		output.playbookFold = b.foldPlaybookNotes(stopCtx, sessionID, lease, otherThreads, *foldTarget, onActivity)
+	}
 	// Upload while the thread's work lock and lease are held, so a later
 	// turn in the same thread cannot replace the files mid-upload.
 	if len(attachmentPaths) > 0 {
