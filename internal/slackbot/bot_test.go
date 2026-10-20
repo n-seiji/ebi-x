@@ -1643,29 +1643,26 @@ func TestTurnPromptInjectsMemoryContent(t *testing.T) {
 		Messages:  []string{"No work needed."},
 	}}}}
 	bot := newTestBot(t, store, api, runner)
-	entries := []struct {
-		scope memory.Scope
-		text  string
-	}{
-		{scope: memory.ScopeGlobal, text: "全体の学び"},
-		{scope: memory.ScopeChannel, text: "チャンネルの慣習"},
+	if _, err := memory.Append(bot.config.MemoryDir, "全体の学び"); err != nil {
+		t.Fatal(err)
 	}
-	for _, entry := range entries {
-		if _, err := memory.AppendScoped(bot.config.MemoryDir, entry.scope, "C1", entry.text); err != nil {
-			t.Fatalf("append %s memory: %v", entry.scope, err)
-		}
+	// Channel memory is retired: a file left on disk stays there unread.
+	if _, err := memory.Append(filepath.Join(bot.config.MemoryDir, "channels", "C1"), "チャンネルの慣習"); err != nil {
+		t.Fatal(err)
 	}
 	bot.HandleMention(context.Background(), mention())
 	if len(runner.prompts) != 1 {
 		t.Fatalf("runner prompts = %d, want 1", len(runner.prompts))
 	}
 	prompt := runner.prompts[0]
-	for _, want := range []string{
-		"<global_memory>", "全体の学び", "</global_memory>",
-		"<channel_memory>", "チャンネルの慣習", "</channel_memory>",
-	} {
+	for _, want := range []string{"<global_memory>", "全体の学び", "</global_memory>"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("turn prompt does not contain %q", want)
+		}
+	}
+	for _, retired := range []string{"channel_memory", "チャンネルの慣習", "チャンネルメモリ"} {
+		if strings.Contains(prompt, retired) {
+			t.Errorf("turn prompt contains retired channel memory %q", retired)
 		}
 	}
 	if strings.Contains(prompt, "user_memory") {
@@ -1698,8 +1695,7 @@ func TestWorkMemoryAppendIsWrittenByBot(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), "ビルドは mise run build を使う") {
 		t.Fatalf("global memory = %q, %v", data, err)
 	}
-	// A channel with shared writes keeps its lessons in playbooks and global
-	// memory, so its channel memory proposal is dropped.
+	// Channel memory is retired, so a channel memory section is dropped.
 	if _, err := os.Stat(filepath.Join(bot.config.MemoryDir, "channels", "C1", "MEMORY.md")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("channel memory stat error = %v, want not exist", err)
 	}
@@ -2282,7 +2278,7 @@ func TestMentionWithoutChannelAllowlistIsForbidden(t *testing.T) {
 	}
 }
 
-func TestChannelWithoutSharedWritesCannotChangePlaybooksOrGlobalMemory(t *testing.T) {
+func TestChannelWithoutSharedWritesCannotChangePlaybooksOrMemory(t *testing.T) {
 	store := &fakeStore{claim: true}
 	api := &fakeSlack{}
 	runner := &fakeRunner{responses: []runnerResponse{
@@ -2314,15 +2310,19 @@ func TestChannelWithoutSharedWritesCannotChangePlaybooksOrGlobalMemory(t *testin
 	if slices.Contains(runner.roots[0], playbooksDir) {
 		t.Errorf("work roots = %v, must not include playbooks", runner.roots[0])
 	}
-	if strings.Contains(runner.prompts[0], "## 全体メモリ追記") {
-		t.Error("work prompt offers global memory to a channel without shared writes")
+	for _, heading := range []string{"## 全体メモリ追記", "## チャンネルメモリ追記"} {
+		if strings.Contains(runner.prompts[0], heading) {
+			t.Errorf("work prompt offers %q to a channel without shared writes", heading)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(bot.config.MemoryDir, "MEMORY.md")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("global memory stat error = %v, want not exist", err)
 	}
-	data, err := os.ReadFile(filepath.Join(bot.config.MemoryDir, "channels", "C1", "MEMORY.md"))
-	if err != nil || !strings.Contains(string(data), "このチャンネルの用語") {
-		t.Errorf("channel memory = %q, %v; want channel entry", data, err)
+	if _, err := os.Stat(filepath.Join(bot.config.MemoryDir, "channels", "C1", "MEMORY.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("channel memory stat error = %v, want not exist", err)
+	}
+	if posts := strings.Join(api.postTexts, "|"); !strings.Contains(posts, "Work completed.") || strings.Contains(posts, "このチャンネルの用語") || strings.Contains(posts, "メモリを更新しました") {
+		t.Errorf("posts = %q, want the result without memory", posts)
 	}
 }
 
@@ -2632,7 +2632,7 @@ func TestResumedSessionReceivesOnlyTheRequest(t *testing.T) {
 	if err := os.WriteFile(path, []byte("---\nname: example\ndescription: first-version\n---\nBody"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := memory.AppendScoped(bot.config.MemoryDir, memory.ScopeChannel, "C1", "channel-fact"); err != nil {
+	if _, err := memory.Append(bot.config.MemoryDir, "global-fact"); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 2 {
@@ -2647,12 +2647,12 @@ func TestResumedSessionReceivesOnlyTheRequest(t *testing.T) {
 	if !reflect.DeepEqual(runner.threadIDs, []string{"", "codex-thread"}) {
 		t.Fatalf("session IDs = %v, want same session resumed", runner.threadIDs)
 	}
-	for _, want := range []string{path, "first-version", "channel-fact", "1800字以内"} {
+	for _, want := range []string{path, "first-version", "global-fact", "1800字以内"} {
 		if !strings.Contains(runner.prompts[0], want) {
 			t.Errorf("first prompt missing %q", want)
 		}
 	}
-	for _, repeated := range []string{path, "channel-fact", "1800字以内", "<slack_thread>"} {
+	for _, repeated := range []string{path, "global-fact", "1800字以内", "<slack_thread>"} {
 		if strings.Contains(runner.prompts[1], repeated) {
 			t.Errorf("resumed prompt repeats %q", repeated)
 		}

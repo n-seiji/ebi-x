@@ -452,8 +452,8 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	if resultText == "" {
 		resultText = "作業が完了しました。"
 	}
-	if len(output.memoryScopes) > 0 {
-		resultText += "\n\n📝 " + strings.Join(output.memoryScopes, "・") + "メモリを更新しました。"
+	if output.memoryUpdated {
+		resultText += "\n\n📝 全体メモリを更新しました。"
 	}
 	if output.playbookNoteNotice != "" {
 		resultText += "\n\n" + output.playbookNoteNotice
@@ -508,8 +508,8 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 
 // workOutput is what a completed work turn hands back for posting.
 type workOutput struct {
-	text         string
-	memoryScopes []string
+	text          string
+	memoryUpdated bool
 	// userSettingsNotice tells the requester, and only them, that their
 	// settings changed.
 	userSettingsNotice string
@@ -595,7 +595,7 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		// intentionally not a writable root: the agent proposes memory
 		// entries through the output contract and the bot writes them.
 		b.memoryMu.RLock()
-		memoryContext, memErr := memory.ReadContext(b.config.MemoryDir, channel)
+		memoryContext, memErr := memory.ReadContext(b.config.MemoryDir)
 		b.memoryMu.RUnlock()
 		if memErr != nil {
 			log.Printf("slackbot: read memory: %v", memErr)
@@ -688,38 +688,15 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		log.Printf("slackbot: ignore global memory proposal from channel without shared writes %q", eventKey)
 		memoryAppends.Global = ""
 	}
-	// Channels that may change playbooks and global memory keep their
-	// lessons there, so channel memory is only for the other channels.
-	if memoryAppends.Channel != "" && sharedWritable {
-		log.Printf("slackbot: ignore channel memory proposal from channel with shared writes %q", eventKey)
-		memoryAppends.Channel = ""
-	}
-	if memoryAppends != (codex.MemoryAppends{}) {
-		targets := []struct {
-			scope memory.Scope
-			label string
-			entry string
-		}{
-			{scope: memory.ScopeGlobal, label: "全体", entry: memoryAppends.Global},
-			{scope: memory.ScopeChannel, label: "チャンネル", entry: memoryAppends.Channel},
-		}
+	if memoryAppends.Global != "" {
 		b.memoryMu.Lock()
-		for _, target := range targets {
-			if target.entry == "" {
-				continue
-			}
-			written, err := memory.AppendScoped(
-				b.config.MemoryDir, target.scope, channel, target.entry,
-			)
-			if err != nil {
-				log.Printf("slackbot: append %s memory %q: %v", target.scope, eventKey, err)
-				continue
-			}
-			if written != "" {
-				output.memoryScopes = append(output.memoryScopes, target.label)
-			}
-		}
+		written, err := memory.Append(b.config.MemoryDir, memoryAppends.Global)
 		b.memoryMu.Unlock()
+		if err != nil {
+			log.Printf("slackbot: append global memory %q: %v", eventKey, err)
+		} else if written != "" {
+			output.memoryUpdated = true
+		}
 	}
 	var foldTarget *playbook.Playbook
 	output.playbookNoteNotice, foldTarget = b.savePlaybookNote(eventKey, playbookNote, playbookNoteInvalid, sharedWritable)

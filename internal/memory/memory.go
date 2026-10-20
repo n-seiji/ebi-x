@@ -1,4 +1,4 @@
-// Package memory reads and appends global and channel MEMORY.md files.
+// Package memory reads and appends the global MEMORY.md file.
 // The Codex agent never writes these files directly; the bot validates
 // proposed entries and routes them from authenticated Slack event IDs.
 package memory
@@ -22,78 +22,21 @@ const (
 	MaxAppendBytes = 4 << 10
 )
 
-// Scope identifies who may reuse a memory entry.
-type Scope string
-
-const (
-	ScopeGlobal  Scope = "global"
-	ScopeChannel Scope = "channel"
-)
-
-// Context contains the memory visible to one Slack request.
+// Context contains the memory visible to one Slack request. Only global
+// memory remains: lessons about a kind of work belong in its playbook, and a
+// thread's own history lives in its session. Channel memory was retired and
+// its files under channels/ are no longer read.
 type Context struct {
-	Global  string
-	Channel string
+	Global string
 }
 
-// ReadContext reads global memory plus the memory belonging to the current
-// Slack channel. Successfully read scopes are returned even when a different
-// scope fails.
-func ReadContext(root, channelID string) (Context, error) {
-	var result Context
-	var errs []error
-	for _, target := range []struct {
-		scope Scope
-		id    string
-		set   func(string)
-	}{
-		{scope: ScopeGlobal, set: func(value string) { result.Global = value }},
-		{scope: ScopeChannel, id: channelID, set: func(value string) { result.Channel = value }},
-	} {
-		dir, err := ScopeDir(root, target.scope, target.id)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		value, err := Read(dir)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("read %s memory: %w", target.scope, err))
-			continue
-		}
-		target.set(value)
-	}
-	return result, errors.Join(errs...)
-}
-
-// AppendScoped appends to the scope belonging to the current Slack request.
-// IDs are never supplied by the model; the bot passes the authenticated event
-// channel ID so an output cannot select another scope's directory.
-func AppendScoped(root string, scope Scope, channelID, entry string) (string, error) {
-	id := ""
-	switch scope {
-	case ScopeChannel:
-		id = channelID
-	}
-	dir, err := ScopeDir(root, scope, id)
+// ReadContext reads the global memory below root.
+func ReadContext(root string) (Context, error) {
+	value, err := Read(root)
 	if err != nil {
-		return "", err
+		return Context{}, fmt.Errorf("read global memory: %w", err)
 	}
-	return Append(dir, entry)
-}
-
-// ScopeDir resolves a memory scope to a directory below root.
-func ScopeDir(root string, scope Scope, id string) (string, error) {
-	switch scope {
-	case ScopeGlobal:
-		return root, nil
-	case ScopeChannel:
-		if !ValidChannelID(id) {
-			return "", fmt.Errorf("invalid Slack channel ID %q", id)
-		}
-		return filepath.Join(root, "channels", id), nil
-	default:
-		return "", fmt.Errorf("invalid memory scope %q", scope)
-	}
+	return Context{Global: value}, nil
 }
 
 // Read returns the memory file content capped at maxPromptBytes. A missing
