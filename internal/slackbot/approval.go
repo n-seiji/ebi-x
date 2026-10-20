@@ -17,8 +17,8 @@ const (
 	approveCommand = "許可"
 	denyCommand    = "拒否"
 
-	approvalRequestedMessage = "🔒 %sには ebi-x を使う権限がまだないため、承認者に許可を依頼しました。許可されたら、もう一度 mention してください。"
-	approvalQueuedMessage    = "🔒 %sには ebi-x を使う権限がまだないため、承認者に許可を依頼しました。許可されたら、この依頼から始めます。"
+	approvalRequestedMessage = "🔒 %sには ebi-x を使う権限がまだないため、承認者に許可を依頼しました%s。\n許可されたら、このスレッドでお知らせします。そのあと、もう一度 mention してください。"
+	approvalQueuedMessage    = "🔒 %sには ebi-x を使う権限がまだないため、承認者に許可を依頼しました%s。\nそのままお待ちください！許可されたら、この依頼から自動で始めます。"
 
 	// approvalResumeWindow is how long a mention waits for approval before
 	// it is no longer started on its own.
@@ -41,6 +41,7 @@ type Approvals interface {
 	SetApprovalRequestMessage(kind state.ApprovalKind, id, timestamp string) error
 	SetApprovalMention(kind state.ApprovalKind, id string, mention state.ApprovalMention) (bool, error)
 	FindApprovalByRequestMessage(timestamp string) (state.Approval, bool)
+	GetApproval(kind state.ApprovalKind, id string) (state.Approval, bool)
 	DecideApproval(kind state.ApprovalKind, id string, approve bool, decidedBy string, now time.Time) (state.Approval, bool, error)
 	DeleteApproval(kind state.ApprovalKind, id string) (bool, error)
 }
@@ -189,13 +190,45 @@ func (b *Bot) rejectUnapproved(ctx context.Context, event *slackevents.AppMentio
 		b.forbidden(ctx, event, missing)
 		return
 	}
-	reply := fmt.Sprintf(approvalRequestedMessage, missingSubjects(missing))
+	format := approvalRequestedMessage
 	if queued {
-		reply = fmt.Sprintf(approvalQueuedMessage, missingSubjects(missing))
+		format = approvalQueuedMessage
 	}
+	reply := fmt.Sprintf(format, missingSubjects(missing), b.approvalRequestLinks(ctx, missing))
+
 	if err := b.post(ctx, event.Channel, mentionThreadTS(event), reply); err != nil {
 		log.Printf("slackbot: post approval requested response: %v", err)
 	}
+}
+
+// approvalRequestLinks links the approval requests for missing so the author
+// can see that someone was asked. It is empty when no link can be made.
+func (b *Bot) approvalRequestLinks(ctx context.Context, missing []approvalSubject) string {
+	type request struct{ subject, link string }
+	var requests []request
+	for _, subject := range missing {
+		approval, ok := b.config.Approvals.GetApproval(subject.kind, subject.id)
+		if !ok || approval.RequestMessageTS == "" {
+			continue
+		}
+		link, err := b.api.Permalink(ctx, b.config.ApprovalChannelID, approval.RequestMessageTS)
+		if err != nil || link == "" {
+			log.Printf("slackbot: permalink for approval request %s: %v", subject.value(), err)
+			continue
+		}
+		requests = append(requests, request{subject.subject(), link})
+	}
+	if len(requests) == 0 {
+		return ""
+	}
+	if len(requests) == 1 {
+		return "（<" + requests[0].link + "|承認依頼>）"
+	}
+	links := make([]string, 0, len(requests))
+	for _, r := range requests {
+		links = append(links, "<"+r.link+"|"+r.subject+"の承認依頼>")
+	}
+	return "（" + strings.Join(links, "・") + "）"
 }
 
 // waitingMention returns the mention to start once it is approved. Workflow

@@ -85,7 +85,7 @@ func TestUnknownUserMentionRequestsApprovalOnce(t *testing.T) {
 	if approval.Status != state.Pending || approval.RequestMessageTS != "top-1" || approval.RequestThreadTS != "100.1" {
 		t.Fatalf("approval = %+v, want pending with request message and origin thread", approval)
 	}
-	queuedText := fmt.Sprintf(approvalQueuedMessage, "あなた")
+	queuedText := fmt.Sprintf(approvalQueuedMessage, "あなた", "（<https://slack.test/archives/COWNER/ptop-1|承認依頼>）")
 	var origin []string
 	for _, post := range api.posts {
 		if post.channel == "C1" {
@@ -160,8 +160,8 @@ func TestApprovalDoesNotStartOldOrEmptyMentions(t *testing.T) {
 		now       time.Time
 		wantReply string
 	}{
-		{name: "older than a day", text: "<@UBOT> do it", now: time.Unix(100, 0).Add(25 * time.Hour), wantReply: fmt.Sprintf(approvalQueuedMessage, "あなた")},
-		{name: "empty mention", text: "<@UBOT>", now: time.Unix(100, 0), wantReply: fmt.Sprintf(approvalRequestedMessage, "あなた")},
+		{name: "older than a day", text: "<@UBOT> do it", now: time.Unix(100, 0).Add(25 * time.Hour), wantReply: fmt.Sprintf(approvalQueuedMessage, "あなた", "（<https://slack.test/archives/COWNER/ptop-1|承認依頼>）")},
+		{name: "empty mention", text: "<@UBOT>", now: time.Unix(100, 0), wantReply: fmt.Sprintf(approvalRequestedMessage, "あなた", "（<https://slack.test/archives/COWNER/ptop-1|承認依頼>）")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -206,7 +206,7 @@ func TestUnknownUserAndChannelRequestBothApprovals(t *testing.T) {
 		approvals.ApprovalStatus(state.ApprovalChannel, "C2") != state.Pending {
 		t.Fatal("want user and channel pending")
 	}
-	if got, want := api.posts[len(api.posts)-1].text, fmt.Sprintf(approvalQueuedMessage, "あなたとこのチャンネル"); got != want {
+	if got, want := api.posts[len(api.posts)-1].text, fmt.Sprintf(approvalQueuedMessage, "あなたとこのチャンネル", "（<https://slack.test/archives/COWNER/ptop-1|あなたの承認依頼>・<https://slack.test/archives/COWNER/ptop-2|このチャンネルの承認依頼>）"); got != want {
 		t.Fatalf("reply = %q, want %q", got, want)
 	}
 }
