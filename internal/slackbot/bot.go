@@ -204,8 +204,11 @@ type Bot struct {
 	// usageMu serializes usage announcements from the poll and from turns
 	// that hit the limit.
 	usageMu sync.Mutex
-	now     func() time.Time
-	sleep   func(context.Context, time.Duration) error
+	// adminAlerts is when each kind of alert was last posted in the
+	// approval channel.
+	adminAlerts map[string]time.Time
+	now         func() time.Time
+	sleep       func(context.Context, time.Duration) error
 }
 
 type triggerSource uint8
@@ -456,8 +459,11 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	if workErr != nil {
 		log.Printf("slackbot: work turn %q: %v", eventKey, workErr)
 		message := workFailureMessage
-		if errors.Is(workErr, codex.ErrUsageLimit) {
+		switch {
+		case errors.Is(workErr, codex.ErrUsageLimit):
 			message = b.usageLimitFailure(ctx)
+		case errors.Is(workErr, codex.ErrNotSignedIn):
+			message = b.authFailure(ctx)
 		}
 		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, failure(message))
 		return
@@ -740,6 +746,9 @@ func (b *Bot) runWorkTurn(ctx context.Context, threadID string, lease *workspace
 		if result != nil && result.Err != "" {
 			if codex.IsUsageLimitMessage(result.Err) {
 				return "", fmt.Errorf("work turn incomplete: %s: %w", result.Err, codex.ErrUsageLimit)
+			}
+			if codex.IsNotSignedInMessage(result.Err) {
+				return "", fmt.Errorf("work turn incomplete: %s: %w", result.Err, codex.ErrNotSignedIn)
 			}
 			return "", fmt.Errorf("work turn incomplete: %s", result.Err)
 		}

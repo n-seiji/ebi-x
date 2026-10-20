@@ -130,6 +130,9 @@ func (r *Runner) Run(
 			return result, nil
 		}
 		if text := strings.TrimSpace(stderr.String()); text != "" {
+			if IsNotSignedInMessage(text) {
+				return nil, fmt.Errorf("codex exec: %s: %w: %w", text, ErrNotSignedIn, waitErr)
+			}
 			return nil, fmt.Errorf("codex exec: %s: %w", text, waitErr)
 		}
 		return nil, fmt.Errorf("codex exec: %w", waitErr)

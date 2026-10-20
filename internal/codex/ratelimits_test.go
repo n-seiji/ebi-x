@@ -68,3 +68,18 @@ func TestIsUsageLimitMessage(t *testing.T) {
 		t.Fatal("unrelated error recognized as usage limit")
 	}
 }
+
+func TestIsNotSignedInMessage(t *testing.T) {
+	for _, message := range []string{
+		"Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.",
+		"unexpected status 401 Unauthorized: Missing bearer authentication",
+		"Not logged in",
+	} {
+		if !IsNotSignedInMessage(message) {
+			t.Fatalf("%q not recognized", message)
+		}
+	}
+	if IsNotSignedInMessage("You’ve hit your usage limit.") {
+		t.Fatal("usage limit recognized as not signed in")
+	}
+}
