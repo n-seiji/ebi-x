@@ -24,18 +24,20 @@ func TestResolveAcceptsFilesInThreadAreas(t *testing.T) {
 	checkout := filepath.Join(base, "checkouts", "C1-1.2", "slides-abcd")
 	writeFile(t, filepath.Join(workspaceDir, "out", "preview.png"), "png")
 	writeFile(t, filepath.Join(checkout, "dist", "deck.PPTX"), "pptx")
+	writeFile(t, filepath.Join(workspaceDir, "out", "usage.csv"), "a,b\n1,2\n")
 
 	files, rejections := Resolve([]string{workspaceDir, checkout}, workspaceDir, []string{
 		"out/preview.png",
 		filepath.Join(checkout, "dist", "deck.PPTX"),
 		filepath.Join(workspaceDir, "out", "..", "out", "preview.png"),
 		"./out/../out/preview.png",
+		"out/usage.csv",
 	})
 	if len(rejections) != 0 {
 		t.Fatalf("rejections = %+v, want none", rejections)
 	}
-	if len(files) != 2 || files[0].Name() != "preview.png" || files[1].Name() != "deck.PPTX" || files[1].Size() != 4 {
-		t.Fatalf("files = %+v, want preview.png and deck.PPTX once each", files)
+	if len(files) != 3 || files[0].Name() != "preview.png" || files[1].Name() != "deck.PPTX" || files[1].Size() != 4 || files[2].Name() != "usage.csv" {
+		t.Fatalf("files = %+v, want preview.png, deck.PPTX and usage.csv once each", files)
 	}
 	content, err := files[1].Open()
 	if err != nil {
