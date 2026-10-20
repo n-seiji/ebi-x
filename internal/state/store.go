@@ -77,8 +77,8 @@ type Store struct {
 	schedulesMu sync.Mutex
 	schedules   map[string]Schedule
 
-	usageAlertsMu sync.Mutex
-	usageAlerts   map[string]int
+	usageMu sync.Mutex
+	usage   Usage
 }
 
 // NewStore loads or creates a state store rooted at dir.
@@ -137,12 +137,9 @@ func NewStore(dir string) (*Store, error) {
 		schedules = make(map[string]Schedule)
 	}
 
-	usageAlerts := make(map[string]int)
-	if err := loadJSON(filepath.Join(dir, usageAlertsFilename), &usageAlerts); err != nil {
-		return nil, fmt.Errorf("load usage alerts: %w", err)
-	}
-	if usageAlerts == nil {
-		usageAlerts = make(map[string]int)
+	var usage Usage
+	if err := loadJSON(filepath.Join(dir, usageFilename), &usage); err != nil {
+		return nil, fmt.Errorf("load usage: %w", err)
 	}
 
 	approvals, err := loadApprovals(filepath.Join(dir, approvalsFilename))
@@ -159,7 +156,7 @@ func NewStore(dir string) (*Store, error) {
 		followUps:     followUps,
 		pullWatches:   pullWatches,
 		schedules:     schedules,
-		usageAlerts:   usageAlerts,
+		usage:         usage,
 	}, nil
 }
 

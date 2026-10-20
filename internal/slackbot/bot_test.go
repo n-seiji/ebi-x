@@ -42,7 +42,7 @@ type fakeStore struct {
 	followUps           map[string]state.FollowUp
 	pullWatches         map[string]state.PullWatch
 	schedules           map[string]state.Schedule
-	usageAlerts         map[string]int
+	usage               state.Usage
 }
 
 func (s *fakeStore) FollowUps() []state.FollowUp {
@@ -125,23 +125,16 @@ func (s *fakeStore) SetPullWatch(watch state.PullWatch) error {
 	return nil
 }
 
-func (s *fakeStore) UsageAlerts() map[string]int {
+func (s *fakeStore) Usage() state.Usage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	alerts := make(map[string]int, len(s.usageAlerts))
-	for window, level := range s.usageAlerts {
-		alerts[window] = level
-	}
-	return alerts
+	return s.usage
 }
 
-func (s *fakeStore) SetUsageAlerts(alerts map[string]int) error {
+func (s *fakeStore) SetUsage(usage state.Usage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.usageAlerts = make(map[string]int, len(alerts))
-	for window, level := range alerts {
-		s.usageAlerts[window] = level
-	}
+	s.usage = usage
 	return nil
 }
 
@@ -1787,8 +1780,8 @@ type looseStore struct {
 	threads map[string]string
 }
 
-func (s *looseStore) UsageAlerts() map[string]int         { return nil }
-func (s *looseStore) SetUsageAlerts(map[string]int) error { return nil }
+func (s *looseStore) Usage() state.Usage         { return state.Usage{} }
+func (s *looseStore) SetUsage(state.Usage) error { return nil }
 
 func (s *looseStore) ClaimEvent(string) (bool, error) { return true, nil }
 

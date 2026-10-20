@@ -98,8 +98,8 @@ type Store interface {
 	GetPullWatch(key string) (state.PullWatch, bool)
 	SetPullWatch(watch state.PullWatch) error
 	DeletePullWatches(match func(state.PullWatch) bool) ([]state.PullWatch, error)
-	UsageAlerts() map[string]int
-	SetUsageAlerts(alerts map[string]int) error
+	Usage() state.Usage
+	SetUsage(usage state.Usage) error
 }
 
 // Runner executes one Codex turn. deniedPaths are hidden from the turn in
@@ -172,9 +172,10 @@ type Config struct {
 	// Workspaces gives each Slack thread its cwd and writable roots. When
 	// nil, every thread shares WorkspaceDir and WritableRoots.
 	Workspaces Workspaces
-	// Usage reads the Codex account's usage. When it is set, low usage is
-	// announced in ApprovalChannelID and a turn stopped by the usage limit
-	// says when to ask again.
+	// Usage reads the Codex account's usage. When it is set, the usage is
+	// recorded and summarized daily in ApprovalChannelID, low usage is
+	// announced there, it answers questions about the usage there, and a
+	// turn stopped by the usage limit says when to ask again.
 	Usage UsageReader
 }
 

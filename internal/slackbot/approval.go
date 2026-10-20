@@ -24,7 +24,7 @@ const (
 	// it is no longer started on its own.
 	approvalResumeWindow    = 24 * time.Hour
 	notApproverMessage      = "承認者（SLACK_APPROVER_USER_IDS）だけが操作できます。"
-	approvalUsageMessage    = "承認チャンネルでは、依頼のスレッドで「" + approveCommand + "」か「" + denyCommand + "」と mention することだけができます。"
+	approvalUsageMessage    = "承認チャンネルでは、依頼のスレッドで「" + approveCommand + "」か「" + denyCommand + "」と mention することと、「残り」と mention して Codex の利用枠を確かめることだけができます。"
 	approvalSaveFailMessage = "記録の保存に失敗したため、操作していません。もう一度お試しください。"
 )
 
@@ -252,6 +252,8 @@ func (b *Bot) handleApprovalCommand(ctx context.Context, event *slackevents.AppM
 	var reply string
 	var resume *processingTrigger
 	switch {
+	case isUsageQuestion(command):
+		reply = b.usageReply(ctx)
 	case !b.isApprover(event.User):
 		reply = notApproverMessage
 	case !inRequest || (command != approveCommand && command != denyCommand):

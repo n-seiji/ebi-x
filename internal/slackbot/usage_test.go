@@ -36,7 +36,7 @@ func newUsageBot(t *testing.T, store *fakeStore, api *fakeSlack, usage UsageRead
 	return bot
 }
 
-func TestAnnounceUsageOncePerThreshold(t *testing.T) {
+func TestRecordUsageAnnouncesOncePerLevel(t *testing.T) {
 	api := &fakeSlack{}
 	store := &fakeStore{}
 	bot := newUsageBot(t, store, api, &fakeUsage{})
@@ -47,18 +47,18 @@ func TestAnnounceUsageOncePerThreshold(t *testing.T) {
 		want               []string
 	}{
 		{primary: 50, secondary: 10},
-		{primary: 61, secondary: 10, want: []string{"Codex の利用枠（5時間）の残りが 40% を下回りました。"}},
-		{primary: 65, secondary: 10},
-		{primary: 85, secondary: 75, want: []string{"（5時間）の残りが 20% を下回りました", "（1週間）の残りが 30% を下回りました"}},
-		{primary: 100, secondary: 75, want: []string{"Codex の利用枠（5時間）を使い切りました。", "まで、ebi-x は作業できません。"}},
-		{primary: 100, secondary: 75},
+		{primary: 85, secondary: 75},
+		{primary: 91, secondary: 10, want: []string{"Codex の利用枠（5時間）の残りが 10% を下回りました。"}},
+		{primary: 95, secondary: 10},
+		{primary: 100, secondary: 92, want: []string{"Codex の利用枠（5時間）を使い切りました。", "まで、ebi-x は作業できません。", "（1週間）の残りが 10% を下回りました"}},
+		{primary: 100, secondary: 93},
 		// The 5-hour window resets; a later fall is announced again.
-		{primary: 5, secondary: 76},
-		{primary: 70, secondary: 76, want: []string{"（5時間）の残りが 40% を下回りました"}},
+		{primary: 5, secondary: 93},
+		{primary: 92, secondary: 93, want: []string{"（5時間）の残りが 10% を下回りました"}},
 	}
 	for i, step := range steps {
 		before := len(api.posts)
-		bot.announceUsage(ctx, usageLimits(step.primary, step.secondary))
+		bot.recordUsage(ctx, usageLimits(step.primary, step.secondary))
 		posted := api.posts[before:]
 		if len(step.want) == 0 {
 			if len(posted) != 0 {
@@ -83,13 +83,63 @@ func TestAnnounceUsageOncePerThreshold(t *testing.T) {
 	}
 }
 
-func TestAnnounceUsageSurvivesRestart(t *testing.T) {
+func TestRecordUsageAlertSurvivesRestart(t *testing.T) {
 	api := &fakeSlack{}
 	store := &fakeStore{}
-	newUsageBot(t, store, api, &fakeUsage{}).announceUsage(context.Background(), usageLimits(65, 0))
-	newUsageBot(t, store, api, &fakeUsage{}).announceUsage(context.Background(), usageLimits(66, 0))
+	newUsageBot(t, store, api, &fakeUsage{}).recordUsage(context.Background(), usageLimits(95, 0))
+	newUsageBot(t, store, api, &fakeUsage{}).recordUsage(context.Background(), usageLimits(96, 0))
 	if len(api.posts) != 1 {
 		t.Fatalf("posts = %d, want 1", len(api.posts))
+	}
+}
+
+func TestRecordUsagePostsDailySummary(t *testing.T) {
+	api := &fakeSlack{}
+	store := &fakeStore{}
+	bot := newUsageBot(t, store, api, &fakeUsage{})
+	now := time.Date(2026, 10, 20, 9, 0, 0, 0, time.Local)
+	bot.now = func() time.Time { return now }
+	ctx := context.Background()
+
+	for _, used := range [][2]float64{{10, 20}, {70, 30}, {30, 45}} {
+		bot.recordUsage(ctx, usageLimits(used[0], used[1]))
+		now = now.Add(30 * time.Minute)
+	}
+	if len(api.posts) != 0 {
+		t.Fatalf("posted %q before the day ended", api.posts[0].text)
+	}
+	now = time.Date(2026, 10, 21, 0, 10, 0, 0, time.Local)
+	bot.recordUsage(ctx, usageLimits(0, 46))
+
+	if len(api.posts) != 1 || api.posts[0].channel != "CAPPROVAL" {
+		t.Fatalf("posts = %+v, want one summary", api.posts)
+	}
+	want := "📊 10/20 の Codex の利用枠（3回確認）\n- 5時間: 90% → 70%（最低 30%）\n- 1週間: 80% → 55%（最低 55%）"
+	if api.posts[0].text != want {
+		t.Fatalf("summary = %q, want %q", api.posts[0].text, want)
+	}
+	if got := store.Usage(); got.Day != "2026-10-21" || got.Windows["primary"].Checks != 1 {
+		t.Fatalf("usage after the summary = %+v", got)
+	}
+}
+
+func TestApprovalChannelAnswersUsageQuestion(t *testing.T) {
+	bot, api, _, _ := newApprovalBot(t, &fakeRunner{})
+	bot.config.Usage = &fakeUsage{limits: usageLimits(72.4, 37)}
+
+	reply := approvalCommand(bot, api, "U1", "", "残りどれくらい？")
+
+	if !strings.HasPrefix(reply, usageReplyPrefix+"5時間 27%（") || !strings.Contains(reply, "・1週間 63%（") {
+		t.Fatalf("reply = %q", reply)
+	}
+}
+
+func TestApprovalChannelUsageQuestionWithoutUsage(t *testing.T) {
+	bot, api, _, _ := newApprovalBot(t, &fakeRunner{})
+	bot.config.Usage = &fakeUsage{err: errors.New("api key")}
+
+	if reply := approvalCommand(bot, api, "UOWNER", "", "usage"); reply != usageUnavailableReply {
+		t.Fatalf("reply = %q", reply)
 	}
 }
 
@@ -99,9 +149,8 @@ func TestUsageLevel(t *testing.T) {
 		level   int
 		crossed bool
 	}{
-		{used: 60, crossed: false},
-		{used: 60.5, level: 40, crossed: true},
-		{used: 91, level: 10, crossed: true},
+		{used: 90, crossed: false},
+		{used: 90.5, level: 10, crossed: true},
 		{used: 99.9, level: 10, crossed: true},
 		{used: 100, level: 0, crossed: true},
 	}

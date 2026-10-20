@@ -9,19 +9,25 @@ import (
 	"time"
 
 	"github.com/n-seiji/ebi-x/internal/codex"
+	"github.com/n-seiji/ebi-x/internal/state"
 )
 
 const (
-	// usagePollInterval is how often the Codex usage is checked. It also
-	// catches usage from outside ebi-x on the same account.
-	usagePollInterval = 5 * time.Minute
-	usageReadTimeout  = 30 * time.Second
+	// usageCheckInterval is how often the Codex usage is checked and
+	// recorded. It also sees usage from outside ebi-x on the same account.
+	usageCheckInterval = 30 * time.Minute
+	usageReadTimeout   = 30 * time.Second
+	usageDayLayout     = "2006-01-02"
 
 	usageLowMessage       = "⚠️ Codex の利用枠（%s）の残りが %d%% を下回りました。%s"
 	usageExhaustedMessage = "🚫 Codex の利用枠（%s）を使い切りました。%sまで、ebi-x は作業できません。"
 	usageResetSuffix      = "%sにリセットされます。"
 	usageSummaryPrefix    = "今の残り: "
 	usageUnknownReset     = "リセットされる"
+	usageReplyPrefix      = "Codex の利用枠の残り: "
+	usageUnavailableReply = "⚠️ Codex の利用枠を読み取れませんでした。"
+	usageDailyHeader      = "📊 %s の Codex の利用枠（%d回確認）"
+	usageDailyLine        = "- %s: %d%% → %d%%（最低 %d%%）"
 	// usageLimitFailureMessage replaces workFailureMessage when the turn
 	// stopped on the usage limit, so the requester knows why and when to
 	// ask again.
@@ -30,9 +36,13 @@ const (
 	usageLimitRetryLater     = "利用枠がリセットされてから"
 )
 
-// usageThresholds are the remaining percentages announced once per window,
-// highest first. 0 means the window is used up.
-var usageThresholds = []int{40, 30, 20, 10, 0}
+// usageThresholds are the remaining percentages announced once per window
+// period, highest first. 0 means the window is used up.
+var usageThresholds = []int{10, 0}
+
+// usageQuestionWords mark a mention in the approval channel that asks for
+// the current usage.
+var usageQuestionWords = []string{"usage", "残り", "利用枠", "使用量"}
 
 // UsageReader reads the Codex account's current usage.
 type UsageReader interface {
@@ -43,8 +53,10 @@ func (b *Bot) usageWatchEnabled() bool {
 	return b.config.Usage != nil && b.config.ApprovalChannelID != ""
 }
 
-// runUsageWatch announces in the approval channel when a Codex usage window
-// runs low, until ctx is done.
+// runUsageWatch checks the Codex usage until ctx is done. Each check is
+// recorded for the day's summary, which the first check of the next day
+// posts in the approval channel, and a window that runs low is announced
+// there.
 func (b *Bot) runUsageWatch(ctx context.Context) {
 	if !b.usageWatchEnabled() {
 		return
@@ -59,9 +71,9 @@ func (b *Bot) runUsageWatch(ctx context.Context) {
 			failing = true
 		case err == nil:
 			failing = false
-			b.announceUsage(ctx, limits)
+			b.recordUsage(ctx, limits)
 		}
-		if err := b.sleep(ctx, usagePollInterval); err != nil {
+		if err := b.sleep(ctx, usageCheckInterval); err != nil {
 			return
 		}
 	}
@@ -73,15 +85,103 @@ func (b *Bot) readUsage(ctx context.Context) (*codex.RateLimits, error) {
 	return b.config.Usage.ReadRateLimits(readCtx)
 }
 
-// announceUsage posts one message for the windows that fell below a
-// threshold not yet announced in their current window.
-func (b *Bot) announceUsage(ctx context.Context, limits *codex.RateLimits) {
+// isUsageQuestion reports whether a mention's text asks for the usage.
+func isUsageQuestion(text string) bool {
+	lower := strings.ToLower(text)
+	for _, word := range usageQuestionWords {
+		if strings.Contains(lower, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// usageReply answers a question about the current usage.
+func (b *Bot) usageReply(ctx context.Context) string {
+	if b.config.Usage == nil {
+		return usageUnavailableReply
+	}
+	limits, err := b.readUsage(ctx)
+	if err != nil {
+		log.Printf("slackbot: read Codex usage for a question: %v", err)
+		return usageUnavailableReply
+	}
+	windows := usageWindows(limits)
+	var parts []string
+	for _, key := range usageWindowKeys {
+		window, ok := windows[key]
+		if !ok {
+			continue
+		}
+		part := fmt.Sprintf("%s %d%%", usageWindowLabel(key, window), usageRemaining(window))
+		if at := window.ResetTime(); !at.IsZero() {
+			part += "（" + formatFollowUpTime(at) + "にリセット）"
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) == 0 {
+		return usageUnavailableReply
+	}
+	return usageReplyPrefix + strings.Join(parts, "・")
+}
+
+// recordUsage adds one check to the day's record, posting the previous
+// day's summary first when the day changed, and announces the windows that
+// fell to a level not yet announced in their current period.
+func (b *Bot) recordUsage(ctx context.Context, limits *codex.RateLimits) {
 	b.usageMu.Lock()
 	defer b.usageMu.Unlock()
-	announced := b.store.UsageAlerts()
-	next := make(map[string]int, len(announced))
-	var lines []string
+	saved := b.store.Usage()
+	next := saved
+	day := b.now().In(time.Local).Format(usageDayLayout)
+	if saved.Day != day {
+		if summary := usageDailySummary(saved); summary != "" {
+			if err := b.post(ctx, b.config.ApprovalChannelID, "", summary); err != nil {
+				log.Printf("slackbot: post Codex usage summary: %v", err)
+			}
+		}
+		next.Day = day
+		next.Windows = nil
+	}
 	windows := usageWindows(limits)
+	days := make(map[string]state.UsageDay, len(windows))
+	for key, record := range next.Windows {
+		days[key] = record
+	}
+	for key, window := range windows {
+		remaining := math.Max(0, 100-window.UsedPercent)
+		record, ok := days[key]
+		if !ok {
+			record = state.UsageDay{First: remaining, Min: remaining}
+		}
+		record.Label = usageWindowLabel(key, window)
+		record.Last = remaining
+		record.Min = math.Min(record.Min, remaining)
+		record.Checks++
+		days[key] = record
+	}
+	next.Windows = days
+
+	alerts, lines := usageAlerts(saved.Alerts, windows)
+	next.Alerts = alerts
+	if len(lines) > 0 {
+		text := strings.Join(lines, "\n") + "\n" + usageSummaryPrefix + usageSummary(limits)
+		if err := b.post(ctx, b.config.ApprovalChannelID, "", text); err != nil {
+			log.Printf("slackbot: post Codex usage alert: %v", err)
+			// Announce it again at the next check.
+			next.Alerts = saved.Alerts
+		}
+	}
+	if err := b.store.SetUsage(next); err != nil {
+		log.Printf("slackbot: save Codex usage: %v", err)
+	}
+}
+
+// usageAlerts returns the levels announced after this check and the
+// announcement lines for windows that fell to a new level.
+func usageAlerts(announced map[string]int, windows map[string]codex.RateLimitWindow) (map[string]int, []string) {
+	next := make(map[string]int, len(windows))
+	var lines []string
 	for _, key := range usageWindowKeys {
 		window, ok := windows[key]
 		if !ok {
@@ -108,18 +208,28 @@ func (b *Bot) announceUsage(ctx context.Context, limits *codex.RateLimits) {
 		}
 		lines = append(lines, fmt.Sprintf(usageLowMessage, label, level, reset))
 	}
-	if len(lines) > 0 {
-		text := strings.Join(lines, "\n") + "\n" + usageSummaryPrefix + usageSummary(limits)
-		if err := b.post(ctx, b.config.ApprovalChannelID, "", text); err != nil {
-			log.Printf("slackbot: post Codex usage alert: %v", err)
-			return
-		}
+	return next, lines
+}
+
+// usageDailySummary describes a recorded day, or returns "" when nothing was
+// recorded.
+func usageDailySummary(usage state.Usage) string {
+	day, err := time.ParseInLocation(usageDayLayout, usage.Day, time.Local)
+	if err != nil || len(usage.Windows) == 0 {
+		return ""
 	}
-	if !sameLevels(announced, next) {
-		if err := b.store.SetUsageAlerts(next); err != nil {
-			log.Printf("slackbot: save Codex usage alerts: %v", err)
+	checks := 0
+	var lines []string
+	for _, key := range usageWindowKeys {
+		record, ok := usage.Windows[key]
+		if !ok {
+			continue
 		}
+		checks = max(checks, record.Checks)
+		lines = append(lines, fmt.Sprintf(usageDailyLine, record.Label, int(math.Floor(record.First)), int(math.Floor(record.Last)), int(math.Floor(record.Min))))
 	}
+	header := fmt.Sprintf(usageDailyHeader, day.Format("1/2"), checks)
+	return header + "\n" + strings.Join(lines, "\n")
 }
 
 // usageLimitFailure returns the failure message for a turn that hit the
@@ -145,7 +255,7 @@ func (b *Bot) usageLimitFailure(ctx context.Context) string {
 		retry = fmt.Sprintf(usageLimitRetryAt, formatFollowUpTime(latest))
 	}
 	if b.config.ApprovalChannelID != "" {
-		b.announceUsage(ctx, limits)
+		b.recordUsage(ctx, limits)
 	}
 	return fmt.Sprintf(usageLimitFailureMessage, retry)
 }
@@ -225,16 +335,4 @@ func usageSummary(limits *codex.RateLimits) string {
 		parts = append(parts, fmt.Sprintf("%s %d%%", usageWindowLabel(key, window), usageRemaining(window)))
 	}
 	return strings.Join(parts, "・")
-}
-
-func sameLevels(a, b map[string]int) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for key, value := range a {
-		if other, ok := b[key]; !ok || other != value {
-			return false
-		}
-	}
-	return true
 }
