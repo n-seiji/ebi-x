@@ -25,11 +25,14 @@ func TestBuildTurnPrompt(t *testing.T) {
 			"実行対象は後続の <slack_message> 内の依頼です", "<authenticated_slack_author_id>\nU234\n</authenticated_slack_author_id>",
 			"<message_text>\n対象ファイルを更新し、テストを実行する\n</message_text>", "/src/app → /thread/app", "ebi-x/thread",
 			"## 添付ファイル", "PDF・PNG・JPEG・GIF・WebP・pptx", "100MB", "10件", "添付しました", "Slackのトークンやコマンドで自分で送信しない",
-			"## チャンネルメモリ追記", "メモリファイルを直接編集しない", "1800字以内", "表は3列以内",
+			"メモリファイルを直接編集しない", "該当する playbook があるもの", "1800字以内", "表は3列以内",
 		} {
 			if !strings.Contains(got, want) {
 				t.Errorf("prompt missing %q", want)
 			}
+		}
+		if strings.Contains(got, "## チャンネルメモリ追記") == shared {
+			t.Errorf("channel memory offered = %v, want %v", shared, !shared)
 		}
 		if strings.Contains(got, "## 全体メモリ追記") != shared {
 			t.Errorf("global memory permission = %v, want %v", !shared, shared)

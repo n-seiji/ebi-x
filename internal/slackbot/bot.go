@@ -681,6 +681,12 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		log.Printf("slackbot: ignore global memory proposal from channel without shared writes %q", eventKey)
 		memoryAppends.Global = ""
 	}
+	// Channels that may change playbooks and global memory keep their
+	// lessons there, so channel memory is only for the other channels.
+	if memoryAppends.Channel != "" && sharedWritable {
+		log.Printf("slackbot: ignore channel memory proposal from channel with shared writes %q", eventKey)
+		memoryAppends.Channel = ""
+	}
 	if memoryAppends != (codex.MemoryAppends{}) {
 		targets := []struct {
 			scope memory.Scope

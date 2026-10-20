@@ -1123,7 +1123,7 @@ func TestAllowedActiveMessageReplyRunsTurnInSharedThreadSession(t *testing.T) {
 		"<authenticated_slack_author_id>\nU2\n</authenticated_slack_author_id>",
 		"<message_text>\nplease continue\n</message_text>",
 		"## 添付ファイル",
-		"## チャンネルメモリ追記",
+		"## 全体メモリ追記",
 	} {
 		if !strings.Contains(runner.prompts[0], want) {
 			t.Errorf("message prompt does not contain %q", want)
@@ -1694,24 +1694,17 @@ func TestWorkMemoryAppendIsWrittenByBot(t *testing.T) {
 	if store.current != state.Done {
 		t.Fatalf("state = %q, want done", store.current)
 	}
-	files := []struct {
-		path string
-		want string
-	}{
-		{path: filepath.Join(bot.config.MemoryDir, "MEMORY.md"), want: "ビルドは mise run build を使う"},
-		{path: filepath.Join(bot.config.MemoryDir, "channels", "C1", "MEMORY.md"), want: "動作確認用チャンネル"},
+	data, err := os.ReadFile(filepath.Join(bot.config.MemoryDir, "MEMORY.md"))
+	if err != nil || !strings.Contains(string(data), "ビルドは mise run build を使う") {
+		t.Fatalf("global memory = %q, %v", data, err)
 	}
-	for _, file := range files {
-		data, err := os.ReadFile(file.path)
-		if err != nil {
-			t.Fatalf("read memory %s: %v", file.path, err)
-		}
-		if !strings.Contains(string(data), file.want) {
-			t.Fatalf("memory file %s = %q, want %q", file.path, data, file.want)
-		}
+	// A channel with shared writes keeps its lessons in playbooks and global
+	// memory, so its channel memory proposal is dropped.
+	if _, err := os.Stat(filepath.Join(bot.config.MemoryDir, "channels", "C1", "MEMORY.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("channel memory stat error = %v, want not exist", err)
 	}
 	posts := strings.Join(api.postTexts, "|")
-	if !strings.Contains(posts, "Work completed.") || !strings.Contains(posts, "全体・チャンネルメモリを更新しました") {
+	if !strings.Contains(posts, "Work completed.") || !strings.Contains(posts, "📝 全体メモリを更新しました") {
 		t.Fatalf("posts = %q, want work result and memory notification", posts)
 	}
 	for _, private := range []string{"ビルドは mise run build を使う", "動作確認用チャンネル"} {

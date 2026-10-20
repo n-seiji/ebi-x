@@ -145,16 +145,27 @@ func BuildTurnPrompt(memories memory.Context, playbooks []playbook.Playbook, act
 	} else {
 		builder.WriteString("このチャンネルからは playbook と全体メモリを変更できません。playbook は読み取り専用です。\n")
 	}
-	builder.WriteString("作業中に長期的に有用な学びがあれば、最終応答の末尾に以下の見出しを必要なものだけ置いてください。複数使う場合はこの順序にしてください。\n")
+	builder.WriteString(memoryRules)
 	if sharedWritable {
-		builder.WriteString("- 「## 全体メモリ追記」: 他のユーザーやチャンネルでも再利用できる技術的・運用上の知識\n")
+		builder.WriteString("- 「## 全体メモリ追記」: どの playbook にも属さない、他のユーザーやチャンネルでも再利用できる技術的・運用上の事実\n")
+	} else {
+		builder.WriteString("- 「## チャンネルメモリ追記」: 現在のチャンネルの参加者で共有してよい用語・目的・運用ルール\n")
 	}
-	builder.WriteString(`- 「## チャンネルメモリ追記」: 現在のチャンネルの参加者で共有してよい用語・目的・運用ルール
-
-各見出しは最大1回です。認証情報、秘密、一時的な依頼内容、推測したセンシティブ属性は保存しないでください。重要な学びがなければ、これらの見出しを出力しないでください。
+	builder.WriteString(`
+見出しは最大1回です。認証情報、秘密、一時的な依頼内容、推測したセンシティブ属性は保存しないでください。条件に合う学びがなければ、見出しを出力しないでください。
 `)
 	return builder.String()
 }
+
+// memoryRules decide what is worth keeping. A lesson about how to do a
+// kind of work belongs in its playbook, where every later turn follows it;
+// memory keeps only the facts that fit no playbook. The checks follow
+// pstack's /reflect: lasting, specific, decision-changing, and not already
+// covered elsewhere.
+const memoryRules = `作業中に長期的に有用な学びがあれば、最終応答の末尾に以下の見出しで提案してください。
+- 進め方・判断基準・使うツールの学びで、該当する playbook があるものは、メモリではなく playbook のメモや本文の修正で扱ってください。
+- 残すのは、次回も成り立ち、具体的で、次の判断を変える事実だけです。すでに playbook やメモリにあるもの、すぐ古くなる細部（日付だけの予定、個別の数値など）、このスレッドの中だけで意味を持つ経緯は書かないでください。スレッドの経緯はこのセッションが覚えています。
+`
 
 // playbookNoteRules describe the playbook note section of the output
 // contract. Notes keep a playbook current between edits of its body, which
