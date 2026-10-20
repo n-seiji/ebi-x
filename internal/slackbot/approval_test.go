@@ -85,13 +85,14 @@ func TestUnknownUserMentionRequestsApprovalOnce(t *testing.T) {
 	if approval.Status != state.Pending || approval.RequestMessageTS != "top-1" || approval.RequestThreadTS != "100.1" {
 		t.Fatalf("approval = %+v, want pending with request message and origin thread", approval)
 	}
+	queuedText := fmt.Sprintf(approvalQueuedMessage, "あなた")
 	var origin []string
 	for _, post := range api.posts {
 		if post.channel == "C1" {
 			origin = append(origin, post.text)
 		}
 	}
-	if got := strings.Join(origin, "|"); got != approvalQueuedMessage+"|"+approvalQueuedMessage {
+	if got := strings.Join(origin, "|"); got != queuedText+"|"+queuedText {
 		t.Fatalf("origin replies = %q, want approval requested twice", got)
 	}
 }
@@ -159,8 +160,8 @@ func TestApprovalDoesNotStartOldOrEmptyMentions(t *testing.T) {
 		now       time.Time
 		wantReply string
 	}{
-		{name: "older than a day", text: "<@UBOT> do it", now: time.Unix(100, 0).Add(25 * time.Hour), wantReply: approvalQueuedMessage},
-		{name: "empty mention", text: "<@UBOT>", now: time.Unix(100, 0), wantReply: approvalRequestedMessage},
+		{name: "older than a day", text: "<@UBOT> do it", now: time.Unix(100, 0).Add(25 * time.Hour), wantReply: fmt.Sprintf(approvalQueuedMessage, "あなた")},
+		{name: "empty mention", text: "<@UBOT>", now: time.Unix(100, 0), wantReply: fmt.Sprintf(approvalRequestedMessage, "あなた")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -205,6 +206,9 @@ func TestUnknownUserAndChannelRequestBothApprovals(t *testing.T) {
 		approvals.ApprovalStatus(state.ApprovalChannel, "C2") != state.Pending {
 		t.Fatal("want user and channel pending")
 	}
+	if got, want := api.posts[len(api.posts)-1].text, fmt.Sprintf(approvalQueuedMessage, "あなたとこのチャンネル"); got != want {
+		t.Fatalf("reply = %q, want %q", got, want)
+	}
 }
 
 func TestApprovalIsNotRequestedForDeniedOrUnapprovableSubjects(t *testing.T) {
@@ -236,7 +240,7 @@ func TestApprovalIsNotRequestedForDeniedOrUnapprovableSubjects(t *testing.T) {
 			if store.claimCalls != 0 || len(approvalRequests(api)) != 0 {
 				t.Fatalf("claims = %d, approval requests = %d, want 0", store.claimCalls, len(approvalRequests(api)))
 			}
-			if got := strings.Join(api.postTexts, "|"); got != "403 forbidden. @seiji に確認してください。" {
+			if got := strings.Join(api.postTexts, "|"); got != forbiddenText("あなた", "@seiji") {
 				t.Fatalf("posts = %q, want forbidden response", got)
 			}
 		})
@@ -254,7 +258,7 @@ func TestFailedApprovalPostIsRolledBack(t *testing.T) {
 	if got := approvals.ApprovalStatus(state.ApprovalUser, "U2"); got != "" {
 		t.Fatalf("status = %q, want no record", got)
 	}
-	if got := api.posts[len(api.posts)-1].text; got != "403 forbidden. @seiji に確認してください。" {
+	if got := api.posts[len(api.posts)-1].text; got != forbiddenText("あなた", "@seiji") {
 		t.Fatalf("last post = %q, want forbidden response", got)
 	}
 }

@@ -517,15 +517,18 @@ func TestAllowlistRejectsUserAndChannel(t *testing.T) {
 		name      string
 		configure func(*Bot)
 		event     *slackevents.AppMentionEvent
+		subject   string
 	}{
 		{
-			name: "user",
+			name:    "user",
+			subject: "あなた",
 			event: &slackevents.AppMentionEvent{
 				User: "U2", Channel: "C1", TimeStamp: "1", Text: "<@UBOT> work",
 			},
 		},
 		{
-			name: "channel",
+			name:    "channel",
+			subject: "このチャンネル",
 			configure: func(bot *Bot) {
 				bot.allowedChannels = makeSet([]string{"C2"})
 			},
@@ -544,7 +547,7 @@ func TestAllowlistRejectsUserAndChannel(t *testing.T) {
 			if store.claimCalls != 0 {
 				t.Fatalf("ClaimEvent called %d times, want 0", store.claimCalls)
 			}
-			if got := strings.Join(api.postTexts, "|"); got != "403 forbidden. @seiji に確認してください。" {
+			if got := strings.Join(api.postTexts, "|"); got != forbiddenText(test.subject, "@seiji") {
 				t.Fatalf("posts = %q, want forbidden response", got)
 			}
 		})
@@ -586,7 +589,7 @@ func TestBotMentionWithoutWorkflowIDIsForbidden(t *testing.T) {
 	if store.claimCalls != 0 {
 		t.Fatalf("ClaimEvent called %d times, want 0", store.claimCalls)
 	}
-	if got := strings.Join(api.postTexts, "|"); got != "403 forbidden. @seiji に確認してください。" {
+	if got := strings.Join(api.postTexts, "|"); got != forbiddenText("この Workflow", "@seiji") {
 		t.Fatalf("posts = %q, want forbidden response", got)
 	}
 }
@@ -601,7 +604,7 @@ func TestUnauthorizedBareMentionIsForbidden(t *testing.T) {
 
 	bot.HandleMention(context.Background(), event)
 
-	if got := strings.Join(api.postTexts, "|"); got != "403 forbidden. @seiji に確認してください。" {
+	if got := strings.Join(api.postTexts, "|"); got != forbiddenText("あなた", "@seiji") {
 		t.Fatalf("posts = %q, want forbidden response", got)
 	}
 }
@@ -612,12 +615,13 @@ func TestWorkflowAuthorizationBoundaries(t *testing.T) {
 		enabled    bool
 		workflowID string
 		channel    string
+		subject    string
 	}{
-		{name: "disabled", workflowID: "Wf0BSM19MCDT", channel: "C1"},
-		{name: "wrong prefix", enabled: true, workflowID: "Fx0BSM19MCDT", channel: "C1"},
-		{name: "invalid characters", enabled: true, workflowID: "WfBAD-id", channel: "C1"},
-		{name: "disallowed channel", enabled: true, workflowID: "Wf0BSM19MCDT", channel: "C2"},
-		{name: "workflow not in allowlist", enabled: true, workflowID: "Wf0OTHER123", channel: "C1"},
+		{name: "disabled", workflowID: "Wf0BSM19MCDT", channel: "C1", subject: "この Workflow"},
+		{name: "wrong prefix", enabled: true, workflowID: "Fx0BSM19MCDT", channel: "C1", subject: "この Workflow"},
+		{name: "invalid characters", enabled: true, workflowID: "WfBAD-id", channel: "C1", subject: "この Workflow"},
+		{name: "disallowed channel", enabled: true, workflowID: "Wf0BSM19MCDT", channel: "C2", subject: "このチャンネル"},
+		{name: "workflow not in allowlist", enabled: true, workflowID: "Wf0OTHER123", channel: "C1", subject: "この Workflow"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -637,7 +641,7 @@ func TestWorkflowAuthorizationBoundaries(t *testing.T) {
 			if store.claimCalls != 0 {
 				t.Fatalf("ClaimEvent called %d times, want 0", store.claimCalls)
 			}
-			if got := strings.Join(api.postTexts, "|"); got != "403 forbidden. @seiji に確認してください。" {
+			if got := strings.Join(api.postTexts, "|"); got != forbiddenText(test.subject, "@seiji") {
 				t.Fatalf("posts = %q, want forbidden response", got)
 			}
 		})
@@ -654,7 +658,7 @@ func TestForbiddenResponseMentionsConfiguredAdmin(t *testing.T) {
 
 	bot.HandleMention(context.Background(), event)
 
-	if got := strings.Join(api.postTexts, "|"); got != "403 forbidden. <@UADMIN> に確認してください。" {
+	if got := strings.Join(api.postTexts, "|"); got != forbiddenText("あなた", "<@UADMIN>") {
 		t.Fatalf("posts = %q, want configured admin mention", got)
 	}
 }
@@ -2837,4 +2841,8 @@ func TestAnswerHidesLocalPaths(t *testing.T) {
 	if !strings.Contains(answer, "根拠：調査手順\n作業コピー：data/workspace/C1-100.1/repo") || strings.Contains(answer, "/home/ebi") {
 		t.Fatalf("answer = %q, want local paths hidden", answer)
 	}
+}
+
+func forbiddenText(subject, contact string) string {
+	return fmt.Sprintf(forbiddenMessage, subject, contact)
 }

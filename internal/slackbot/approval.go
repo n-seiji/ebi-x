@@ -2,9 +2,11 @@ package slackbot
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/n-seiji/ebi-x/internal/state"
@@ -15,8 +17,8 @@ const (
 	approveCommand = "許可"
 	denyCommand    = "拒否"
 
-	approvalRequestedMessage = "403 forbidden. まだ許可されていないため、承認を依頼しました。許可されたら、もう一度 mention してください。"
-	approvalQueuedMessage    = "403 forbidden. まだ許可されていないため、承認を依頼しました。許可されたら、この依頼から始めます。"
+	approvalRequestedMessage = "🔒 %sには ebi-x を使う権限がまだないため、承認者に許可を依頼しました。許可されたら、もう一度 mention してください。"
+	approvalQueuedMessage    = "🔒 %sには ebi-x を使う権限がまだないため、承認者に許可を依頼しました。許可されたら、この依頼から始めます。"
 
 	// approvalResumeWindow is how long a mention waits for approval before
 	// it is no longer started on its own.
@@ -75,6 +77,36 @@ func (s approvalSubject) label() string {
 	}
 }
 
+// subject names the subject from the mention author's point of view.
+func (s approvalSubject) subject() string {
+	switch s.kind {
+	case state.ApprovalUser:
+		return "あなた"
+	case state.ApprovalChannel:
+		return "このチャンネル"
+	default:
+		return "この Workflow"
+	}
+}
+
+// missingSubjects joins the subjects that lack access, such as
+// "あなたとこのチャンネル".
+func missingSubjects(missing []approvalSubject) string {
+	names := make([]string, 0, len(missing))
+	for _, subject := range missing {
+		// A DM is only between the author and ebi-x, so only the author's
+		// access matters there.
+		if subject.kind == state.ApprovalChannel && strings.HasPrefix(subject.id, "D") {
+			continue
+		}
+		names = append(names, subject.subject())
+	}
+	if len(names) == 0 {
+		return "あなた"
+	}
+	return strings.Join(names, "と")
+}
+
 func (s approvalSubject) value() string {
 	return string(s.kind) + ":" + s.id
 }
@@ -119,12 +151,12 @@ func (b *Bot) workflowAllowed(id string) bool {
 // subject that has no decision yet; a denied subject is refused outright.
 func (b *Bot) rejectUnapproved(ctx context.Context, event *slackevents.AppMentionEvent, missing []approvalSubject) {
 	if !b.approvalsEnabled() {
-		b.forbidden(ctx, event)
+		b.forbidden(ctx, event, missing)
 		return
 	}
 	for _, subject := range missing {
 		if !subject.valid() || b.config.Approvals.ApprovalStatus(subject.kind, subject.id) == state.Denied {
-			b.forbidden(ctx, event)
+			b.forbidden(ctx, event, missing)
 			return
 		}
 	}
@@ -154,12 +186,12 @@ func (b *Bot) rejectUnapproved(ctx context.Context, event *slackevents.AppMentio
 		queued = queued && b.recordWaitingMention(subject, mention)
 	}
 	if !requested {
-		b.forbidden(ctx, event)
+		b.forbidden(ctx, event, missing)
 		return
 	}
-	reply := approvalRequestedMessage
+	reply := fmt.Sprintf(approvalRequestedMessage, missingSubjects(missing))
 	if queued {
-		reply = approvalQueuedMessage
+		reply = fmt.Sprintf(approvalQueuedMessage, missingSubjects(missing))
 	}
 	if err := b.post(ctx, event.Channel, mentionThreadTS(event), reply); err != nil {
 		log.Printf("slackbot: post approval requested response: %v", err)

@@ -36,7 +36,7 @@ const (
 	threadFailureMessage    = "⚠️ スレッドの読み込みに失敗したため、作業は開始していません。もう一度 mention してください。"
 	workStartFailureMessage = "⚠️ 作業を開始できなかったため、作業は行っていません。もう一度 mention してください。"
 	workFailureMessage      = "⚠️ 作業が完了したことを確認できませんでした。状況を確認し、新しい mention で依頼し直してください。"
-	forbiddenMessage        = "403 forbidden. %s に確認してください。"
+	forbiddenMessage        = "🔒 %sには ebi-x を使う権限がありません。使いたい場合は %s に許可を頼んでください。"
 	attachmentFailureNotice = "⚠️ 次のファイルを添付できませんでした。生成済みのファイルは作業領域に残しています。再送する場合は「添付を再送して」と依頼してください。"
 	attachmentOutputNotice  = "⚠️ 添付ファイルの指定を読み取れなかったため、ファイルは添付していません。再送する場合は「添付を再送して」と依頼してください。"
 	workingStatus           = "が作業を進めています…"
@@ -273,7 +273,7 @@ func (b *Bot) handleMention(ctx context.Context, event *slackevents.AppMentionEv
 		}
 	} else if !b.config.AllowWorkflows || !validWorkflowID(workflowID) {
 		log.Printf("slackbot: rejecting bot %q with workflow %q", event.BotID, workflowID)
-		b.forbidden(ctx, event)
+		b.forbidden(ctx, event, []approvalSubject{{kind: state.ApprovalWorkflow, id: workflowID}})
 		return
 	} else if !b.workflowAllowed(workflowID) {
 		missing = append(missing, approvalSubject{kind: state.ApprovalWorkflow, id: workflowID})
@@ -822,7 +822,9 @@ func (w sharedWorkspaces) Acquire(context.Context, string, bool) (*workspace.Lea
 
 func (w sharedWorkspaces) OtherThreadPaths(string) ([]string, error) { return nil, nil }
 
-func (b *Bot) forbidden(ctx context.Context, event *slackevents.AppMentionEvent) {
+// forbidden tells the author that the mention is refused, naming who lacks
+// access so they know to ask the admin rather than retry.
+func (b *Bot) forbidden(ctx context.Context, event *slackevents.AppMentionEvent, missing []approvalSubject) {
 	contact := "@seiji"
 	if b.config.AdminUserID != "" {
 		contact = "<@" + b.config.AdminUserID + ">"
@@ -831,7 +833,7 @@ func (b *Bot) forbidden(ctx context.Context, event *slackevents.AppMentionEvent)
 	if threadTS == "" {
 		threadTS = event.TimeStamp
 	}
-	if err := b.post(ctx, event.Channel, threadTS, fmt.Sprintf(forbiddenMessage, contact)); err != nil {
+	if err := b.post(ctx, event.Channel, threadTS, fmt.Sprintf(forbiddenMessage, missingSubjects(missing), contact)); err != nil {
 		log.Printf("slackbot: post forbidden response: %v", err)
 	}
 }
