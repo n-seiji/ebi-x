@@ -42,6 +42,7 @@ type fakeStore struct {
 	followUps           map[string]state.FollowUp
 	pullWatches         map[string]state.PullWatch
 	schedules           map[string]state.Schedule
+	usage               state.Usage
 }
 
 func (s *fakeStore) FollowUps() []state.FollowUp {
@@ -121,6 +122,19 @@ func (s *fakeStore) SetPullWatch(watch state.PullWatch) error {
 		s.pullWatches = make(map[string]state.PullWatch)
 	}
 	s.pullWatches[watch.Key()] = watch
+	return nil
+}
+
+func (s *fakeStore) Usage() state.Usage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.usage
+}
+
+func (s *fakeStore) SetUsage(usage state.Usage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.usage = usage
 	return nil
 }
 
@@ -1765,6 +1779,9 @@ type looseStore struct {
 	mu      sync.Mutex
 	threads map[string]string
 }
+
+func (s *looseStore) Usage() state.Usage         { return state.Usage{} }
+func (s *looseStore) SetUsage(state.Usage) error { return nil }
 
 func (s *looseStore) ClaimEvent(string) (bool, error) { return true, nil }
 

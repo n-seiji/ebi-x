@@ -122,6 +122,7 @@ func main() {
 		GitHub:                     githubAPI,
 		GitHubLogin:                githubLogin,
 		GitHubRepos:                githubRepos,
+		Usage:                      runner,
 	}, playbooks)
 
 	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
