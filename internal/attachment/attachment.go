@@ -17,7 +17,7 @@ const (
 	// MaxFiles is the most files one work turn may attach.
 	MaxFiles = 10
 	// MaxSize is the largest file the bot uploads. Slack accepts more, but
-	// slide previews and decks stay well below this.
+	// slide previews, decks and data exports stay well below this.
 	MaxSize = 100 << 20
 )
 
@@ -31,6 +31,7 @@ var allowedExtensions = map[string]struct{}{
 	".gif":  {},
 	".webp": {},
 	".pptx": {},
+	".csv":  {},
 }
 
 // File is a validated attachment.

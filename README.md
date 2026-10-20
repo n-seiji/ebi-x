@@ -360,7 +360,7 @@ Codexの応答はMarkdownのまま、Block Kit の markdown ブロックとし�
 
 ## 成果物の添付
 
-作業ターンが作成したPDF・画像・pptxを、botが依頼元のスレッドへアップロードします。CodexにはSlackの認証情報を渡しません。
+作業ターンが作成したPDF・画像・pptx・CSVを、botが依頼元のスレッドへアップロードします。CodexにはSlackの認証情報を渡しません。
 
 ### 有効にする手順
 
@@ -382,7 +382,7 @@ Codexの応答はMarkdownのまま、Block Kit の markdown ブロックとし�
 - 見出しの直後が箇条書きでない、見出しが複数あるなど書式が不正な場合は何も添付せず、その旨を本文の後に表示します。
 - 添付できるのは、そのスレッドのcwd（`data/workspace/{channel ID}-{thread ts}/`）とスレッド専用クローン（`data/checkouts/{channel ID}-{thread ts}/...`）の中の通常のファイルだけです。共有のwritable root、`data/playbooks`、別スレッドの作業領域は対象外です。
 - シンボリックリンクを経由するパス、`..` で作業領域の外へ出るパス、ハードリンクされたファイルは拒否します。検証後にファイルが差し替えられた場合もアップロードしません。
-- 種類はPDF・PNG・JPEG・GIF・WebP・pptxのみ、1ファイル100MBまで、1ターン10件までです。
+- 種類はPDF・PNG・JPEG・GIF・WebP・pptx・CSVのみ、1ファイル100MBまで、1ターン10件までです。
 
 ### 投稿の順序と失敗時の扱い
 
