@@ -56,66 +56,20 @@ func TestReadCapsOversizedContent(t *testing.T) {
 	}
 }
 
-func TestReadContextReadsOnlyGlobalAndChannelScopes(t *testing.T) {
+func TestReadContextIgnoresRetiredChannelMemory(t *testing.T) {
 	root := t.TempDir()
-	entries := []struct {
-		scope Scope
-		text  string
-	}{
-		{scope: ScopeGlobal, text: "global fact"},
-		{scope: ScopeChannel, text: "channel convention"},
+	if _, err := Append(root, "global fact"); err != nil {
+		t.Fatal(err)
 	}
-	for _, entry := range entries {
-		if _, err := AppendScoped(root, entry.scope, "C456", entry.text); err != nil {
-			t.Fatalf("AppendScoped(%s) error = %v", entry.scope, err)
-		}
+	if _, err := Append(filepath.Join(root, "channels", "C456"), "channel convention"); err != nil {
+		t.Fatal(err)
 	}
-
-	got, err := ReadContext(root, "C456")
+	got, err := ReadContext(root)
 	if err != nil {
 		t.Fatalf("ReadContext() error = %v", err)
 	}
-	if got.Global != "global fact" || got.Channel != "channel convention" {
-		t.Fatalf("ReadContext() = %#v", got)
-	}
-	other, err := ReadContext(root, "C999")
-	if err != nil {
-		t.Fatalf("ReadContext(other) error = %v", err)
-	}
-	if other.Global != "global fact" || other.Channel != "" {
-		t.Fatalf("ReadContext(other) = %#v", other)
-	}
-}
-
-func TestScopeDirRejectsUnsafeIDs(t *testing.T) {
-	tests := []struct {
-		name  string
-		scope Scope
-		id    string
-	}{
-		{name: "channel traversal", scope: ScopeChannel, id: "C/other"},
-		{name: "unknown scope", scope: Scope("other")},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if _, err := ScopeDir(t.TempDir(), test.scope, test.id); err == nil {
-				t.Fatal("ScopeDir() error = nil, want validation error")
-			}
-		})
-	}
-}
-
-func TestReadContextReturnsOtherScopesWhenOneFails(t *testing.T) {
-	root := t.TempDir()
-	if _, err := AppendScoped(root, ScopeGlobal, "C1", "global fact"); err != nil {
-		t.Fatalf("append global: %v", err)
-	}
-	got, err := ReadContext(root, "unsafe/channel")
-	if err == nil {
-		t.Fatalf("ReadContext() error = %v, want validation error", err)
-	}
-	if got.Global != "global fact" {
-		t.Fatalf("ReadContext() global = %q", got.Global)
+	if got != (Context{Global: "global fact"}) {
+		t.Fatalf("ReadContext() = %#v, want global memory only", got)
 	}
 }
 

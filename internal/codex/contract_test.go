@@ -98,17 +98,15 @@ func TestSplitMemoryAppends(t *testing.T) {
 		wantValid   bool
 	}{
 		{
-			name: "global and channel scopes",
+			name: "retired channel section is stripped and not returned",
 			text: strings.Join([]string{
 				"完了しました。",
 				"## 全体メモリ追記", "共通知識",
 				"## チャンネルメモリ追記", "検証用チャンネル",
 			}, "\n"),
-			wantRest: "完了しました。",
-			wantAppends: MemoryAppends{
-				Global: "共通知識", Channel: "検証用チャンネル",
-			},
-			wantValid: true,
+			wantRest:    "完了しました。",
+			wantAppends: MemoryAppends{Global: "共通知識"},
+			wantValid:   true,
 		},
 		{
 			name:        "user memory heading is not accepted",
@@ -138,7 +136,7 @@ func TestSplitMemoryAppends(t *testing.T) {
 				"## チャンネルメモリ追記", "本物",
 			}, "\n"),
 			wantRest:    strings.Join([]string{"結果", "```", "## 全体メモリ追記", "偽物", "```"}, "\n"),
-			wantAppends: MemoryAppends{Channel: "本物"},
+			wantAppends: MemoryAppends{},
 			wantValid:   true,
 		},
 		{

@@ -50,16 +50,18 @@ func FollowUpDueAt(when string, now time.Time) (time.Time, error) {
 }
 
 const (
-	memoryHeading              = "## メモリ追記"
-	globalMemoryHeading        = "## 全体メモリ追記"
-	channelMemoryHeading       = "## チャンネルメモリ追記"
-	forbiddenUserMemoryHeading = "## ユーザーメモリ追記"
-	attachmentsHeading         = "## 添付ファイル"
-	followUpHeading            = "## フォローアップ"
-	followUpWhenKey            = "いつ"
-	followUpTaskKey            = "やること"
-	questionsHeading           = "## 回答待ち"
-	pullWatchHeading           = "## PR の見守り"
+	memoryHeading       = "## メモリ追記"
+	globalMemoryHeading = "## 全体メモリ追記"
+	// retiredChannelMemoryHeading is still recognized so a turn that writes
+	// it has the section stripped from its result, but nothing is saved.
+	retiredChannelMemoryHeading = "## チャンネルメモリ追記"
+	forbiddenUserMemoryHeading  = "## ユーザーメモリ追記"
+	attachmentsHeading          = "## 添付ファイル"
+	followUpHeading             = "## フォローアップ"
+	followUpWhenKey             = "いつ"
+	followUpTaskKey             = "やること"
+	questionsHeading            = "## 回答待ち"
+	pullWatchHeading            = "## PR の見守り"
 	// UserSettingsHeading replaces the requester's own settings.
 	UserSettingsHeading = "## 個人設定"
 	// userSettingsClear is the only bullet of a section that removes every
@@ -70,11 +72,9 @@ const (
 	CheckoutRequestHeading = "## 作業用クローン要求"
 )
 
-// MemoryAppends contains optional entries proposed by a work turn. The bot
-// chooses the actual channel path from the authenticated Slack event.
+// MemoryAppends contains optional entries proposed by a work turn.
 type MemoryAppends struct {
-	Global  string
-	Channel string
+	Global string
 }
 
 // SanitizeSlackOutput removes the retired user-memory section and everything
@@ -89,9 +89,10 @@ func SanitizeSlackOutput(text string) string {
 	return strings.TrimSpace(text[:index])
 }
 
-// SplitMemoryAppends separates optional trailing scoped memory sections from
-// a work response. Sections must occur at most once and in global, channel
-// order. The legacy generic heading is treated as global memory. Ambiguous
+// SplitMemoryAppends separates optional trailing memory sections from a work
+// response. Sections must occur at most once and in global, retired channel
+// order. The legacy generic heading is treated as global memory, and the
+// retired channel section is stripped without being returned. Ambiguous
 // output causes no memory writes and is stripped from the visible result.
 func SplitMemoryAppends(text string) (rest string, appends MemoryAppends, valid bool) {
 	if strings.Contains(text, forbiddenUserMemoryHeading) {
@@ -115,7 +116,7 @@ func SplitMemoryAppends(text string) (rest string, appends MemoryAppends, valid 
 		switch trimmed {
 		case memoryHeading, globalMemoryHeading:
 			scope = 0
-		case channelMemoryHeading:
+		case retiredChannelMemoryHeading:
 			scope = 1
 		}
 		if scope >= 0 {
@@ -144,11 +145,8 @@ func SplitMemoryAppends(text string) (rest string, appends MemoryAppends, valid 
 			end = sections[i+1].index
 		}
 		entry := strings.TrimSpace(strings.Join(lines[section.index+1:end], "\n"))
-		switch section.scope {
-		case 0:
+		if section.scope == 0 {
 			appends.Global = entry
-		case 1:
-			appends.Channel = entry
 		}
 	}
 	return result, appends, true
@@ -157,7 +155,7 @@ func SplitMemoryAppends(text string) (rest string, appends MemoryAppends, valid 
 // SplitMemoryAppend preserves the original single-global-memory API.
 func SplitMemoryAppend(text string) (rest, entry string) {
 	rest, appends, valid := SplitMemoryAppends(text)
-	if !valid || appends.Channel != "" {
+	if !valid {
 		return text, ""
 	}
 	return rest, appends.Global
