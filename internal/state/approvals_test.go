@@ -2,6 +2,7 @@ package state
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -152,8 +153,9 @@ func TestLockDirRejectsSecondHolder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LockDir() error = %v", err)
 	}
-	if _, err := LockDir(dir); err == nil || !strings.Contains(err.Error(), "another ebi-x process") {
-		t.Fatalf("second LockDir() error = %v, want lock conflict", err)
+	want := fmt.Sprintf("another ebi-x process (pid %d)", os.Getpid())
+	if _, err := LockDir(dir); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("second LockDir() error = %v, want %q", err, want)
 	}
 	release()
 	release, err = LockDir(dir)
