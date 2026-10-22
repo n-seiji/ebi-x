@@ -394,3 +394,18 @@ func storeHelperFile(helper string) (string, bool) {
 	}
 	return "", true
 }
+
+// withSSHAgent adds SSH_AUTH_SOCK to the variables Codex inherits when ~/.ssh
+// is readable, that is when a push or signature needs SSH or the operator
+// allowed it. Otherwise the agent socket would be a way to use keys Codex
+// cannot read.
+func withSSHAgent(codexEnv, credentialPaths, protectedPaths []string) ([]string, error) {
+	ssh, err := canonicalHomePath("~/.ssh")
+	if err != nil {
+		return nil, err
+	}
+	if slices.Contains(credentialPaths, ssh) || slices.Contains(protectedPaths, ssh) || slices.Contains(codexEnv, "SSH_AUTH_SOCK") {
+		return codexEnv, nil
+	}
+	return append(slices.Clone(codexEnv), "SSH_AUTH_SOCK"), nil
+}

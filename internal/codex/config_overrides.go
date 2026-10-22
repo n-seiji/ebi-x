@@ -136,6 +136,7 @@ func isSecurityOwnedKey(key string) bool {
 		"permission",
 		"profile",
 		"sandbox",
+		"shell_environment_policy",
 	} {
 		if strings.HasPrefix(key, prefix) {
 			return true

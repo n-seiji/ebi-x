@@ -345,3 +345,42 @@ func TestResolveCredentialPathsRemovesStaleProbes(t *testing.T) {
 		t.Errorf("unrelated checkout %s was removed: %v", keep, err)
 	}
 }
+
+func TestLoadPassesSSHAgentOnlyWhenSSHIsReadable(t *testing.T) {
+	tests := []struct {
+		name    string
+		allowed string
+		codex   string
+		origin  string
+		want    bool
+	}{
+		{"default withholds the agent socket", "", "", "", false},
+		{"allowed ~/.ssh passes it", "~/.ssh", "", "", true},
+		{"ssh origin passes it", "", "", "git@github.com:o/r.git", true},
+		{"https origin does not", "", "", "https://github.com/o/r.git", false},
+		{"operator listing passes it", "", "SSH_AUTH_SOCK", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workingDir := t.TempDir()
+			withWorkingDir(t, workingDir)
+			clearConfigEnv(t)
+			setRequiredEnv(t)
+			credentialTestHome(t)
+			t.Setenv("EBIX_HOME", filepath.Join(workingDir, "ebix"))
+			t.Setenv("EBIX_ALLOWED_READ_PATHS", tt.allowed)
+			t.Setenv("EBIX_CODEX_ENV", tt.codex)
+			if tt.origin != "" {
+				t.Setenv("EBIX_WRITABLE_ROOTS", newCredentialRepo(t, tt.origin))
+			}
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v, want nil", err)
+			}
+			if got := slices.Contains(cfg.CodexEnv, "SSH_AUTH_SOCK"); got != tt.want {
+				t.Errorf("CodexEnv = %v; SSH_AUTH_SOCK passed = %t, want %t", cfg.CodexEnv, got, tt.want)
+			}
+		})
+	}
+}

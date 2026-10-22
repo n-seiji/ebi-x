@@ -554,7 +554,20 @@ Codex が実行するコマンドは、明示的に禁止しない限りファ�
 
 `EBIX_WRITABLE_ROOTS` がこれら、`CODEX_HOME`、またはbotが管理する `data/workspace`・`data/checkouts`・`data/playbooks` と重なる場合は起動を拒否します（playbookの書き込み制限やスレッドの分離を迂回できてしまうため）。
 
-Codexのプロセス環境は許可リスト方式です。渡すのは `HOME`・`PATH`・`USER`・`LOGNAME`・`SHELL`・`LANG`・`TZ`・`TERM`・`TMPDIR`・`CODEX_HOME`、プロキシ（`HTTP_PROXY`・`HTTPS_PROXY`・`NO_PROXY`・`ALL_PROXY` と小文字版）、`SSL_CERT_FILE`・`SSL_CERT_DIR`、Codexの認証に使う `OPENAI_API_KEY`・`CODEX_API_KEY`、SSH経由のgit pushに使う `SSH_AUTH_SOCK`、`LC_*`・`XDG_*` だけで、`.env` や運用者のシェルにあるそれ以外の変数（`DATABASE_URL`・`AWS_*` など）はCodexにもそのコマンドにも渡しません。プロンプトインジェクションされたターンが `env` で読み出せないようにするためです。`EBIX_CODEX_ENV` にカンマ区切りで変数名を書くと、追加で渡せます。`SLACK_BOT_TOKEN`・`SLACK_APP_TOKEN`・`EBIX_GITHUB_TOKEN` を書くと起動エラーになります。渡さない変数の名前（値は出しません）は起動時に1行でログへ出るので、MCPサーバーやモデルプロバイダーが依存していないか確認してください。
+Codexのプロセス環境は許可リスト方式です。渡すのは次の変数だけで、`.env` や運用者のシェルにあるそれ以外の変数（`DATABASE_URL`・`AWS_*` など）はCodexにもそのコマンドにも渡しません。プロンプトインジェクションされたターンが `env` で読み出せないようにするためです。
+
+- 基本: `HOME`・`PATH`・`USER`・`LOGNAME`・`SHELL`・`LANG`・`TZ`・`TERM`・`TMPDIR`・`CODEX_HOME`、プロキシ（`HTTP_PROXY`・`HTTPS_PROXY`・`NO_PROXY`・`ALL_PROXY` と小文字版）、`SSL_CERT_FILE`・`SSL_CERT_DIR`
+- Codexの認証: `OPENAI_API_KEY`・`CODEX_API_KEY`
+- エンドポイント・証明書: `OPENAI_BASE_URL`・`CODEX_CA_CERTIFICATE`・`NODE_EXTRA_CA_CERTS`・`REQUESTS_CA_BUNDLE`・`CURL_CA_BUNDLE`・`GIT_SSL_CAINFO`
+- git: `GIT_SSH_COMMAND`・`GIT_CONFIG_GLOBAL`
+- ツールチェーン: `GOPATH`・`GOPRIVATE`・`GOPROXY`・`GONOSUMDB`・`GONOPROXY`・`GOFLAGS`・`CARGO_HOME`・`RUSTUP_HOME`・`JAVA_HOME`・`PYENV_ROOT`・`NVM_DIR`・`VOLTA_HOME`・`PNPM_HOME`
+- その他: `GH_HOST`・`GH_CONFIG_DIR`・`DBUS_SESSION_BUS_ADDRESS`
+- 接頭辞: `LC_*`・`XDG_*`・`MISE_*`。ただし接頭辞で通すのは、名前（大文字化したもの）に `TOKEN`・`SECRET`・`PASSWORD`・`KEY` を含まないものだけです（`MISE_GITHUB_TOKEN` は渡りません）。この規則は接頭辞にだけ効き、`EBIX_CODEX_ENV` で明示した名前には効きません
+- `SSH_AUTH_SOCK`: 作業ターンが SSH で push・署名するために `~/.ssh` を読めるようにした場合（リポジトリの検出か `EBIX_ALLOWED_READ_PATHS=~/.ssh`）か、`EBIX_CODEX_ENV` に書いた場合だけ渡します。`~/.ssh` を読めないのにエージェントの鍵を使えてしまうのを避けるためです
+
+`EBIX_CODEX_ENV` にカンマ区切りで変数名を書くと、追加で渡せます。`SLACK_BOT_TOKEN`・`SLACK_APP_TOKEN`・`EBIX_GITHUB_TOKEN` を書くと起動エラーになります。渡さない変数の名前（値は出しません）は起動時に1行でログへ出るので、MCPサーバーやモデルプロバイダーが依存していないか確認してください。
+
+Codexがコマンドに渡す環境（shell environment policy）もebi-xが固定します。`ignore_default_excludes=false`（名前に `KEY`・`SECRET`・`TOKEN` を含む変数を除く Codex の既定を有効にする）と `exclude=["OPENAI_API_KEY","CODEX_API_KEY"]` を、ローカルの Codex 設定より後ろに常に付けます。ローカル設定の `[shell_environment_policy]` は無視します（`approval_policy` や `sandbox_*` と同じ扱いです）。Codex本体は `OPENAI_API_KEY` などを環境から読めますが、そのコマンドには渡りません。
 
 ## interrupted の運用
 

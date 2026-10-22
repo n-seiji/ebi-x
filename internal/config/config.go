@@ -82,7 +82,8 @@ type Config struct {
 	// writable root's origin needs or EBIX_ALLOWED_READ_PATHS lists.
 	CredentialPaths []string
 	// CodexEnv are extra environment variable names Codex inherits beyond
-	// its built-in allowlist.
+	// its built-in allowlist: EBIX_CODEX_ENV, plus SSH_AUTH_SOCK when a push
+	// or signature needs ~/.ssh.
 	CodexEnv []string
 	// CodexHome is the canonical Codex home. Its credentials, state, and
 	// session history are hidden from model-generated commands.
@@ -261,6 +262,10 @@ func Load() (*Config, error) {
 	// deny precedence over writable roots, and a root containing ~ must not
 	// fail startup.
 	credentialPaths, err := resolveCredentialPaths(writableRoots, protectedPaths, os.Getenv("EBIX_ALLOWED_READ_PATHS"), checkoutsDir)
+	if err != nil {
+		return nil, err
+	}
+	codexEnv, err = withSSHAgent(codexEnv, credentialPaths, protectedPaths)
 	if err != nil {
 		return nil, err
 	}
