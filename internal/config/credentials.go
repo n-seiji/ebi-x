@@ -141,7 +141,8 @@ func pushExemptions(ctx context.Context, root, checkoutsDir string) ([]pushExemp
 	if err := os.MkdirAll(checkoutsDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create checkout directory: %w", err)
 	}
-	probe, err := os.MkdirTemp(checkoutsDir, ".credprobe-")
+	removeStaleProbes(checkoutsDir)
+	probe, err := os.MkdirTemp(checkoutsDir, probePrefix)
 	if err != nil {
 		return nil, fmt.Errorf("create credential probe: %w", err)
 	}
@@ -166,6 +167,31 @@ func pushExemptions(ctx context.Context, root, checkoutsDir string) ([]pushExemp
 		return nil, err
 	}
 	return append(exemptions, found...), nil
+}
+
+// probePrefix names the scratch repositories credential detection creates.
+const probePrefix = ".credprobe-"
+
+// removeStaleProbes deletes scratch repositories a killed earlier run left in
+// checkoutsDir, logging each. Failures are logged and otherwise ignored: a
+// leftover is clutter, not a reason to refuse to start.
+func removeStaleProbes(checkoutsDir string) {
+	entries, err := os.ReadDir(checkoutsDir)
+	if err != nil {
+		log.Printf("credential detection: list %s for stale probes: %v", checkoutsDir, err)
+		return
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), probePrefix) {
+			continue
+		}
+		stale := filepath.Join(checkoutsDir, entry.Name())
+		if err := os.RemoveAll(stale); err != nil {
+			log.Printf("credential detection: remove stale probe %s: %v", stale, err)
+			continue
+		}
+		log.Printf("credential detection: removed stale probe %s", stale)
+	}
 }
 
 // gitConfigOutput runs git in dir and returns its stdout.
@@ -222,7 +248,7 @@ func originExemptions(ctx context.Context, root, probe string) ([]pushExemption,
 	u.User = nil
 	where := "pushes to its origin " + u.Host
 
-	helpers, err := helperChain(ctx, probe, u.String())
+	helpers, err := helperChain(ctx, probe)
 	if err != nil {
 		log.Printf("credential detection: read credential helpers of %s: %v", root, err)
 		return nil, nil
@@ -265,30 +291,26 @@ func originExemptions(ctx context.Context, root, probe string) ([]pushExemption,
 	return exemptions, nil
 }
 
-// helperChain returns the credential helpers git consults for rawURL. git
-// calls every configured helper in order, and an empty value resets the list
-// so far. The generic credential.helper chain is combined with the value of
-// the most specific credential.<url>.helper section: where the two interact
-// (a URL-specific reset) the union over-exempts, which only exposes more.
-func helperChain(ctx context.Context, probe, rawURL string) ([]string, error) {
-	values, err := gitConfigValues(ctx, probe, "--get-all", "credential.helper")
+// helperChain returns every credential helper configured anywhere in the
+// probe's git configuration: credential.helper and each
+// credential.<url>.helper, whatever URL they are scoped to. git consults only
+// the sections matching the push URL, but the exact URL matching (ports,
+// paths, wildcards, pushInsteadOf rewrites) is git's to get right, not ours, so
+// this takes the union and may over-exempt, which only exposes more and never
+// breaks a push. Empty values, which reset the list at the point they appear,
+// are ignored for the same reason: honoring one could drop a helper the
+// remaining sections still call.
+func helperChain(ctx context.Context, probe string) ([]string, error) {
+	lines, err := gitConfigValues(ctx, probe, "--get-regexp", `^credential\..*helper$`)
 	if err != nil {
 		return nil, err
 	}
 	var chain []string
-	for _, v := range values {
-		if strings.TrimSpace(v) == "" {
-			chain = nil
-			continue
+	for _, line := range lines {
+		_, value, _ := strings.Cut(line, " ")
+		if value = strings.TrimSpace(value); value != "" && !slices.Contains(chain, value) {
+			chain = append(chain, value)
 		}
-		chain = append(chain, v)
-	}
-	specific, err := gitConfigValues(ctx, probe, "--get-urlmatch", "credential.helper", rawURL)
-	if err != nil {
-		return nil, err
-	}
-	if n := len(specific); n > 0 && strings.TrimSpace(specific[n-1]) != "" && !slices.Contains(chain, specific[n-1]) {
-		chain = append(chain, specific[n-1])
 	}
 	return chain, nil
 }

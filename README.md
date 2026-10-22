@@ -524,7 +524,7 @@ Codex が実行するコマンドは、明示的に禁止しない限りファ�
 スレッドごとの checkout は元のリポジトリの `.git/config` を引き継がず（`origin` の URL だけをコピーします）、`includeIf "gitdir:"` も checkout のパスで判定されます。そのため検出は、元のリポジトリではなく `data/checkouts` 配下に作る使い捨てのリポジトリ（`origin` は元のリポジトリの `remote.origin.url`）で git に問い合わせて行い、グローバル・システムの git 設定だけを反映します。リポジトリ内のローカル設定（`.git/config`）にだけ書いた credential helper や `pushInsteadOf` は検出されません。
 
 - push 先は `git remote get-url --push origin`（`pushInsteadOf` / `pushurl` 反映後）で決めます。SSH（`git@host:...`、`ssh://...`）なら `~/.ssh`
-- HTTP(S) の場合、git は設定されたすべての credential helper を順に呼び、空の値はそれまでのリストをリセットします。`credential.helper` のすべての値と、URL に一致する最も具体的な `credential.<url>.helper` の値を合わせ、認識できた helper ごとに外します（外しすぎることはあっても push を壊しません）
+- HTTP(S) の場合、`credential.helper` と URL ごとの `credential.<url>.helper` をすべて（push 先の URL に一致するかどうかによらず、空の値によるリセットも無視して）集め、認識できた helper ごとに外します。URL の一致判定を再実装せず、外しすぎることはあっても push を壊さないためです
   - `store`: `~/.git-credentials` と `~/.config/git/credentials`（`--file <path>` があればそのファイル）
   - `gh`（`!gh auth git-credential` など）: `~/.config/gh`
   - helper が1つもない: `~/.netrc`
@@ -544,7 +544,11 @@ Codex が実行するコマンドは、明示的に禁止しない限りファ�
 - プライベート npm registry（`~/.npmrc` に認証トークン）: `EBIX_ALLOWED_READ_PATHS=~/.npmrc`
 - `gcloud` / `bq` CLI: `EBIX_ALLOWED_READ_PATHS=~/.config/gcloud`
 
-残るリスク: SSH の例外は秘密鍵を含む `~/.ssh` 全体を、`gh` の例外は `~/.config/gh/hosts.yml` のトークンを、ネットワークに出られる作業ターンに見せます。根本的な解決は push を bot 側で行うことで、これは今後の課題です。
+残るリスク:
+
+- 既定リストのパスはホームディレクトリ直下の固定パスです。`XDG_CONFIG_HOME`、`GH_CONFIG_DIR`、`CLOUDSDK_CONFIG`、`GNUPGHOME` などで場所を移した認証情報の置き場は対象外なので、`EBIX_DENIED_READ_PATHS` に追加してください。
+- 作業ターンから Docker ソケット（Docker Desktop の `~/.docker/run/docker.sock`、`/var/run/docker.sock`）に届く場合、`docker run -v ~/.aws:/x ...` のように任意のホストパスをマウントでき、deny を迂回できます。ターンで Docker が不要なら、デーモンに届かない状態にしてください。
+- SSH の例外は秘密鍵を含む `~/.ssh` 全体を、`gh` の例外は `~/.config/gh/hosts.yml` のトークンを、ネットワークに出られる作業ターンに見せます。根本的な解決は push を bot 側で行うことで、これは今後の課題です。
 
 `EBIX_WRITABLE_ROOTS` がこれら、`CODEX_HOME`、またはbotが管理する `data/workspace`・`data/checkouts`・`data/playbooks` と重なる場合は起動を拒否します（playbookの書き込み制限やスレッドの分離を迂回できてしまうため）。また、`SLACK_BOT_TOKEN` と `SLACK_APP_TOKEN` はCodexのプロセス環境から除きます。
 

@@ -130,7 +130,9 @@ func TestResolveCredentialPathsPushExemption(t *testing.T) {
 		{"url-specific gh helper", "https://github.com/o/r.git", "[credential \"https://github.com\"]\n\thelper = !gh auth git-credential\n", []string{".config/gh"}},
 		{"chain of keychain then gh", "https://github.com/o/r.git", "[credential]\n\thelper = osxkeychain\n\thelper = !gh auth git-credential\n", []string{".config/gh"}},
 		{"chain of store then keychain", "https://github.com/o/r.git", "[credential]\n\thelper = store\n\thelper = osxkeychain\n", []string{".git-credentials", ".config/git/credentials"}},
-		{"empty value resets the chain", "https://github.com/o/r.git", "[credential]\n\thelper = store\n\thelper =\n\thelper = osxkeychain\n", nil},
+		{"empty value reset is ignored", "https://github.com/o/r.git", "[credential]\n\thelper = store\n\thelper =\n\thelper = osxkeychain\n", []string{".git-credentials", ".config/git/credentials"}},
+		{"helpers from every credential section", "https://github.com/o/r.git", "[credential]\n\thelper = osxkeychain\n[credential \"https://github.com\"]\n\thelper = store\n[credential \"https://github.com/o\"]\n\thelper = !gh auth git-credential\n", []string{".git-credentials", ".config/git/credentials", ".config/gh"}},
+		{"helper scoped to another host", "https://github.com/o/r.git", "[credential \"https://example.com\"]\n\thelper = store\n", []string{".git-credentials", ".config/git/credentials"}},
 		{"osxkeychain helper", "https://github.com/o/r.git", "[credential]\n\thelper = osxkeychain\n", nil},
 		{"cache helper", "https://github.com/o/r.git", "[credential]\n\thelper = cache --timeout 60\n", nil},
 		{"pushInsteadOf rewrites https to ssh", "https://github.com/o/r.git", "[url \"git@github.com:\"]\n\tpushInsteadOf = https://github.com/\n", []string{".ssh"}},
@@ -318,5 +320,28 @@ func TestLoadRejectsAllowedReadPathsOutsideDefaults(t *testing.T) {
 
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), `".env"`) {
 		t.Errorf("Load() error = %v; want it to name the .env entry", err)
+	}
+}
+
+func TestResolveCredentialPathsRemovesStaleProbes(t *testing.T) {
+	credentialTestHome(t)
+	root := newCredentialRepo(t, "git@github.com:o/r.git")
+	checkouts := filepath.Join(t.TempDir(), "checkouts")
+	stale := filepath.Join(checkouts, ".credprobe-leftover")
+	keep := filepath.Join(checkouts, "thread-checkout")
+	for _, dir := range []string{stale, keep} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := resolveCredentialPaths([]string{root}, nil, "", checkouts); err != nil {
+		t.Fatalf("resolveCredentialPaths() error = %v, want nil", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale probe %s still exists (stat error = %v); want removed", stale, err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("unrelated checkout %s was removed: %v", keep, err)
 	}
 }
