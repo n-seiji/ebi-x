@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -63,7 +64,7 @@ func main() {
 		Command:               cfg.CodexCommand,
 		Model:                 cfg.CodexModel,
 		ConfigPath:            filepath.Join(cfg.EBIXHome, ".codex", "config.toml"),
-		DeniedReadPaths:       cfg.ProtectedPaths,
+		DeniedReadPaths:       append(slices.Clone(cfg.ProtectedPaths), cfg.CredentialPaths...),
 		CodexHome:             cfg.CodexHome,
 		DeveloperInstructions: policy.Instructions(),
 	}

@@ -516,7 +516,20 @@ Codex が実行するコマンドは、明示的に禁止しない限りファ�
 - `.env`（起動ディレクトリと `EBIX_HOME`）と `EBIX_HOME/.codex`
 - `CODEX_HOME`（既定 `~/.codex`）の中身。認証情報・設定・全スレッドの履歴（`sessions`、`codex.sqlite` など）を含むため、コマンドから使う `skills`、`plugins`、`packages`（Codex 本体などの実行ファイル）、`tmp`、`.tmp`、`shell_snapshots` 以外をターンごとに列挙して deny します
 - `data/workspace/...` と `data/checkouts/...` のうち、そのスレッド自身のもの以外すべて（ターン開始直前に列挙します。ターン中に作られた別スレッドのディレクトリは対象外です）
-- `EBIX_DENIED_READ_PATHS` に列挙したパス（`~/.aws` など。git push に使う認証情報は作業ターンで必要なので含めないでください）
+- `EBIX_DENIED_READ_PATHS` に列挙したパス
+- 既知の認証情報の置き場（既定）: `~/.ssh`、`~/.aws`、`~/.azure`、`~/.config/gcloud`、`~/.config/gh`、`~/.docker`、`~/.kube`、`~/.gnupg`、`~/.netrc`、`~/.git-credentials`、`~/.config/git/credentials`、`~/.npmrc`、`~/.pypirc`
+
+作業ターンは sandbox の中から git push するため、起動時に `EBIX_WRITABLE_ROOTS` のうち Git リポジトリの最上位ディレクトリごとに `origin` を調べ、push に必要な認証情報だけを上の既定リストから外します。外したパスは、リポジトリと理由を起動ログに1行ずつ出します（URL は出しません）。
+
+- origin が SSH（`git@host:...`、`ssh://...`）: `~/.ssh`
+- origin が HTTP(S) で credential helper が `store`: `~/.git-credentials` と `~/.config/git/credentials`（`--file <path>` があればそのファイル）
+- origin が HTTP(S) で helper が `gh`（`!gh auth git-credential` など）: `~/.config/gh`
+- origin が HTTP(S) で helper がない: `~/.netrc`
+- それ以外の helper（`osxkeychain`、`manager`、`cache` など）や origin がないリポジトリ: 外しません
+
+helper は `git config --get-urlmatch credential.helper <origin>` が返す最後の1件だけを見ます。
+
+作業ターンで `bq` など別の CLI の認証情報が必要な場合は、`EBIX_ALLOWED_READ_PATHS` にカンマ区切りで書くと既定リストから外せます（例: `EBIX_ALLOWED_READ_PATHS=~/.config/gcloud`）。外せるのは既定の認証情報リストだけで、`data/memory`、`.env`、`CODEX_HOME`、`EBIX_DENIED_READ_PATHS` のパスは外せません。
 
 `EBIX_WRITABLE_ROOTS` がこれら、`CODEX_HOME`、またはbotが管理する `data/workspace`・`data/checkouts`・`data/playbooks` と重なる場合は起動を拒否します（playbookの書き込み制限やスレッドの分離を迂回できてしまうため）。また、`SLACK_BOT_TOKEN` と `SLACK_APP_TOKEN` はCodexのプロセス環境から除きます。
 

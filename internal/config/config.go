@@ -71,6 +71,10 @@ type Config struct {
 	// must neither read nor write: memory, bot state, secrets, and Codex
 	// credentials and session history.
 	ProtectedPaths []string
+	// CredentialPaths are well-known credential stores (~/.ssh, ~/.aws, ...)
+	// hidden from model-generated commands, minus those that pushing to a
+	// writable root's origin needs or EBIX_ALLOWED_READ_PATHS lists.
+	CredentialPaths []string
 	// CodexHome is the canonical Codex home. Its credentials, state, and
 	// session history are hidden from model-generated commands.
 	CodexHome string
@@ -240,6 +244,13 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Credential stores stay out of the isolation checks below: Codex gives
+	// deny precedence over writable roots, and a root containing ~ must not
+	// fail startup.
+	credentialPaths, err := resolveCredentialPaths(writableRoots, protectedPaths, os.Getenv("EBIX_ALLOWED_READ_PATHS"))
+	if err != nil {
+		return nil, err
+	}
 	// Nothing the agent can write may reach a protected path or the Codex
 	// home. The bot-managed directories are reserved as well: the bot grants
 	// playbooks only to shared-write channels and each thread only its own
@@ -282,6 +293,7 @@ func Load() (*Config, error) {
 		ActionRulesFile:            actionRulesFile,
 		WritableRoots:              writableRoots,
 		ProtectedPaths:             protectedPaths,
+		CredentialPaths:            credentialPaths,
 		CodexHome:                  codexHome,
 	}, nil
 }

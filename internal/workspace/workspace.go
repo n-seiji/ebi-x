@@ -124,7 +124,7 @@ func New(ctx context.Context, workspaceDir, checkoutsDir string, writableRoots [
 	}
 	for _, path := range writableRoots {
 		r := root{path: path}
-		repo, err := isRepositoryTopLevel(ctx, path)
+		repo, err := IsRepositoryTopLevel(ctx, path)
 		if err != nil {
 			return nil, err
 		}
@@ -384,9 +384,9 @@ func checkoutReady(checkout Checkout) bool {
 	return err == nil
 }
 
-// isRepositoryTopLevel reports whether path is the top level of a git
+// IsRepositoryTopLevel reports whether path is the top level of a git
 // repository.
-func isRepositoryTopLevel(ctx context.Context, path string) (bool, error) {
+func IsRepositoryTopLevel(ctx context.Context, path string) (bool, error) {
 	if _, err := os.Lstat(filepath.Join(path, ".git")); errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	} else if err != nil {
