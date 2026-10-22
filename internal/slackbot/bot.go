@@ -272,6 +272,10 @@ func (b *Bot) handleMention(ctx context.Context, event *slackevents.AppMentionEv
 	if event == nil || event.Edited != nil || event.User == b.config.BotUserID {
 		return
 	}
+	if event.BotID == "" && isAliveQuestion(stripBotMention(event.Text, b.config.BotUserID)) {
+		b.answerAliveQuestion(ctx, event.Channel, mentionThreadTS(event))
+		return
+	}
 	// The approval channel is only for deciding requests.
 	if b.approvalsEnabled() && event.Channel == b.config.ApprovalChannelID {
 		if event.BotID == "" {

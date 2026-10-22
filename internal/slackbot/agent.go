@@ -60,6 +60,10 @@ func (b *Bot) handleDirectMessage(ctx context.Context, event *slackevents.Messag
 	if threadTS == "" {
 		threadTS = event.TimeStamp
 	}
+	if isAliveQuestion(message) {
+		b.answerAliveQuestion(ctx, event.Channel, threadTS)
+		return
+	}
 	if !b.userAllowed(event.User) {
 		log.Printf("slackbot: rejecting direct message by %q in %q", event.User, event.Channel)
 		b.rejectUnapproved(ctx, &slackevents.AppMentionEvent{
