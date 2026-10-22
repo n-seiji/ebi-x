@@ -456,6 +456,8 @@ playbook は作った時点の情報のまま古くなりがちです（作成�
 
 Codex の MCP サーバーは `EBIX_HOME/.codex/config.toml` に書きます（`~/.codex/config.toml` は読み込みません）。`enabled_tools` / `disabled_tools` で公開していないツールが必要になったとき、Codex は「MCP に接続できない」ではなく「公開されていない」と案内します。
 
+MCP サーバーやモデルプロバイダーが環境変数から読む値は、Codex に渡る環境が許可リスト方式のため、そのままでは届きません。`EBIX_CODEX_ENV` に変数名を列挙するか、サーバーの `env` テーブルに書いてください（詳しくは「メモリ」節末尾）。
+
 ### BigQuery で SQL を使う
 
 [MCP Toolbox](https://github.com/googleapis/genai-toolbox) の prebuilt BigQuery サーバーは、`enabled_tools` で絞らなければ `execute_sql` を含む全ツールを公開します。メタデータの4ツールに絞っていると実データを調べられないので、`enabled_tools` の行を削除してください。
@@ -550,7 +552,9 @@ Codex が実行するコマンドは、明示的に禁止しない限りファ�
 - 作業ターンから Docker ソケット（Docker Desktop の `~/.docker/run/docker.sock`、`/var/run/docker.sock`）に届く場合、`docker run -v ~/.aws:/x ...` のように任意のホストパスをマウントでき、deny を迂回できます。ターンで Docker が不要なら、デーモンに届かない状態にしてください。
 - SSH の例外は秘密鍵を含む `~/.ssh` 全体を、`gh` の例外は `~/.config/gh/hosts.yml` のトークンを、ネットワークに出られる作業ターンに見せます。根本的な解決は push を bot 側で行うことで、これは今後の課題です。
 
-`EBIX_WRITABLE_ROOTS` がこれら、`CODEX_HOME`、またはbotが管理する `data/workspace`・`data/checkouts`・`data/playbooks` と重なる場合は起動を拒否します（playbookの書き込み制限やスレッドの分離を迂回できてしまうため）。また、`SLACK_BOT_TOKEN` と `SLACK_APP_TOKEN` はCodexのプロセス環境から除きます。
+`EBIX_WRITABLE_ROOTS` がこれら、`CODEX_HOME`、またはbotが管理する `data/workspace`・`data/checkouts`・`data/playbooks` と重なる場合は起動を拒否します（playbookの書き込み制限やスレッドの分離を迂回できてしまうため）。
+
+Codexのプロセス環境は許可リスト方式です。渡すのは `HOME`・`PATH`・`USER`・`LOGNAME`・`SHELL`・`LANG`・`TZ`・`TERM`・`TMPDIR`・`CODEX_HOME`、プロキシ（`HTTP_PROXY`・`HTTPS_PROXY`・`NO_PROXY`・`ALL_PROXY` と小文字版）、`SSL_CERT_FILE`・`SSL_CERT_DIR`、Codexの認証に使う `OPENAI_API_KEY`・`CODEX_API_KEY`、SSH経由のgit pushに使う `SSH_AUTH_SOCK`、`LC_*`・`XDG_*` だけで、`.env` や運用者のシェルにあるそれ以外の変数（`DATABASE_URL`・`AWS_*` など）はCodexにもそのコマンドにも渡しません。プロンプトインジェクションされたターンが `env` で読み出せないようにするためです。`EBIX_CODEX_ENV` にカンマ区切りで変数名を書くと、追加で渡せます。`SLACK_BOT_TOKEN`・`SLACK_APP_TOKEN`・`EBIX_GITHUB_TOKEN` を書くと起動エラーになります。渡さない変数の名前（値は出しません）は起動時に1行でログへ出るので、MCPサーバーやモデルプロバイダーが依存していないか確認してください。
 
 ## interrupted の運用
 

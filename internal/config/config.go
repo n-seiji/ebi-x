@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,6 +22,11 @@ const (
 	defaultMaxParallelWork            = 3
 	defaultCheckoutIdleTTL            = 120 * time.Hour
 )
+
+var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// botSecretEnvNames are credentials only the bot itself uses.
+var botSecretEnvNames = []string{"SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "EBIX_GITHUB_TOKEN"}
 
 // Config contains ebi-x's runtime configuration and resolved data paths.
 type Config struct {
@@ -75,6 +81,9 @@ type Config struct {
 	// hidden from model-generated commands, minus those that pushing to a
 	// writable root's origin needs or EBIX_ALLOWED_READ_PATHS lists.
 	CredentialPaths []string
+	// CodexEnv are extra environment variable names Codex inherits beyond
+	// its built-in allowlist.
+	CodexEnv []string
 	// CodexHome is the canonical Codex home. Its credentials, state, and
 	// session history are hidden from model-generated commands.
 	CodexHome string
@@ -240,6 +249,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	codexEnv, err := parseCodexEnv(os.Getenv("EBIX_CODEX_ENV"))
+	if err != nil {
+		return nil, err
+	}
 	protectedPaths, err := resolveProtectedPaths(home, memoryDir, stateDir, os.Getenv("EBIX_DENIED_READ_PATHS"))
 	if err != nil {
 		return nil, err
@@ -294,6 +307,7 @@ func Load() (*Config, error) {
 		WritableRoots:              writableRoots,
 		ProtectedPaths:             protectedPaths,
 		CredentialPaths:            credentialPaths,
+		CodexEnv:                   codexEnv,
 		CodexHome:                  codexHome,
 	}, nil
 }
@@ -314,6 +328,22 @@ func resolveCodexHome() (string, error) {
 		return "", fmt.Errorf("resolve CODEX_HOME: %w", err)
 	}
 	return codexHome, nil
+}
+
+// parseCodexEnv parses EBIX_CODEX_ENV. The bot's own credentials may never
+// reach Codex, so naming one is a startup error.
+func parseCodexEnv(value string) ([]string, error) {
+	var names []string
+	for _, name := range splitList(value) {
+		if !envNamePattern.MatchString(name) {
+			return nil, fmt.Errorf("EBIX_CODEX_ENV %q: not a valid variable name", name)
+		}
+		if slices.Contains(botSecretEnvNames, name) {
+			return nil, fmt.Errorf("EBIX_CODEX_ENV %q: the bot's own credentials must not reach Codex", name)
+		}
+		names = append(names, name)
+	}
+	return names, nil
 }
 
 // resolveProtectedPaths returns the paths ebi-x always hides from the agent:

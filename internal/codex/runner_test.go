@@ -678,7 +678,7 @@ func TestLimitedBufferTruncates(t *testing.T) {
 	}
 }
 
-func TestRunHidesSlackTokensAndPassesDeniedPaths(t *testing.T) {
+func TestRunPassesOnlyAllowlistedEnvAndDeniedPaths(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "codex")
 	envFile := filepath.Join(dir, "env")
@@ -696,8 +696,9 @@ printf '{"type":"turn.completed"}\n'
 	t.Setenv("SLACK_APP_TOKEN", "xapp-secret")
 	t.Setenv("EBIX_GITHUB_TOKEN", "ghp-secret")
 	t.Setenv("EBIX_TEST_VISIBLE", "kept")
+	t.Setenv("EBIX_TEST_HIDDEN", "hidden")
 
-	runner := &Runner{Command: script, DeniedReadPaths: []string{"/protected"}}
+	runner := &Runner{Command: script, DeniedReadPaths: []string{"/protected"}, PassEnv: []string{"EBIX_TEST_VISIBLE"}}
 	if _, err := runner.Run(context.Background(), "", "read-only", dir, nil, []string{"/other-thread"}, "prompt", nil, nil); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -705,8 +706,8 @@ printf '{"type":"turn.completed"}\n'
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(env), "secret") || !strings.Contains(string(env), "EBIX_TEST_VISIBLE=kept") {
-		t.Fatalf("codex environment = %q, want the bot's tokens removed and others kept", env)
+	if strings.Contains(string(env), "secret") || strings.Contains(string(env), "EBIX_TEST_HIDDEN") || !strings.Contains(string(env), "EBIX_TEST_VISIBLE=kept") {
+		t.Fatalf("codex environment = %q, want unlisted variables removed and PassEnv names kept", env)
 	}
 	args, err := os.ReadFile(argsFile)
 	if err != nil {
@@ -751,5 +752,63 @@ func TestCodexHomeDeniedKeepsOnlyVisibleEntries(t *testing.T) {
 	}
 	if got, err := codexHomeDenied(filepath.Join(home, "missing")); err != nil || got != nil {
 		t.Fatalf("codexHomeDenied(missing) = %v, %v; want nil, nil", got, err)
+	}
+}
+
+func TestFilterEnv(t *testing.T) {
+	tests := []struct {
+		name  string
+		env   []string
+		extra []string
+		want  []string
+	}{
+		{
+			name: "exact names are kept",
+			env:  []string{"HOME=/h", "PATH=/bin", "SSH_AUTH_SOCK=/s", "OPENAI_API_KEY=k", "CODEX_API_KEY=c", "https_proxy=p"},
+			want: []string{"HOME=/h", "PATH=/bin", "SSH_AUTH_SOCK=/s", "OPENAI_API_KEY=k", "CODEX_API_KEY=c", "https_proxy=p"},
+		},
+		{
+			name: "prefixes are kept",
+			env:  []string{"LC_ALL=C", "XDG_CONFIG_HOME=/x", "LCX=1", "XDGX=1"},
+			want: []string{"LC_ALL=C", "XDG_CONFIG_HOME=/x"},
+		},
+		{
+			name: "other secrets are dropped",
+			env:  []string{"DATABASE_URL=postgres://u:p@h/d", "GOOGLE_APPLICATION_CREDENTIALS=/g", "AWS_SECRET_ACCESS_KEY=a", "HOME=/h"},
+			want: []string{"HOME=/h"},
+		},
+		{
+			name:  "extra names pass through",
+			env:   []string{"DATABASE_URL=d", "AWS_PROFILE=p", "OTHER=o"},
+			extra: []string{"DATABASE_URL", "AWS_PROFILE"},
+			want:  []string{"DATABASE_URL=d", "AWS_PROFILE=p"},
+		},
+		{
+			name: "slack and github tokens are dropped",
+			env:  []string{"SLACK_BOT_TOKEN=b", "SLACK_APP_TOKEN=a", "EBIX_GITHUB_TOKEN=g", "HOME=/h"},
+			want: []string{"HOME=/h"},
+		},
+		{
+			name: "values containing equals signs are kept whole",
+			env:  []string{"PATH=/a:/b", "TZ=UTC=1"},
+			want: []string{"PATH=/a:/b", "TZ=UTC=1"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterEnv(tt.env, tt.extra)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("filterEnv(%v, %v) = %v; want %v", tt.env, tt.extra, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWithheldEnvNames(t *testing.T) {
+	env := []string{"ZED=1", "HOME=/h", "DATABASE_URL=secret", "PASSTHRU=x", "AWS_KEY=k"}
+	got := WithheldEnvNames(env, []string{"PASSTHRU"})
+	want := []string{"AWS_KEY", "DATABASE_URL", "ZED"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("WithheldEnvNames(%v) = %v; want %v", env, got, want)
 	}
 }

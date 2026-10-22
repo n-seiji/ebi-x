@@ -65,9 +65,11 @@ func main() {
 		Model:                 cfg.CodexModel,
 		ConfigPath:            filepath.Join(cfg.EBIXHome, ".codex", "config.toml"),
 		DeniedReadPaths:       append(slices.Clone(cfg.ProtectedPaths), cfg.CredentialPaths...),
+		PassEnv:               cfg.CodexEnv,
 		CodexHome:             cfg.CodexHome,
 		DeveloperInstructions: policy.Instructions(),
 	}
+	log.Printf("environment variables withheld from Codex: %v", codex.WithheldEnvNames(os.Environ(), cfg.CodexEnv))
 	var githubAPI slackbot.GitHub
 	githubLogin := ""
 	var githubRepos []string

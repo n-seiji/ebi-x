@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,15 +30,23 @@ const (
 	maxArgBytes = 120 << 10
 )
 
-// secretEnvNames are environment variables Codex and the commands it runs
-// never need. They are removed so no shell environment policy can expose them.
-var secretEnvNames = map[string]struct{}{
-	"SLACK_BOT_TOKEN": {},
-	"SLACK_APP_TOKEN": {},
-	// The bot reads watched pull requests with it; the agent uses its own
-	// credentials, if any.
-	"EBIX_GITHUB_TOKEN": {},
+// envAllowNames and envAllowPrefixes are the only variables the Codex child
+// inherits; the rest of the bot's environment (.env contents, the operator's
+// shell) is withheld so a prompt-injected turn cannot read it back.
+var envAllowNames = map[string]struct{}{
+	"HOME": {}, "PATH": {}, "USER": {}, "LOGNAME": {}, "SHELL": {},
+	"LANG": {}, "TZ": {}, "TERM": {}, "TMPDIR": {}, "CODEX_HOME": {},
+	"HTTP_PROXY": {}, "HTTPS_PROXY": {}, "NO_PROXY": {}, "ALL_PROXY": {},
+	"http_proxy": {}, "https_proxy": {}, "no_proxy": {}, "all_proxy": {},
+	"SSL_CERT_FILE": {}, "SSL_CERT_DIR": {},
+	// Codex authenticates with these. Its default shell environment policy
+	// drops names containing KEY, SECRET, or TOKEN from the commands it runs.
+	"OPENAI_API_KEY": {}, "CODEX_API_KEY": {},
+	// git push over SSH from work turns.
+	"SSH_AUTH_SOCK": {},
 }
+
+var envAllowPrefixes = []string{"LC_", "XDG_"}
 
 // Runner executes Codex CLI turns.
 type Runner struct {
@@ -50,6 +59,9 @@ type Runner struct {
 	// commands must not read or write. They are enforced with a Codex
 	// permission profile, independently of prompt instructions.
 	DeniedReadPaths []string
+	// PassEnv lists extra environment variable names Codex inherits beyond
+	// the built-in allowlist.
+	PassEnv []string
 	// CodexHome holds Codex credentials, configuration, and the history of
 	// every thread. Each turn denies everything in it except codexHomeVisible.
 	CodexHome string
@@ -97,7 +109,7 @@ func (r *Runner) Run(
 	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, r.Command, args...)
-	cmd.Env = filterEnv(os.Environ())
+	cmd.Env = filterEnv(os.Environ(), r.PassEnv)
 	cmd.Stdin = strings.NewReader(prompt)
 
 	stdout, err := cmd.StdoutPipe()
@@ -177,17 +189,42 @@ func codexHomeDenied(home string) ([]string, error) {
 	return denied, nil
 }
 
-// filterEnv returns env without the bot's own credentials.
-func filterEnv(env []string) []string {
-	filtered := make([]string, 0, len(env))
+// filterEnv returns the entries of env that Codex may inherit: the built-in
+// allowlist plus the names in extra.
+func filterEnv(env, extra []string) []string {
+	kept, _ := splitEnv(env, extra)
+	return kept
+}
+
+// WithheldEnvNames returns the sorted names in env that filterEnv drops.
+func WithheldEnvNames(env, extra []string) []string {
+	_, withheld := splitEnv(env, extra)
+	slices.Sort(withheld)
+	return withheld
+}
+
+func splitEnv(env, extra []string) (kept, withheld []string) {
 	for _, entry := range env {
 		name, _, _ := strings.Cut(entry, "=")
-		if _, secret := secretEnvNames[name]; secret {
-			continue
+		if envAllowed(name, extra) {
+			kept = append(kept, entry)
+		} else {
+			withheld = append(withheld, name)
 		}
-		filtered = append(filtered, entry)
 	}
-	return filtered
+	return kept, withheld
+}
+
+func envAllowed(name string, extra []string) bool {
+	if _, ok := envAllowNames[name]; ok {
+		return true
+	}
+	for _, prefix := range envAllowPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return slices.Contains(extra, name)
 }
 
 func buildArgs(threadID, sandbox, cwd string, writableRoots, deniedReadPaths []string, model, developerInstructions string) []string {
