@@ -247,7 +247,7 @@ func Load() (*Config, error) {
 	// Credential stores stay out of the isolation checks below: Codex gives
 	// deny precedence over writable roots, and a root containing ~ must not
 	// fail startup.
-	credentialPaths, err := resolveCredentialPaths(writableRoots, protectedPaths, os.Getenv("EBIX_ALLOWED_READ_PATHS"))
+	credentialPaths, err := resolveCredentialPaths(writableRoots, protectedPaths, os.Getenv("EBIX_ALLOWED_READ_PATHS"), checkoutsDir)
 	if err != nil {
 		return nil, err
 	}

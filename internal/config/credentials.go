@@ -1,10 +1,13 @@
 package config
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -22,7 +25,7 @@ var credentialPaths = []string{
 	"~/.azure",
 	"~/.config/gcloud",
 	"~/.config/gh",
-	"~/.docker",
+	"~/.docker/config.json",
 	"~/.kube",
 	"~/.gnupg",
 	"~/.netrc",
@@ -30,6 +33,19 @@ var credentialPaths = []string{
 	"~/.config/git/credentials",
 	"~/.npmrc",
 	"~/.pypirc",
+	"~/.config/op",
+	"~/.vault-token",
+	"~/.terraform.d/credentials.tfrc.json",
+	"~/.cargo/credentials.toml",
+	"~/.gem/credentials",
+	"~/.pgpass",
+	"~/.my.cnf",
+	"~/.s3cfg",
+	"~/.boto",
+	"~/.oci",
+	"~/.config/rclone",
+	"~/.claude",
+	"~/.config/github-copilot",
 }
 
 // pushExemption is a credential path that a repository's pushes depend on.
@@ -40,14 +56,28 @@ type pushExemption struct {
 
 // resolveCredentialPaths returns the default credential stores to deny:
 // those not already in protectedPaths, not listed in allowed, and not needed
-// to push from one of the git repositories among writableRoots. allowed is
-// EBIX_ALLOWED_READ_PATHS and affects only the default list.
-func resolveCredentialPaths(writableRoots, protectedPaths []string, allowed string) ([]string, error) {
+// to push or sign from one of the git repositories among writableRoots.
+// allowed is EBIX_ALLOWED_READ_PATHS and affects only the default list.
+// checkoutsDir is where thread checkouts are created; push credentials are
+// detected from a scratch repository there, which sees the same git
+// configuration (global, system, and includeIf) a thread checkout will.
+func resolveCredentialPaths(writableRoots, protectedPaths []string, allowed, checkoutsDir string) ([]string, error) {
+	known := make(map[string]struct{}, len(credentialPaths))
+	for _, item := range credentialPaths {
+		path, err := canonicalHomePath(item)
+		if err != nil {
+			return nil, fmt.Errorf("resolve credential path %q: %w", item, err)
+		}
+		known[path] = struct{}{}
+	}
 	exempt := make(map[string]struct{})
 	for _, item := range splitList(allowed) {
 		path, err := canonicalHomePath(item)
 		if err != nil {
 			return nil, fmt.Errorf("EBIX_ALLOWED_READ_PATHS %q: %w", item, err)
+		}
+		if _, ok := known[path]; !ok {
+			return nil, fmt.Errorf("EBIX_ALLOWED_READ_PATHS %q is not a default credential path; valid entries: %s", item, strings.Join(credentialPaths, ", "))
 		}
 		exempt[path] = struct{}{}
 	}
@@ -60,7 +90,7 @@ func resolveCredentialPaths(writableRoots, protectedPaths []string, allowed stri
 		if !repo {
 			continue
 		}
-		exemptions, err := pushExemptions(ctx, root)
+		exemptions, err := pushExemptions(ctx, root, checkoutsDir)
 		if err != nil {
 			return nil, fmt.Errorf("detect push credentials of %q: %w", root, err)
 		}
@@ -94,23 +124,96 @@ func canonicalHomePath(path string) (string, error) {
 	return canonicalPath(expanded)
 }
 
-// pushExemptions returns the credential stores the repository at root needs
-// to push to its origin from inside the sandbox.
-func pushExemptions(ctx context.Context, root string) ([]pushExemption, error) {
-	out, err := exec.CommandContext(ctx, "git", "-C", root, "remote", "get-url", "origin").Output()
+// pushExemptions returns the credential stores a thread checkout of the
+// repository at root needs to push to its origin and sign commits from inside
+// the sandbox.
+//
+// A checkout is a fresh clone: it inherits neither the original repository's
+// local config nor its includeIf matches, only the origin URL the workspace
+// manager copies over. So the detection runs in a scratch repository under
+// checkoutsDir with that same origin URL, where git reads the same global and
+// system configuration a checkout will.
+func pushExemptions(ctx context.Context, root, checkoutsDir string) ([]pushExemption, error) {
+	origin, err := workspace.OriginURL(ctx, root)
 	if err != nil {
-		// No origin, so nothing is pushed.
+		log.Printf("credential detection: read origin of %s: %v", root, err)
+	}
+	if err := os.MkdirAll(checkoutsDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create checkout directory: %w", err)
+	}
+	probe, err := os.MkdirTemp(checkoutsDir, ".credprobe-")
+	if err != nil {
+		return nil, fmt.Errorf("create credential probe: %w", err)
+	}
+	defer os.RemoveAll(probe)
+	if _, err := gitConfigOutput(ctx, probe, "init", "-q"); err != nil {
+		return nil, err
+	}
+
+	var exemptions []pushExemption
+	if origin != "" {
+		if _, err := gitConfigOutput(ctx, probe, "config", "remote.origin.url", origin); err != nil {
+			return nil, err
+		}
+		found, err := originExemptions(ctx, root, probe)
+		if err != nil {
+			return nil, err
+		}
+		exemptions = append(exemptions, found...)
+	}
+	found, err := signingExemptions(ctx, root, probe)
+	if err != nil {
+		return nil, err
+	}
+	return append(exemptions, found...), nil
+}
+
+// gitConfigOutput runs git in dir and returns its stdout.
+func gitConfigOutput(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if text := strings.TrimSpace(stderr.String()); text != "" {
+			return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), text, err)
+		}
+		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	}
+	return stdout.String(), nil
+}
+
+// gitConfigValues returns the values git prints for a config query, one per
+// line, and none when the key is not set (exit status 1).
+func gitConfigValues(ctx context.Context, dir string, args ...string) ([]string, error) {
+	out, err := gitConfigOutput(ctx, dir, append([]string{"config"}, args...)...)
+	if err != nil {
+		if exitErr := (*exec.ExitError)(nil); errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return strings.Split(strings.TrimSuffix(out, "\n"), "\n"), nil
+}
+
+// originExemptions returns the credential stores pushing to the probe's
+// origin needs.
+func originExemptions(ctx context.Context, root, probe string) ([]pushExemption, error) {
+	out, err := gitConfigOutput(ctx, probe, "remote", "get-url", "--push", "origin")
+	if err != nil {
+		log.Printf("credential detection: resolve the push URL of %s: %v", root, err)
 		return nil, nil
 	}
-	origin := strings.TrimSpace(string(out))
-	if isSSHRemote(origin) {
+	pushURL := strings.TrimSpace(out)
+	if isSSHRemote(pushURL) {
 		path, err := canonicalHomePath("~/.ssh")
 		if err != nil {
 			return nil, err
 		}
 		return []pushExemption{{path, "pushes to its origin over SSH"}}, nil
 	}
-	u, err := url.Parse(origin)
+	u, err := url.Parse(pushURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, nil
 	}
@@ -118,31 +221,39 @@ func pushExemptions(ctx context.Context, root string) ([]pushExemption, error) {
 	// logged or passed on.
 	u.User = nil
 	where := "pushes to its origin " + u.Host
-	// --get-urlmatch reports only the last matching value, which is the one
-	// the most specific configuration section ends with.
-	helperOut, err := exec.CommandContext(ctx, "git", "-C", root, "config", "--get-urlmatch", "credential.helper", u.String()).Output()
-	var helper string
-	if err == nil {
-		helper = strings.TrimSpace(string(helperOut))
+
+	helpers, err := helperChain(ctx, probe, u.String())
+	if err != nil {
+		log.Printf("credential detection: read credential helpers of %s: %v", root, err)
+		return nil, nil
 	}
-	var candidates []string
-	var reason string
-	switch {
-	case helper == "":
-		candidates, reason = []string{"~/.netrc"}, where+" with no credential helper"
-	case isGHHelper(helper):
-		candidates, reason = []string{"~/.config/gh"}, where+" with the gh credential helper"
-	default:
-		file, ok := storeHelperFile(helper)
-		if !ok {
-			return nil, nil
-		}
-		reason = where + " with the store credential helper"
-		candidates = []string{"~/.git-credentials", "~/.config/git/credentials"}
-		if file != "" {
-			candidates = []string{file}
+	var candidates, unrecognized []string
+	var reasons []string
+	for _, helper := range helpers {
+		switch file, isStore := storeHelperFile(helper); {
+		case isGHHelper(helper):
+			candidates = append(candidates, "~/.config/gh")
+			reasons = append(reasons, "the gh credential helper")
+		case isStore:
+			reasons = append(reasons, "the store credential helper")
+			if file != "" {
+				candidates = append(candidates, file)
+			} else {
+				candidates = append(candidates, "~/.git-credentials", "~/.config/git/credentials")
+			}
+		default:
+			unrecognized = append(unrecognized, helperLabel(helper))
 		}
 	}
+	if len(helpers) == 0 {
+		candidates, reasons = []string{"~/.netrc"}, []string{"no credential helper"}
+	}
+	if len(candidates) == 0 {
+		log.Printf("credential detection: %s %s with credential helper %s; no credential path needs allowing",
+			root, where, strings.Join(unrecognized, ", "))
+		return nil, nil
+	}
+	reason := where + " with " + strings.Join(slices.Compact(reasons), " and ")
 	var exemptions []pushExemption
 	for _, c := range candidates {
 		path, err := canonicalHomePath(c)
@@ -152,6 +263,76 @@ func pushExemptions(ctx context.Context, root string) ([]pushExemption, error) {
 		exemptions = append(exemptions, pushExemption{path, reason})
 	}
 	return exemptions, nil
+}
+
+// helperChain returns the credential helpers git consults for rawURL. git
+// calls every configured helper in order, and an empty value resets the list
+// so far. The generic credential.helper chain is combined with the value of
+// the most specific credential.<url>.helper section: where the two interact
+// (a URL-specific reset) the union over-exempts, which only exposes more.
+func helperChain(ctx context.Context, probe, rawURL string) ([]string, error) {
+	values, err := gitConfigValues(ctx, probe, "--get-all", "credential.helper")
+	if err != nil {
+		return nil, err
+	}
+	var chain []string
+	for _, v := range values {
+		if strings.TrimSpace(v) == "" {
+			chain = nil
+			continue
+		}
+		chain = append(chain, v)
+	}
+	specific, err := gitConfigValues(ctx, probe, "--get-urlmatch", "credential.helper", rawURL)
+	if err != nil {
+		return nil, err
+	}
+	if n := len(specific); n > 0 && strings.TrimSpace(specific[n-1]) != "" && !slices.Contains(chain, specific[n-1]) {
+		chain = append(chain, specific[n-1])
+	}
+	return chain, nil
+}
+
+// helperLabel names a credential helper for logs without echoing arguments,
+// which may hold secrets.
+func helperLabel(helper string) string {
+	fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(helper), "!"))
+	if len(fields) == 0 {
+		return "?"
+	}
+	return filepath.Base(fields[0])
+}
+
+// signingExemptions returns the credential stores commit signing needs.
+func signingExemptions(ctx context.Context, root, probe string) ([]pushExemption, error) {
+	signing, err := gitConfigValues(ctx, probe, "--type=bool", "--get", "commit.gpgsign")
+	if err != nil {
+		log.Printf("credential detection: read commit.gpgsign of %s: %v", root, err)
+		return nil, nil
+	}
+	if len(signing) == 0 || signing[len(signing)-1] != "true" {
+		return nil, nil
+	}
+	format, err := gitConfigValues(ctx, probe, "--get", "gpg.format")
+	if err != nil {
+		log.Printf("credential detection: read gpg.format of %s: %v", root, err)
+		return nil, nil
+	}
+	var path, reason string
+	switch f := strings.ToLower(strings.TrimSpace(strings.Join(format, ""))); f {
+	case "ssh":
+		path, reason = "~/.ssh", "signs commits with an SSH key"
+	case "", "openpgp":
+		path, reason = "~/.gnupg", "signs commits with GnuPG"
+	default:
+		// x509 signing goes through gpgsm and needs no default credential path.
+		return nil, nil
+	}
+	resolved, err := canonicalHomePath(path)
+	if err != nil {
+		return nil, err
+	}
+	return []pushExemption{{resolved, reason}}, nil
 }
 
 // isSSHRemote reports whether a git remote URL pushes over SSH, including

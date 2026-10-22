@@ -131,8 +131,8 @@ func New(ctx context.Context, workspaceDir, checkoutsDir string, writableRoots [
 		if repo {
 			sum := sha256.Sum256([]byte(path))
 			r.name = filepath.Base(path) + "-" + hex.EncodeToString(sum[:4])
-			if url, err := gitOutput(ctx, path, "config", "--get", "remote.origin.url"); err == nil {
-				r.originURL = strings.TrimSpace(url)
+			if url, err := OriginURL(ctx, path); err == nil {
+				r.originURL = url
 			}
 		}
 		m.roots = append(m.roots, r)
@@ -382,6 +382,21 @@ func checkoutReady(checkout Checkout) bool {
 	}
 	_, err := os.Stat(checkout.Path + gitDirSuffix)
 	return err == nil
+}
+
+// OriginURL returns the origin URL a thread checkout of the repository at
+// path gets: the configured remote.origin.url, before any url.*.insteadOf
+// rewriting. It is empty when the repository has no origin.
+func OriginURL(ctx context.Context, path string) (string, error) {
+	out, err := gitOutput(ctx, path, "config", "--get", "remote.origin.url")
+	if err != nil {
+		// git config --get exits 1 when the key is not set.
+		if exitErr := (*exec.ExitError)(nil); errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // IsRepositoryTopLevel reports whether path is the top level of a git
