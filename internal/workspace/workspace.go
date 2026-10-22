@@ -345,8 +345,9 @@ func threadPath(base, threadID string) (string, error) {
 }
 
 // ensureCheckout clones the repository's current HEAD into a thread branch.
-// A local clone hardlinks the repository's objects, so it is cheap and does
-// not depend on the original afterwards. When originURL is set, the
+// Objects are copied, not hardlinked: the checkout's git directory is
+// writable by Codex, and a shared inode would let it rewrite the original
+// repository's objects in place. When originURL is set, the
 // checkout's origin points there too so the branch can be pushed.
 func ensureCheckout(ctx context.Context, checkout Checkout, originURL string) error {
 	if checkoutReady(checkout) {
@@ -362,7 +363,7 @@ func ensureCheckout(ctx context.Context, checkout Checkout, originURL string) er
 	if err := os.MkdirAll(filepath.Dir(checkout.Path), 0o700); err != nil {
 		return fmt.Errorf("create checkout directory: %w", err)
 	}
-	if err := git(ctx, filepath.Dir(checkout.Path), "clone", "--quiet", "--separate-git-dir="+gitDir, checkout.Repo, checkout.Path); err != nil {
+	if err := git(ctx, filepath.Dir(checkout.Path), "clone", "--quiet", "--no-hardlinks", "--separate-git-dir="+gitDir, checkout.Repo, checkout.Path); err != nil {
 		return err
 	}
 	if err := git(ctx, checkout.Path, "checkout", "--quiet", "-b", checkout.Branch); err != nil {
