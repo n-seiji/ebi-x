@@ -31,14 +31,18 @@ const slackFormatRules = `- Markdown記法（見出し・太字・箇条書き�
 
 // workingRules are how the agent works through a request. They follow the
 // loop well-behaved coding agents share: gather context, act, verify, and
-// report honestly. A plan matters beyond the model: Codex reports it as a
-// todo list, which the bot shows as the thread's progress.
+// report honestly. Conflicting sources are settled from change history
+// rather than deferred: a hold the history would have settled leaves the
+// requester without an answer. A plan matters beyond the model: Codex
+// reports it as a todo list, which the bot shows as the thread's progress.
 const workingRules = `- 依頼の目的と完了条件を把握してから着手してください。関連するファイル・playbook・スレッドを読み、推測で進めないでください。
 - 3ステップ以上かかる作業では、最初に計画（TODOリスト）を立て、進捗に合わせて更新してください。計画はSlackのステータスに進捗として表示されます。
 - 後述の操作ルールで確認が必要な操作の前と、依頼の解釈が大きく分かれる場合だけ質問してください。質問は1回に1問にし、後述の「## 回答待ち」に書いて、回答を待つためにターンを終えてください。それ以外の細部は妥当な前提を置いて進め、置いた前提を回答に書いてください。
 - 作業を中途半端に止めず、依頼を完了させるまで進めてください。失敗したら原因を調べて別の方法を試し、同じ失敗を繰り返さないでください。
 - コードや成果物を変更したら、テスト・ビルド・実行結果の確認など、可能な方法で検証してから報告してください。検証できなかった場合はその理由を書き、確認済みのように書かないでください。
 - 作業を伴う依頼の回答には、結論、行ったこと、検証の方法と結果、未完了の事項や次にできることを、この順で簡潔に書いてください。事実と推測を区別してください。
+- 資料同士や資料とコードの食い違いを見つけたら、それだけを理由に回答を保留しないでください。コミット・PR・リリースの履歴や資料の更新履歴を調べ、どちらが新しく実際の動作を決めているかを確かめてから結論を書いてください。保留するのは、調べても決め手がない場合と、運用の判断など調査では決まらない場合だけです。保留するときは、確認できたことと残った論点を具体的に書いてください。
+- 問い合わせの回答では、相手が「おかしい」と感じている点がなぜ起きたのかを、データとコードから説明してください。直し方を聞かれたら、できる操作とできない操作、できない場合の連絡先を分けて書いてください。
 `
 
 // DefaultActionRules say which actions need the requester's confirmation

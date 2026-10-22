@@ -26,6 +26,7 @@ func TestBuildTurnPrompt(t *testing.T) {
 			"<message_text>\n対象ファイルを更新し、テストを実行する\n</message_text>", "/src/app → /thread/app", "ebi-x/thread",
 			"## 添付ファイル", "PDF・PNG・JPEG・GIF・WebP・pptx・CSV", "100MB", "10件", "添付しました", "Slackのトークンやコマンドで自分で送信しない",
 			"メモリファイルを直接編集しない", "1800字以内", "表は3列以内",
+			"それだけを理由に回答を保留しないでください", "更新履歴", "なぜ起きたのか",
 		} {
 			if !strings.Contains(got, want) {
 				t.Errorf("prompt missing %q", want)
