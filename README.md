@@ -456,7 +456,14 @@ playbook は作った時点の情報のまま古くなりがちです（作成�
 
 Codex の MCP サーバーは `EBIX_HOME/.codex/config.toml` に書きます（`~/.codex/config.toml` は読み込みません）。`enabled_tools` / `disabled_tools` で公開していないツールが必要になったとき、Codex は「MCP に接続できない」ではなく「公開されていない」と案内します。
 
-MCP サーバーやモデルプロバイダーが環境変数から読む値は、Codex に渡る環境が許可リスト方式のため、そのままでは届きません。`EBIX_CODEX_ENV` に変数名を列挙するか、サーバーの `env` テーブルに書いてください（詳しくは「メモリ」節末尾）。
+MCP サーバーやモデルプロバイダーが環境変数から読む値は、Codex に渡る環境が許可リスト方式のため、そのままでは届きません。さらに MCP サーバー（stdio）は Codex の環境をそのまま引き継がず、少数の既定の変数に加えて、そのサーバーの `env` テーブルと `env_vars` リストにあるものだけを受け取ります。したがって環境変数を MCP サーバーに渡すには、(1) 許可リストか `EBIX_CODEX_ENV` で Codex に渡し、かつ (2) そのサーバーの `env_vars = ["NAME"]` に名前を書く（または `env` テーブルに直接値を書く）必要があります。どちらかが欠けると届きません。許可リストと `EBIX_CODEX_ENV` については「Codexから保護するパス」節を参照してください。
+
+```toml
+[mcp_servers.example]
+command = "example-mcp"
+env_vars = ["EXAMPLE_API_TOKEN"]   # EBIX_CODEX_ENV=EXAMPLE_API_TOKEN も必要
+env = { EXAMPLE_REGION = "asia-northeast1" }
+```
 
 ### BigQuery で SQL を使う
 
@@ -559,7 +566,7 @@ Codexのプロセス環境は許可リスト方式です。渡すのは次の変
 - 基本: `HOME`・`PATH`・`USER`・`LOGNAME`・`SHELL`・`LANG`・`TZ`・`TERM`・`TMPDIR`・`CODEX_HOME`、プロキシ（`HTTP_PROXY`・`HTTPS_PROXY`・`NO_PROXY`・`ALL_PROXY` と小文字版）、`SSL_CERT_FILE`・`SSL_CERT_DIR`
 - Codexの認証: `OPENAI_API_KEY`・`CODEX_API_KEY`
 - エンドポイント・証明書: `OPENAI_BASE_URL`・`CODEX_CA_CERTIFICATE`・`NODE_EXTRA_CA_CERTS`・`REQUESTS_CA_BUNDLE`・`CURL_CA_BUNDLE`・`GIT_SSL_CAINFO`
-- git: `GIT_SSH_COMMAND`・`GIT_CONFIG_GLOBAL`
+- git: `GIT_SSH_COMMAND`・`GIT_CONFIG_GLOBAL`・`GIT_CONFIG_SYSTEM`・`GIT_CONFIG_NOSYSTEM`・`GNUPGHOME`（`GIT_CONFIG_COUNT`・`GIT_CONFIG_KEY_*`・`GIT_CONFIG_VALUE_*` は `http.extraHeader` などで秘密を運べるため通しません）
 - ツールチェーン: `GOPATH`・`GOPRIVATE`・`GOPROXY`・`GONOSUMDB`・`GONOPROXY`・`GOFLAGS`・`CARGO_HOME`・`RUSTUP_HOME`・`JAVA_HOME`・`PYENV_ROOT`・`NVM_DIR`・`VOLTA_HOME`・`PNPM_HOME`
 - その他: `GH_HOST`・`GH_CONFIG_DIR`・`DBUS_SESSION_BUS_ADDRESS`
 - 接頭辞: `LC_*`・`XDG_*`・`MISE_*`。ただし接頭辞で通すのは、名前（大文字化したもの）に `TOKEN`・`SECRET`・`PASSWORD`・`KEY` を含まないものだけです（`MISE_GITHUB_TOKEN` は渡りません）。この規則は接頭辞にだけ効き、`EBIX_CODEX_ENV` で明示した名前には効きません
@@ -568,6 +575,8 @@ Codexのプロセス環境は許可リスト方式です。渡すのは次の変
 `EBIX_CODEX_ENV` にカンマ区切りで変数名を書くと、追加で渡せます。`SLACK_BOT_TOKEN`・`SLACK_APP_TOKEN`・`EBIX_GITHUB_TOKEN` を書くと起動エラーになります。渡さない変数の名前（値は出しません）は起動時に1行でログへ出るので、MCPサーバーやモデルプロバイダーが依存していないか確認してください。
 
 Codexがコマンドに渡す環境（shell environment policy）もebi-xが固定します。`ignore_default_excludes=false`（名前に `KEY`・`SECRET`・`TOKEN` を含む変数を除く Codex の既定を有効にする）と `exclude=["OPENAI_API_KEY","CODEX_API_KEY"]` を、ローカルの Codex 設定より後ろに常に付けます。ローカル設定の `[shell_environment_policy]` は無視します（`approval_policy` や `sandbox_*` と同じ扱いです）。Codex本体は `OPENAI_API_KEY` などを環境から読めますが、そのコマンドには渡りません。
+
+名前に `KEY`・`SECRET`・`TOKEN` を含む変数は、`EBIX_CODEX_ENV` に書いても Codex 本体（とそのモデルプロバイダー）には届きますが、Codex が実行するコマンドからは除かれ、ebi-x がこれを強制します（起動時に該当する名前を警告ログに出します）。したがって `GH_TOKEN`・`GITHUB_TOKEN` などの環境変数のトークンで `git push` や `gh` を認証する使い方は対応していません。gh の credential helper（`~/.config/gh` またはキーチェーン）か git の credential helper を使ってください。
 
 ## interrupted の運用
 

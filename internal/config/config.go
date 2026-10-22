@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -347,6 +348,15 @@ func parseCodexEnv(value string) ([]string, error) {
 			return nil, fmt.Errorf("EBIX_CODEX_ENV %q: the bot's own credentials must not reach Codex", name)
 		}
 		names = append(names, name)
+	}
+	var hidden []string
+	for _, name := range names {
+		if upper := strings.ToUpper(name); strings.Contains(upper, "KEY") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "TOKEN") {
+			hidden = append(hidden, name)
+		}
+	}
+	if len(hidden) > 0 {
+		log.Printf("EBIX_CODEX_ENV %s reach Codex (and its model provider) but are removed from the commands Codex runs", strings.Join(hidden, ", "))
 	}
 	return names, nil
 }

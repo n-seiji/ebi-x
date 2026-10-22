@@ -794,8 +794,8 @@ func TestFilterEnv(t *testing.T) {
 		},
 		{
 			name: "non-secret configuration variables are kept",
-			env:  []string{"OPENAI_BASE_URL=u", "NODE_EXTRA_CA_CERTS=/c", "GIT_SSH_COMMAND=ssh -v", "GOPRIVATE=x", "GOFLAGS=-mod=mod", "JAVA_HOME=/j", "PNPM_HOME=/p", "GH_HOST=h", "DBUS_SESSION_BUS_ADDRESS=a"},
-			want: []string{"OPENAI_BASE_URL=u", "NODE_EXTRA_CA_CERTS=/c", "GIT_SSH_COMMAND=ssh -v", "GOPRIVATE=x", "GOFLAGS=-mod=mod", "JAVA_HOME=/j", "PNPM_HOME=/p", "GH_HOST=h", "DBUS_SESSION_BUS_ADDRESS=a"},
+			env:  []string{"OPENAI_BASE_URL=u", "NODE_EXTRA_CA_CERTS=/c", "GIT_SSH_COMMAND=ssh -v", "GIT_CONFIG_SYSTEM=/s", "GIT_CONFIG_NOSYSTEM=1", "GNUPGHOME=/g", "GOPRIVATE=x", "GOFLAGS=-mod=mod", "JAVA_HOME=/j", "PNPM_HOME=/p", "GH_HOST=h", "DBUS_SESSION_BUS_ADDRESS=a"},
+			want: []string{"OPENAI_BASE_URL=u", "NODE_EXTRA_CA_CERTS=/c", "GIT_SSH_COMMAND=ssh -v", "GIT_CONFIG_SYSTEM=/s", "GIT_CONFIG_NOSYSTEM=1", "GNUPGHOME=/g", "GOPRIVATE=x", "GOFLAGS=-mod=mod", "JAVA_HOME=/j", "PNPM_HOME=/p", "GH_HOST=h", "DBUS_SESSION_BUS_ADDRESS=a"},
 		},
 		{
 			name: "ssh agent socket is dropped unless listed",

@@ -49,7 +49,7 @@ var envAllowNames = map[string]struct{}{
 	"OPENAI_BASE_URL": {}, "CODEX_CA_CERTIFICATE": {}, "NODE_EXTRA_CA_CERTS": {},
 	"REQUESTS_CA_BUNDLE": {}, "CURL_CA_BUNDLE": {}, "GIT_SSL_CAINFO": {},
 	// git configuration.
-	"GIT_SSH_COMMAND": {}, "GIT_CONFIG_GLOBAL": {},
+	"GIT_SSH_COMMAND": {}, "GIT_CONFIG_GLOBAL": {}, "GIT_CONFIG_SYSTEM": {}, "GIT_CONFIG_NOSYSTEM": {}, "GNUPGHOME": {},
 	// Toolchain locations and settings.
 	"GOPATH": {}, "GOPRIVATE": {}, "GOPROXY": {}, "GONOSUMDB": {}, "GONOPROXY": {}, "GOFLAGS": {},
 	"CARGO_HOME": {}, "RUSTUP_HOME": {}, "JAVA_HOME": {}, "PYENV_ROOT": {},
