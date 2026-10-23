@@ -281,7 +281,7 @@ func TestDoneWatchUserGroupAllOutsideChannel(t *testing.T) {
 
 	bot.HandleMention(context.Background(), doneWatchMention("<!subteam^S1> 回答してください <@UBOT> 監視して"))
 
-	if len(store.doneWatches) != 0 || api.postTexts[len(api.postTexts)-1] != doneWatchNoTargetNotice {
+	if len(store.doneWatches) != 0 || api.postTexts[len(api.postTexts)-1] != doneWatchAllOutsideNotice {
 		t.Fatalf("watches = %#v, posts = %q, want no watch", store.doneWatches, api.postTexts)
 	}
 }
