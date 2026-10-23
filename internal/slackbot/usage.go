@@ -1,6 +1,7 @@
 package slackbot
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -15,9 +16,11 @@ import (
 const (
 	// usageCheckInterval is how often the Codex usage is checked and
 	// recorded. It also sees usage from outside ebi-x on the same account.
-	usageCheckInterval = 30 * time.Minute
-	usageReadTimeout   = 30 * time.Second
-	usageDayLayout     = "2006-01-02"
+	usageCheckInterval = 10 * time.Minute
+	// usageHistoryKeep is how long checks are kept for the hourly chart.
+	usageHistoryKeep = usageChartSpan
+	usageReadTimeout = 30 * time.Second
+	usageDayLayout   = "2006-01-02"
 
 	usageLowMessage       = "⚠️ Codex の利用枠（%s）の残りが %d%% を下回りました。%s"
 	usageExhaustedMessage = "🚫 Codex の利用枠（%s）を使い切りました。%sまで、ebi-x は作業できません。"
@@ -28,6 +31,14 @@ const (
 	usageUnavailableReply = "⚠️ Codex の利用枠を読み取れませんでした。"
 	usageDailyHeader      = "📊 %s の Codex の利用枠（%d回確認）"
 	usageDailyLine        = "- %s: %d%% → %d%%（最低 %d%%）"
+	usageHourlyHeader     = "📈 Codex の利用枠（%s 時点）"
+	usageHourlyLine       = "- %s: 残り %.1f%%"
+	usageHourlyChange     = "前回から %+.1fpt"
+	usageHourlyWasReset   = "前回からリセット済み"
+	usageHourlyEmptyAt    = "このペースだと%sに使い切り"
+	usageHourlyResetAt    = "%sにリセット"
+	usageHourlyChartNote  = "グラフ: 直近24時間の残り（青=5時間・橙=1週間）"
+	usageChartFilename    = "codex-usage.png"
 	// usageLimitFailureMessage replaces workFailureMessage when the turn
 	// stopped on the usage limit, so the requester knows why and when to
 	// ask again.
@@ -68,7 +79,8 @@ func (b *Bot) usageWatchEnabled() bool {
 // runUsageWatch checks the Codex usage until ctx is done. Each check is
 // recorded for the day's summary, which the first check of the next day
 // posts in the approval channel, and a window that runs low is announced
-// there.
+// there. The first check of each hour also posts the remaining usage there
+// with a chart, unless nothing changed since the last report.
 func (b *Bot) runUsageWatch(ctx context.Context) {
 	if !b.usageWatchEnabled() {
 		return
@@ -84,6 +96,7 @@ func (b *Bot) runUsageWatch(ctx context.Context) {
 		case err == nil:
 			failing = false
 			b.recordUsage(ctx, limits)
+			b.reportUsage(ctx)
 		}
 		if err := b.sleep(ctx, usageCheckInterval); err != nil {
 			return
@@ -173,6 +186,7 @@ func (b *Bot) recordUsage(ctx context.Context, limits *codex.RateLimits) {
 		days[key] = record
 	}
 	next.Windows = days
+	next.History = appendUsageSample(next.History, usageSample(b.now(), windows))
 
 	alerts, lines := usageAlerts(saved.Alerts, windows)
 	next.Alerts = alerts
@@ -187,6 +201,143 @@ func (b *Bot) recordUsage(ctx context.Context, limits *codex.RateLimits) {
 	if err := b.store.SetUsage(next); err != nil {
 		log.Printf("slackbot: save Codex usage: %v", err)
 	}
+}
+
+// reportUsage posts the latest check in the approval channel with a chart
+// of the recent checks, once an hour. An hour with no change since the last
+// report is skipped.
+func (b *Bot) reportUsage(ctx context.Context) {
+	b.usageMu.Lock()
+	defer b.usageMu.Unlock()
+	saved := b.store.Usage()
+	if len(saved.History) == 0 {
+		return
+	}
+	now := b.now()
+	previous := saved.Reported
+	if previous != nil && sameLocalHour(previous.At, now) {
+		return
+	}
+	latest := saved.History[len(saved.History)-1]
+	if previous == nil || usageSampleChanged(*previous, latest) {
+		text := usageHourlyReport(previous, latest, now)
+		if err := b.postUsageReport(ctx, text, saved.History, now); err != nil {
+			log.Printf("slackbot: post Codex usage report: %v", err)
+			// Report again at the next check.
+			return
+		}
+	}
+	next := saved
+	next.Reported = &latest
+	next.Reported.At = now
+	if err := b.store.SetUsage(next); err != nil {
+		log.Printf("slackbot: save Codex usage: %v", err)
+	}
+}
+
+// postUsageReport shares the chart with text as its comment, or posts the
+// text alone when the chart cannot be shared.
+func (b *Bot) postUsageReport(ctx context.Context, text string, history []state.UsageSample, now time.Time) error {
+	chart, err := renderUsageChart(history, now)
+	if err == nil {
+		err = b.retrySlack(ctx, func() error {
+			return b.api.UploadFile(ctx, b.config.ApprovalChannelID, "", usageChartFilename, text+"\n"+usageHourlyChartNote, int64(len(chart)), bytes.NewReader(chart))
+		})
+	}
+	if err == nil {
+		return nil
+	}
+	log.Printf("slackbot: share Codex usage chart: %v", err)
+	return b.post(ctx, b.config.ApprovalChannelID, "", text)
+}
+
+// usageHourlyReport describes latest, with each window's change since the
+// previous report and, while it falls, when it would run out at that pace.
+func usageHourlyReport(previous *state.UsageSample, latest state.UsageSample, now time.Time) string {
+	lines := []string{fmt.Sprintf(usageHourlyHeader, now.In(time.Local).Format("1/2 15:04"))}
+	for _, key := range usageWindowKeys {
+		remaining, ok := latest.Remaining[key]
+		if !ok {
+			continue
+		}
+		line := fmt.Sprintf(usageHourlyLine, usageSampleLabel(key), remaining)
+		resetsAt := latest.ResetsAt[key]
+		var notes []string
+		if previous != nil {
+			if before, ok := previous.Remaining[key]; ok {
+				switch {
+				case previous.ResetsAt[key] != resetsAt && remaining > before:
+					notes = append(notes, usageHourlyWasReset)
+				default:
+					change := remaining - before
+					notes = append(notes, fmt.Sprintf(usageHourlyChange, change))
+					elapsed := latest.At.Sub(previous.At)
+					if change < 0 && remaining > 0 && elapsed > 0 {
+						empty := latest.At.Add(time.Duration(float64(elapsed) * remaining / -change))
+						if resetsAt <= 0 || empty.Before(time.Unix(resetsAt, 0)) {
+							notes = append(notes, fmt.Sprintf(usageHourlyEmptyAt, formatFollowUpTime(empty)))
+						}
+					}
+				}
+			}
+		}
+		if resetsAt > 0 {
+			notes = append(notes, fmt.Sprintf(usageHourlyResetAt, formatFollowUpTime(time.Unix(resetsAt, 0))))
+		}
+		if len(notes) > 0 {
+			line += "（" + strings.Join(notes, "・") + "）"
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// usageSampleLabel names a window slot; a sample does not keep the window's
+// length, so the label assumes Codex's usual 5-hour and weekly windows.
+func usageSampleLabel(key string) string {
+	return usageWindowLabel(key, codex.RateLimitWindow{})
+}
+
+func usageSample(at time.Time, windows map[string]codex.RateLimitWindow) state.UsageSample {
+	sample := state.UsageSample{At: at, Remaining: make(map[string]float64, len(windows)), ResetsAt: make(map[string]int64, len(windows))}
+	for key, window := range windows {
+		sample.Remaining[key] = math.Max(0, 100-window.UsedPercent)
+		if window.ResetsAt > 0 {
+			sample.ResetsAt[key] = window.ResetsAt
+		}
+	}
+	return sample
+}
+
+// appendUsageSample adds sample and drops checks older than
+// usageHistoryKeep.
+func appendUsageSample(history []state.UsageSample, sample state.UsageSample) []state.UsageSample {
+	history = append(history, sample)
+	cutoff := sample.At.Add(-usageHistoryKeep)
+	first := 0
+	for first < len(history) && history[first].At.Before(cutoff) {
+		first++
+	}
+	return history[first:]
+}
+
+// usageSampleChanged reports whether any window's remaining percent, as
+// reported to a tenth, or its reset time differs.
+func usageSampleChanged(a, b state.UsageSample) bool {
+	if len(a.Remaining) != len(b.Remaining) {
+		return true
+	}
+	for key, remaining := range a.Remaining {
+		other, ok := b.Remaining[key]
+		if !ok || math.Round(remaining*10) != math.Round(other*10) || a.ResetsAt[key] != b.ResetsAt[key] {
+			return true
+		}
+	}
+	return false
+}
+
+func sameLocalHour(a, b time.Time) bool {
+	return a.In(time.Local).Truncate(time.Hour).Equal(b.In(time.Local).Truncate(time.Hour))
 }
 
 // usageAlerts returns the levels announced after this check and the
