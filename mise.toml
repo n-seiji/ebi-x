@@ -14,6 +14,11 @@ description = "Build and run ebi-x"
 depends = ["build"]
 run = "./ebi-x"
 
+[tasks.reload]
+description = "Rebuild ebi-x and restart the running one once its work is done"
+depends = ["build"]
+run = 'kill -HUP "$(cat "${EBIX_HOME:-.}/data/state/ebi-x.lock")"'
+
 [tasks.test]
 description = "Run tests with race detector"
 run = "go test -race ./..."
