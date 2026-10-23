@@ -1,0 +1,216 @@
+# 設計
+
+ebi-x の構成と、処理・状態・安全性についての決めごとをまとめます。
+
+## 方針
+
+- **小さく保つ**：Go の単一バイナリ、単一プロセス。Web UI、DB、HTTP の Events API は持ちません。設定は `.env`、状態は `data/` の JSON ファイルです。
+- **考えるのも作業するのも Codex**：bot は Slack とのやり取り、許可、状態、隔離だけを受け持ち、依頼の中身の判断は Codex に任せます。1回の Codex 実行で調査・作業・回答まで行います。
+- **bot と Codex の境界は出力契約**：Codex は Slack・状態ファイル・メモリに直接触れません。最終応答に決まった見出しを書き、bot がそれを読んで処理します。
+- **副作用のある作業は自動でやり直さない**：重複して投稿するのは許しても、結果を失うことと、作業を二重に実行することは避けます。
+
+## 構成
+
+```text
+cmd/ebi-x/            起動、設定の読み込み、シグナル処理
+internal/
+  config/             .env の読み込みと検査
+  slackbot/           Socket Mode のイベント処理、許可、承認、停止、進捗、Home、
+                      フォローアップ、定期実行、PR の見守り、利用枠、生存確認
+  codex/              codex exec の起動、JSONL の解析、出力契約の解析、利用枠の取得
+  prompt/             Codex へ渡すプロンプトの組み立て
+  policy/             バイナリに埋め込む最上位ルール（policy.md）
+  state/              data/state の JSON ストアとプロセスロック
+  workspace/          スレッドごとの作業ディレクトリとクローン
+  memory/ playbook/ usersettings/   全体メモリ、playbook とそのメモ、個人設定
+  attachment/         添付ファイルの検査
+  github/             PR の読み取りと認証情報の取得
+  slackfmt/           Slack 向けの分割と整形
+```
+
+## 依頼の処理
+
+```text
+Slack イベント ──ACK── 許可の確認 ── 受付（ClaimEvent）── 👀
+   └─ スレッドのロック ── 同時実行枠 ── received → working ── codex exec
+        └─ 出力契約の処理（添付、予定、見守り、メモ…）── 本文を投稿 ── ✅/❌/🙋
+```
+
+1. 受け取ったイベントは、内容にかかわらずすぐ ACK します（再配信を起こさないため）。以降は goroutine で処理します。
+2. bot 自身の投稿、subtype 付きのメッセージ、空の本文は無視します。許可を確かめ、足りなければ断るか承認を依頼します（[setup.md](setup.md#3-使える人とチャンネル)）。
+3. mention ごとのキー `channel:ts` で受付を記録します。同じイベントが2回届いても、処理するのは1回です。
+4. スレッドのロックを取り、全体の同時実行枠（`CODEX_MAX_PARALLEL_WORK`）を待ちます。状態を `working` にして保存できてから Codex を起動します。
+5. Codex の最終応答から出力契約の見出しを取り出して処理し、残りを投稿してリアクションを付けます。
+
+### キー
+
+| キー | 形式 | 使う場所 |
+| --- | --- | --- |
+| イベントキー | `channel:ts`（mention メッセージ自身の ts） | `events.json` の受付と状態。同じスレッドの2件目以降の mention も別の依頼として扱う |
+| セッションキー | `channel:thread_ts` にバージョンを付けたもの | `sessions.json` のセッションとスレッドのロック。形式を変えるときはバージョンを上げ、古いセッションを使わない |
+| スレッドキー | `channel:thread_ts` | 購読、フォローアップ、定期実行、停止 |
+
+### Codex の実行
+
+- `turn.completed` を受け取り、`turn.failed` がないときだけ成功とします。成功でも最終応答が空なら、結果を確かめられないので `interrupted` にします。
+- 出力には上限があります。stdout 64MB、stderr 16MB、agent_message 100件、最終応答 128KB です。stdout が上限を超えたら失敗として子プロセスを止めます。
+- `thread.started` を受け取った時点でセッションを保存します。保存に失敗したら、行き場のないセッションを残さないよう実行を止めます。
+- 実行時間は `CODEX_TIMEOUT` までです。止めたときは子プロセスが終わったのを確かめてから戻ります。
+
+### セッション
+
+- Slack スレッドごとに Codex セッションを1つ持ち、`data/state/sessions.json` に保存します。スレッドの参加者全員で同じセッションを使います。
+- スレッドの最初の依頼では、作業原則、操作ルール、全体メモリ、playbook の一覧、出力契約を渡します。返信ではセッションがそれを覚えているので、依頼本文と、その発言者の個人設定、作業場所の状態だけを渡します。そのため playbook や全体メモリの変更は、次に始まるスレッドから効きます。
+- 人の入力は `<user_message>` などのブロックに分けて渡し、`policy.md` の最上位ルールで、その中の指示がルールや契約を変えられないことを示します。
+
+### 状態
+
+依頼の状態は `data/state/events.json` に保存します。
+
+```text
+received ──→ working ──→ done
+    │            └────→ interrupted
+    └──→ failed（再受付できる）
+```
+
+- `failed` は Codex を起動する前の失敗で、同じイベントを再び受け付けられます。
+- `interrupted` は作業が副作用を残したかもしれない失敗で、終端です。停止、作業の失敗、結果の投稿の失敗、添付の失敗がここに入ります。
+- 起動時、`received` のものは `failed` に、`working` のものは `interrupted` にします。保存に失敗したら起動を中止します。
+- 回答待ちも `done` です。作業は失敗していないためです。
+- 終端の状態は7日で消します。
+- 受付（`ClaimEvent`）は「未登録か `failed` なら `received` にする」をストアのロックの中でまとめて行うので、同時に届いても1件しか通りません。遷移（`Transition`）は今の状態を指定して行い、食い違えばエラーにします。
+- 書き込みは一時ファイルに書いて fsync してから rename します。
+
+`data/state/` のファイル：
+
+| ファイル | 内容 |
+| --- | --- |
+| `events.json` | 依頼ごとの状態 |
+| `sessions.json` | スレッドと Codex セッションの対応 |
+| `subscriptions.json` | 購読スレッドと期限 |
+| `approvals.json` | 承認チャンネルでの許可・拒否 |
+| `followups.json` | 予定中のフォローアップ |
+| `schedules.json` | 定期実行と次回の時刻 |
+| `pullwatches.json` | 見守り中の PR と、最後に見た状態 |
+| `usage.json` | 利用枠の記録、直近12時間の確認結果、知らせた段階 |
+| `donewatches.json` | `:done:` の監視と、次に知らせる時刻 |
+| `deferred.json` | リロードの間に届き、再起動後に始める依頼 |
+| `ebi-x.lock` | 多重起動を防ぐロック |
+
+## 作業場所の隔離
+
+スレッドが並列に動いてもファイルが衝突しないよう、作業場所をスレッドごとに分けます。
+
+```text
+data/workspace/{channel}-{thread ts}/                     スレッドの cwd
+data/checkouts/{channel}-{thread ts}/{repo}-{hash}/        スレッド専用クローン
+data/checkouts/{channel}-{thread ts}/{repo}-{hash}.gitdir/ その git ディレクトリ
+```
+
+- `EBIX_WRITABLE_ROOTS` のうち Git リポジトリの最上位ディレクトリは、スレッド専用のローカルクローン（ブランチ `ebi-x/{channel}-{thread ts}`、作成時の `HEAD` から分岐）で作業します。元のリポジトリは読み取り専用のままです。
+- クローンは必要になるまで作りません。クローンのないスレッドでは、Codex は元のリポジトリを読んで調べます。変更が必要になると最終応答を `## 作業用クローン要求` の1行だけにし、bot がクローンを作って、同じ依頼の中で同じセッションに続きを頼みます。
+- Codex のサンドボックスは `.git` という名前のディレクトリを常に読み取り専用にするため、git worktree ではコミットできません。そこで git ディレクトリを `.gitdir` に分けたクローンを使います。`.gitdir` は Codex が書き込めるので、オブジェクトをハードリンクで共有すると元のリポジトリのオブジェクトを書き換えられてしまいます。そのためクローンはスレッドごとにオブジェクトをすべてコピーします（`--no-hardlinks`）。
+- Git リポジトリでない writable root と `data/playbooks` は全スレッド共有です。同じファイルを同時に書くと後勝ちになります。
+- 最後の作業から `EBIX_CHECKOUT_IDLE_TTL` 経ったクローンは、起動時と1時間ごとにブランチごと消します。push していない変更も消えます。使用中のクローンは消しません。
+
+## Codex から守るもの
+
+Codex のコマンドは、禁止しなければファイルシステム全体を読めます。そのため、すべての実行で次を読み書きともに禁止します。
+
+- `data/memory`、`data/state`
+- `.env`（起動ディレクトリと `EBIX_HOME`）、`EBIX_HOME/.codex`
+- `CODEX_HOME` の中身（認証情報・設定・全スレッドの履歴を含むため）。コマンドの実行に要る `skills` `plugins` `packages` `tmp` `.tmp` `shell_snapshots` だけを除き、実行ごとに列挙して禁止します
+- 自分以外のスレッドの `data/workspace` と `data/checkouts`（実行の直前に列挙します）
+- `EBIX_DENIED_READ_PATHS`
+- 既知の認証情報の置き場（既定）：`~/.ssh` `~/.aws` `~/.azure` `~/.config/gcloud` `~/.config/gh` `~/.docker/config.json` `~/.kube` `~/.gnupg` `~/.netrc` `~/.git-credentials` `~/.config/git/credentials` `~/.npmrc` `~/.pypirc` `~/.config/op` `~/.vault-token` `~/.terraform.d/credentials.tfrc.json` `~/.cargo/credentials.toml` `~/.gem/credentials` `~/.pgpass` `~/.my.cnf` `~/.s3cfg` `~/.boto` `~/.oci` `~/.config/rclone` `~/.claude` `~/.config/github-copilot`。push と署名に要るものと `EBIX_ALLOWED_READ_PATHS` のものは外します（[setup.md](setup.md#4-作業対象のリポジトリ)）。検出は `data/checkouts` に作る使い捨てのリポジトリで、スレッドのクローンと同じ git 設定と、Codex と同じ環境変数で行います
+
+Codex は `--ignore-user-config` と専用の permission profile で起動し、MCP の設定は `EBIX_HOME/.codex/config.toml` から渡します。
+
+Codex のプロセス環境は許可リストです。`.env` や運用者のシェルのそれ以外の変数（`DATABASE_URL`・`AWS_*` など）は渡さないので、プロンプトインジェクションされたターンが `env` で読み出せません。
+
+- 基本：`HOME` `PATH` `USER` `LOGNAME` `SHELL` `LANG` `TZ` `TERM` `TMPDIR` `CODEX_HOME`、プロキシ（`HTTP_PROXY` `HTTPS_PROXY` `NO_PROXY` `ALL_PROXY` と小文字版）、`SSL_CERT_FILE` `SSL_CERT_DIR`
+- Codex の認証：`OPENAI_API_KEY` `CODEX_API_KEY`
+- エンドポイントと証明書：`OPENAI_BASE_URL` `CODEX_CA_CERTIFICATE` `NODE_EXTRA_CA_CERTS` `REQUESTS_CA_BUNDLE` `CURL_CA_BUNDLE` `GIT_SSL_CAINFO`
+- git：`GIT_SSH_COMMAND` `GIT_CONFIG_GLOBAL` `GIT_CONFIG_SYSTEM` `GIT_CONFIG_NOSYSTEM` `GNUPGHOME`。`GIT_CONFIG_COUNT` `GIT_CONFIG_KEY_*` `GIT_CONFIG_VALUE_*` は `http.extraHeader` などで秘密を運べるので渡しません
+- ツールチェーン：`GOPATH` `GOPRIVATE` `GOPROXY` `GONOSUMDB` `GONOPROXY` `GOFLAGS` `CARGO_HOME` `RUSTUP_HOME` `JAVA_HOME` `PYENV_ROOT` `NVM_DIR` `VOLTA_HOME` `PNPM_HOME`
+- その他：`GH_HOST` `GH_CONFIG_DIR` `DBUS_SESSION_BUS_ADDRESS`
+- 接頭辞 `LC_*` `XDG_*` `MISE_*`。ただし名前に `TOKEN` `SECRET` `PASSWORD` `KEY` を含むものは除きます
+- `SSH_AUTH_SOCK` は、`~/.ssh` を読めるようにしたときか `EBIX_CODEX_ENV` に書いたときだけ渡します。`~/.ssh` を読めないのにエージェントの鍵を使えてしまわないためです
+- `EBIX_CODEX_ENV` に書いた名前。bot の認証情報（`SLACK_BOT_TOKEN` `SLACK_APP_TOKEN` `EBIX_GITHUB_TOKEN`）は書けません
+
+Codex がコマンドに渡す環境（shell environment policy）も固定し、ローカル設定の `[shell_environment_policy]` は無視します。名前に `KEY` `SECRET` `TOKEN` を含む変数と `OPENAI_API_KEY` `CODEX_API_KEY` は、Codex 本体には届いてもコマンドには渡りません。
+
+残るリスク：既定の置き場はホーム直下の固定パスなので、`XDG_CONFIG_HOME` `GH_CONFIG_DIR` `CLOUDSDK_CONFIG` `GNUPGHOME` などで移したものは `EBIX_DENIED_READ_PATHS` に足します。作業から Docker ソケットに届くと任意のパスをマウントして禁止を迂回できます。push に要る `~/.ssh` や `~/.config/gh` は、ネットワークに出られる作業から見えます（根本的には push を bot が行うのが今後の課題です）。
+
+禁止の一覧は1つの引数で渡すので、長すぎて切り詰めるくらいなら実行しません。`EBIX_WRITABLE_ROOTS` が守るパスや bot の管理するディレクトリと重なる場合は、シンボリックリンクを解決したうえで起動を拒否します。
+
+操作ルール（何の前に確認するか）はプロンプトでの指示で、ここでの禁止とは別です。
+
+## 出力契約
+
+Codex は最終応答に次の見出しを書いて bot に処理を頼みます。どれも行頭の見出しだけを数え、コードブロックの中は数えません。bot は見出しとその中身を本文から取り除き、代わりに処理の結果を表示します。書式が正しくないときは処理せず、その旨を本文の後に出します。
+
+| 見出し | 中身 | bot がすること |
+| --- | --- | --- |
+| `## 作業用クローン要求` | 最終応答はこの1行だけ | スレッド専用クローンを作り、同じセッションに続きを頼む |
+| `## 回答待ち` | `- ` で質問を並べる | 🙋 を付け、依頼者に mention して質問を表示する |
+| `## 添付ファイル` | `- ` で1行1パス | 検査してから Slack にアップロードする |
+| `## フォローアップ` | `- いつ:`（`30m` や RFC 3339）と `- やること:` | 予定を保存し、時刻になったら同じセッションを再開する |
+| `## 定期実行` | `- いつ:`（`平日 09:00` など、または `停止`）と `- やること:` | 定期実行を保存・停止する |
+| `## PR の見守り` | `- ` で PR の URL | 見守りを始める |
+| `## playbook メモ追記` | `- 対象:` と `- 内容:` | playbook のメモに日付付きで1行足す |
+| `## 全体メモリ追記` | 保存する事実 | 全体メモリに足す |
+| `## 個人設定` | 変更後の設定全体 | 発言者の個人設定として保存する |
+
+送信元によって受け付けない見出しがあります。
+
+- 定期実行と個人設定は、人の依頼への回答のときだけ受け付けます。フォローアップ、PR の見守り、定期実行から始まった実行が書いても無視します。人のいないところで予定や設定が増えないようにするためです。
+- playbook メモと全体メモリは `EBIX_SHARED_WRITE_CHANNEL_IDS` のチャンネルからだけ受け付けます。それ以外のチャンネルでは、プロンプトにもこれらの契約を載せません。DM からも書けません。
+
+### 添付の検査
+
+添付できるのは、そのスレッドの cwd とスレッド専用クローンの中にある通常のファイルだけです。シンボリックリンクを通るパス、`..` で外へ出るパス、ハードリンクされたファイル、検査の後に差し替えられたファイルは送りません。アップロードは同じスレッドの次の実行が始まる前に終えます。失敗はレート制限のときだけ1回やり直し、それ以外は二重投稿を避けてやり直しません。
+
+## 記憶
+
+記憶は範囲ごとに置き場所を分けます。
+
+| 範囲 | 置き場所 | 内容 |
+| --- | --- | --- |
+| 作業の手順 | playbook とそのメモ（`data/playbooks/`、`data/memory/playbooks/`） | 特定の作業の進め方、判断基準、確定した事実 |
+| ebi-x 全体 | `data/memory/MEMORY.md` | どの playbook にも属さず、ほかの人やチャンネルでも使える技術・運用の事実 |
+| スレッド | Codex セッション | スレッドの経緯。別に保存しない |
+| 個人 | `data/memory/users/{user}/settings.md` | 本人が頼んだ返答の仕方 |
+
+- チャンネルごとの記憶は持ちません。playbook は作業手順書で、チャンネルの情報置き場には使いません。
+- 残すのは、次回も成り立ち、具体的で、次の判断を変える事実だけです。認証情報、秘密、一時的な依頼内容、推測したセンシティブな属性は残しません。
+- bot だけが記憶を読み、プロンプトに入れます。Codex は記憶のファイルを読み書きできません。
+- playbook の一覧には、playbook ファイルの更新より後のメモを「最新メモ」として新しい順に2KBまで添えます。メモが3件たまると、bot は同じセッションでもう1回実行して本文に取り込ませます。本文が変わったら、取り込んだメモは表示されなくなり、承認チャンネルに変更の記録を投稿します。
+- 個人設定は、スレッドのセッションを共有していても、毎回そのときの発言者の分だけを添えます。設定のない人には「設定なし」を添え、前の発言者の設定が残らないようにします。内容は Slack に投稿しません。
+- `data/` は `.gitignore` で除外し、コミットされないことをテストでも確かめています。
+
+## 会話の後に動く仕組み
+
+| 仕組み | 確認の間隔 | 決めごと |
+| --- | --- | --- |
+| フォローアップ | 30秒 | 時刻になったものを先に取り出して保存してから実行するので、落ちても2回は実行しない。人の発言なしに10回まで |
+| 定期実行 | 30秒 | 次の回を決めて保存してから実行する。止まっていた間の回は1回だけ実行する。毎回新しいスレッドと新しいセッション |
+| PR の見守り | 2分 | 始めた時点からの差分だけを見る。同じコミットの同じ失敗は1回だけ扱う。スレッドが作業中のあいだは確認しない。人の発言なしに PR ごとに10回まで |
+| 利用枠 | 30分 | `codex app-server` の `account/rateLimits/read` を読む。知らせた段階を保存して、再起動しても繰り返さない。毎時の報告は記録できなかった回には出さない |
+| `:done:` の監視 | 30分 | リアクションを読み、キーが残っているときだけ更新してから知らせるので、止めた監視が戻らない。10回まで |
+
+どれも実行の前に、依頼者とチャンネルがまだ許可されているかを確かめ、外れていれば実行しません。実行は、設定した依頼者からの依頼として扱います。スレッドでの停止は、そのスレッドのこれらもまとめて止めます。
+
+## Slack への投稿
+
+- Codex の Markdown を Block Kit の markdown ブロックとしてそのまま投稿します。通知とブロックを描画できない環境のために、記法を除いたテキストも添えます。
+- 8,000文字で行単位に分けます。コードブロックの途中で切れるときは、閉じてから次で開き直します。
+- Slack がブロックを拒んだとき（`invalid_blocks`、`msg_too_long`）は、テキストだけで1回投稿し直します。
+- 投稿の失敗は 5xx と 429 のときだけやり直します。投稿してから状態を保存するので、落ちたときは重複投稿になることがありますが、結果は失いません。
+- 読みやすさのため、プロンプトで書式を指定しています（結論を先頭に、全体1800字以内、表は3列以内、リンクは末尾）。
+
+## 終了
+
+SIGINT と SIGTERM で新しいイベントの受付を止め、実行中の作業の終わりを60秒まで待ちます。それでも終わらなければ Codex を止め、子プロセスが終わったのを確かめてから終了します。
+
+SIGHUP では受付を止めずにリロードします。新しいバイナリを `-check-config` で確かめてから、実行中の作業の終わりを待ち（新しい依頼と順番待ちは `deferred.json` に保存）、フォローアップ・定期実行・PR の見守りは待つ間止めます。終わったらロックを外して同じパスのバイナリを `exec` し、起動時に保存した依頼を届いた順に始めます。使い方は [setup.md](setup.md#9-運用) にあります。
