@@ -571,7 +571,39 @@ Codex が実行するコマンドは、明示的に禁止しない限りファ�
 - `.env`（起動ディレクトリと `EBIX_HOME`）と `EBIX_HOME/.codex`
 - `CODEX_HOME`（既定 `~/.codex`）の中身。認証情報・設定・全スレッドの履歴（`sessions`、`codex.sqlite` など）を含むため、コマンドから使う `skills`、`plugins`、`packages`（Codex 本体などの実行ファイル）、`tmp`、`.tmp`、`shell_snapshots` 以外をターンごとに列挙して deny します
 - `data/workspace/...` と `data/checkouts/...` のうち、そのスレッド自身のもの以外すべて（ターン開始直前に列挙します。ターン中に作られた別スレッドのディレクトリは対象外です）
-- `EBIX_DENIED_READ_PATHS` に列挙したパス（`~/.aws` など。git push に使う認証情報は作業ターンで必要なので含めないでください）
+- `EBIX_DENIED_READ_PATHS` に列挙したパス
+- 既知の認証情報の置き場（既定）: `~/.ssh`、`~/.aws`、`~/.azure`、`~/.config/gcloud`、`~/.config/gh`、`~/.docker/config.json`（Docker Desktop のソケット `~/.docker/run/docker.sock` は使えます）、`~/.kube`、`~/.gnupg`、`~/.netrc`、`~/.git-credentials`、`~/.config/git/credentials`、`~/.npmrc`、`~/.pypirc`、`~/.config/op`、`~/.vault-token`、`~/.terraform.d/credentials.tfrc.json`、`~/.cargo/credentials.toml`、`~/.gem/credentials`、`~/.pgpass`、`~/.my.cnf`、`~/.s3cfg`、`~/.boto`、`~/.oci`、`~/.config/rclone`、`~/.claude`、`~/.config/github-copilot`
+
+作業ターンは sandbox の中から git push（と署名付きコミット）するため、起動時に `EBIX_WRITABLE_ROOTS` のうち Git リポジトリの最上位ディレクトリごとに、push と署名に必要な認証情報だけを上の既定リストから外します。外したパスは、リポジトリと理由を起動ログに1行ずつ出します（URL は出しません）。
+
+スレッドごとの checkout は元のリポジトリの `.git/config` を引き継がず（`origin` の URL だけをコピーします）、`includeIf "gitdir:"` も checkout のパスで判定されます。そのため検出は、元のリポジトリではなく `data/checkouts` 配下に作る使い捨てのリポジトリ（`origin` は元のリポジトリの `remote.origin.url`）で git に問い合わせて行い、グローバル・システムの git 設定だけを反映します。リポジトリ内のローカル設定（`.git/config`）にだけ書いた credential helper や `pushInsteadOf` は検出されません。
+
+- push 先は `git remote get-url --push origin`（`pushInsteadOf` / `pushurl` 反映後）で決めます。SSH（`git@host:...`、`ssh://...`）なら `~/.ssh`
+- HTTP(S) の場合、`credential.helper` と URL ごとの `credential.<url>.helper` をすべて（push 先の URL に一致するかどうかによらず、空の値によるリセットも無視して）集め、認識できた helper ごとに外します。URL の一致判定を再実装せず、外しすぎることはあっても push を壊さないためです
+  - `store`: `~/.git-credentials` と `~/.config/git/credentials`（`--file <path>` があればそのファイル）
+  - `gh`（`!gh auth git-credential` など）: `~/.config/gh`
+  - helper が1つもない: `~/.netrc`
+  - それ以外（`osxkeychain`、`manager`、`cache` など）: 外しません。origin があるのに外すパスがない場合は、該当 helper 名と、認証情報のパスは不要という旨を起動ログに1行出します
+- `commit.gpgsign=true` の場合: `gpg.format=ssh` なら `~/.ssh`、未設定または `openpgp` なら `~/.gnupg`、`x509` なら外しません
+- origin がないリポジトリは、署名の設定だけを見ます
+
+`git remote get-url` が「remote なし」以外の理由で失敗した場合は、起動ログに出して検出をスキップします（起動は止めません）。
+
+`EBIX_WRITABLE_ROOTS` にリポジトリの親ディレクトリ（最上位ではないディレクトリ）を指定した場合、その配下のリポジトリは検出されません。そこから SSH で push するターンがあるなら `EBIX_ALLOWED_READ_PATHS=~/.ssh` を設定してください。
+
+作業ターンで `bq` など別の CLI の認証情報が必要な場合は、`EBIX_ALLOWED_READ_PATHS` にカンマ区切りで書くと既定リストから外せます（例: `EBIX_ALLOWED_READ_PATHS=~/.config/gcloud`）。外せるのは上の既定の認証情報リストだけで、それ以外のエントリは起動エラー（エントリ名と有効なエントリ一覧を表示）になります。`data/memory`、`.env`、`CODEX_HOME`、`EBIX_DENIED_READ_PATHS` のパスは外せません。
+
+既定のリストで動かなくなりうるツールと対処:
+
+- `kubectl` など Kubernetes 系: `EBIX_ALLOWED_READ_PATHS=~/.kube`
+- プライベート npm registry（`~/.npmrc` に認証トークン）: `EBIX_ALLOWED_READ_PATHS=~/.npmrc`
+- `gcloud` / `bq` CLI: `EBIX_ALLOWED_READ_PATHS=~/.config/gcloud`
+
+残るリスク:
+
+- 既定リストのパスはホームディレクトリ直下の固定パスです。`XDG_CONFIG_HOME`、`GH_CONFIG_DIR`、`CLOUDSDK_CONFIG`、`GNUPGHOME` などで場所を移した認証情報の置き場は対象外なので、`EBIX_DENIED_READ_PATHS` に追加してください。
+- 作業ターンから Docker ソケット（Docker Desktop の `~/.docker/run/docker.sock`、`/var/run/docker.sock`）に届く場合、`docker run -v ~/.aws:/x ...` のように任意のホストパスをマウントでき、deny を迂回できます。ターンで Docker が不要なら、デーモンに届かない状態にしてください。
+- SSH の例外は秘密鍵を含む `~/.ssh` 全体を、`gh` の例外は `~/.config/gh/hosts.yml` のトークンを、ネットワークに出られる作業ターンに見せます。根本的な解決は push を bot 側で行うことで、これは今後の課題です。
 
 `EBIX_WRITABLE_ROOTS` がこれら、`CODEX_HOME`、またはbotが管理する `data/workspace`・`data/checkouts`・`data/playbooks` と重なる場合は起動を拒否します（playbookの書き込み制限やスレッドの分離を迂回できてしまうため）。また、`SLACK_BOT_TOKEN` と `SLACK_APP_TOKEN` はCodexのプロセス環境から除きます。
 

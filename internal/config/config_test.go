@@ -706,6 +706,7 @@ func clearConfigEnv(t *testing.T) {
 		"CODEX_MAX_PARALLEL_PLAN",
 		"EBIX_SHARED_WRITE_CHANNEL_IDS",
 		"EBIX_DENIED_READ_PATHS",
+		"EBIX_ALLOWED_READ_PATHS",
 		"CODEX_HOME",
 	} {
 		value, exists := os.LookupEnv(key)
