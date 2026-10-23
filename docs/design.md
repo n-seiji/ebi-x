@@ -92,7 +92,9 @@ received ──→ working ──→ done
 | `followups.json` | 予定中のフォローアップ |
 | `schedules.json` | 定期実行と次回の時刻 |
 | `pullwatches.json` | 見守り中の PR と、最後に見た状態 |
-| `usage.json` | 利用枠の記録と、知らせた段階 |
+| `usage.json` | 利用枠の記録、直近12時間の確認結果、知らせた段階 |
+| `donewatches.json` | `:done:` の監視と、次に知らせる時刻 |
+| `deferred.json` | リロードの間に届き、再起動後に始める依頼 |
 | `ebi-x.lock` | 多重起動を防ぐロック |
 
 ## 作業場所の隔離
@@ -120,8 +122,27 @@ Codex のコマンドは、禁止しなければファイルシステム全体�
 - `CODEX_HOME` の中身（認証情報・設定・全スレッドの履歴を含むため）。コマンドの実行に要る `skills` `plugins` `packages` `tmp` `.tmp` `shell_snapshots` だけを除き、実行ごとに列挙して禁止します
 - 自分以外のスレッドの `data/workspace` と `data/checkouts`（実行の直前に列挙します）
 - `EBIX_DENIED_READ_PATHS`
+- 既知の認証情報の置き場（既定）：`~/.ssh` `~/.aws` `~/.azure` `~/.config/gcloud` `~/.config/gh` `~/.docker/config.json` `~/.kube` `~/.gnupg` `~/.netrc` `~/.git-credentials` `~/.config/git/credentials` `~/.npmrc` `~/.pypirc` `~/.config/op` `~/.vault-token` `~/.terraform.d/credentials.tfrc.json` `~/.cargo/credentials.toml` `~/.gem/credentials` `~/.pgpass` `~/.my.cnf` `~/.s3cfg` `~/.boto` `~/.oci` `~/.config/rclone` `~/.claude` `~/.config/github-copilot`。push と署名に要るものと `EBIX_ALLOWED_READ_PATHS` のものは外します（[setup.md](setup.md#4-作業対象のリポジトリ)）。検出は `data/checkouts` に作る使い捨てのリポジトリで、スレッドのクローンと同じ git 設定と、Codex と同じ環境変数で行います
 
-Codex は `--ignore-user-config` と専用の permission profile で起動し、MCP の設定は `EBIX_HOME/.codex/config.toml` から渡します。`SLACK_BOT_TOKEN` と `SLACK_APP_TOKEN` はプロセス環境から除きます。禁止の一覧は1つの引数で渡すので、長すぎて切り詰めるくらいなら実行しません。`EBIX_WRITABLE_ROOTS` が守るパスや bot の管理するディレクトリと重なる場合は、シンボリックリンクを解決したうえで起動を拒否します。
+Codex は `--ignore-user-config` と専用の permission profile で起動し、MCP の設定は `EBIX_HOME/.codex/config.toml` から渡します。
+
+Codex のプロセス環境は許可リストです。`.env` や運用者のシェルのそれ以外の変数（`DATABASE_URL`・`AWS_*` など）は渡さないので、プロンプトインジェクションされたターンが `env` で読み出せません。
+
+- 基本：`HOME` `PATH` `USER` `LOGNAME` `SHELL` `LANG` `TZ` `TERM` `TMPDIR` `CODEX_HOME`、プロキシ（`HTTP_PROXY` `HTTPS_PROXY` `NO_PROXY` `ALL_PROXY` と小文字版）、`SSL_CERT_FILE` `SSL_CERT_DIR`
+- Codex の認証：`OPENAI_API_KEY` `CODEX_API_KEY`
+- エンドポイントと証明書：`OPENAI_BASE_URL` `CODEX_CA_CERTIFICATE` `NODE_EXTRA_CA_CERTS` `REQUESTS_CA_BUNDLE` `CURL_CA_BUNDLE` `GIT_SSL_CAINFO`
+- git：`GIT_SSH_COMMAND` `GIT_CONFIG_GLOBAL` `GIT_CONFIG_SYSTEM` `GIT_CONFIG_NOSYSTEM` `GNUPGHOME`。`GIT_CONFIG_COUNT` `GIT_CONFIG_KEY_*` `GIT_CONFIG_VALUE_*` は `http.extraHeader` などで秘密を運べるので渡しません
+- ツールチェーン：`GOPATH` `GOPRIVATE` `GOPROXY` `GONOSUMDB` `GONOPROXY` `GOFLAGS` `CARGO_HOME` `RUSTUP_HOME` `JAVA_HOME` `PYENV_ROOT` `NVM_DIR` `VOLTA_HOME` `PNPM_HOME`
+- その他：`GH_HOST` `GH_CONFIG_DIR` `DBUS_SESSION_BUS_ADDRESS`
+- 接頭辞 `LC_*` `XDG_*` `MISE_*`。ただし名前に `TOKEN` `SECRET` `PASSWORD` `KEY` を含むものは除きます
+- `SSH_AUTH_SOCK` は、`~/.ssh` を読めるようにしたときか `EBIX_CODEX_ENV` に書いたときだけ渡します。`~/.ssh` を読めないのにエージェントの鍵を使えてしまわないためです
+- `EBIX_CODEX_ENV` に書いた名前。bot の認証情報（`SLACK_BOT_TOKEN` `SLACK_APP_TOKEN` `EBIX_GITHUB_TOKEN`）は書けません
+
+Codex がコマンドに渡す環境（shell environment policy）も固定し、ローカル設定の `[shell_environment_policy]` は無視します。名前に `KEY` `SECRET` `TOKEN` を含む変数と `OPENAI_API_KEY` `CODEX_API_KEY` は、Codex 本体には届いてもコマンドには渡りません。
+
+残るリスク：既定の置き場はホーム直下の固定パスなので、`XDG_CONFIG_HOME` `GH_CONFIG_DIR` `CLOUDSDK_CONFIG` `GNUPGHOME` などで移したものは `EBIX_DENIED_READ_PATHS` に足します。作業から Docker ソケットに届くと任意のパスをマウントして禁止を迂回できます。push に要る `~/.ssh` や `~/.config/gh` は、ネットワークに出られる作業から見えます（根本的には push を bot が行うのが今後の課題です）。
+
+禁止の一覧は1つの引数で渡すので、長すぎて切り詰めるくらいなら実行しません。`EBIX_WRITABLE_ROOTS` が守るパスや bot の管理するディレクトリと重なる場合は、シンボリックリンクを解決したうえで起動を拒否します。
 
 操作ルール（何の前に確認するか）はプロンプトでの指示で、ここでの禁止とは別です。
 
@@ -175,7 +196,8 @@ Codex は最終応答に次の見出しを書いて bot に処理を頼みます
 | フォローアップ | 30秒 | 時刻になったものを先に取り出して保存してから実行するので、落ちても2回は実行しない。人の発言なしに10回まで |
 | 定期実行 | 30秒 | 次の回を決めて保存してから実行する。止まっていた間の回は1回だけ実行する。毎回新しいスレッドと新しいセッション |
 | PR の見守り | 2分 | 始めた時点からの差分だけを見る。同じコミットの同じ失敗は1回だけ扱う。スレッドが作業中のあいだは確認しない。人の発言なしに PR ごとに10回まで |
-| 利用枠 | 30分 | `codex app-server` の `account/rateLimits/read` を読む。知らせた段階を保存して、再起動しても繰り返さない |
+| 利用枠 | 30分 | `codex app-server` の `account/rateLimits/read` を読む。知らせた段階を保存して、再起動しても繰り返さない。毎時の報告は記録できなかった回には出さない |
+| `:done:` の監視 | 30分 | リアクションを読み、キーが残っているときだけ更新してから知らせるので、止めた監視が戻らない。10回まで |
 
 どれも実行の前に、依頼者とチャンネルがまだ許可されているかを確かめ、外れていれば実行しません。実行は、設定した依頼者からの依頼として扱います。スレッドでの停止は、そのスレッドのこれらもまとめて止めます。
 
@@ -190,3 +212,5 @@ Codex は最終応答に次の見出しを書いて bot に処理を頼みます
 ## 終了
 
 SIGINT と SIGTERM で新しいイベントの受付を止め、実行中の作業の終わりを60秒まで待ちます。それでも終わらなければ Codex を止め、子プロセスが終わったのを確かめてから終了します。
+
+SIGHUP では受付を止めずにリロードします。新しいバイナリを `-check-config` で確かめてから、実行中の作業の終わりを待ち（新しい依頼と順番待ちは `deferred.json` に保存）、フォローアップ・定期実行・PR の見守りは待つ間止めます。終わったらロックを外して同じパスのバイナリを `exec` し、起動時に保存した依頼を届いた順に始めます。使い方は [setup.md](setup.md#9-運用) にあります。

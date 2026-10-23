@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/n-seiji/ebi-x/internal/codex"
+	"github.com/n-seiji/ebi-x/internal/state"
 )
 
 type fakeUsage struct {
@@ -246,5 +247,96 @@ func TestWorkTurnUsageLimitExplainsFailure(t *testing.T) {
 	got := strings.Join(api.postTexts, "\n")
 	if !strings.Contains(got, "Codex の利用上限に達したため") || strings.Contains(got, workFailureMessage) {
 		t.Fatalf("posts = %q", api.postTexts)
+	}
+}
+
+func TestReportUsagePostsHourlyWithChart(t *testing.T) {
+	api := &fakeSlack{}
+	store := &fakeStore{}
+	bot := newUsageBot(t, store, api, &fakeUsage{})
+	ctx := context.Background()
+	now := time.Date(2026, 10, 20, 1, 5, 0, 0, time.Local)
+	bot.now = func() time.Time { return now }
+
+	check := func(primary, secondary float64) {
+		bot.recordUsage(ctx, usageLimits(primary, secondary))
+		bot.reportUsage(ctx)
+	}
+	check(20, 10)
+	if len(api.posts) != 1 {
+		t.Fatalf("posts = %d, want the first report", len(api.posts))
+	}
+	first := api.posts[0]
+	if first.channel != "CAPPROVAL" || first.threadTS != "" {
+		t.Fatalf("posted to %q/%q", first.channel, first.threadTS)
+	}
+	for _, want := range []string{"5時間: 残り 80.0%", "1週間: 残り 90.0%", "にリセット", "```時刻", "01:00   80.0% ████████     90.0% █████████```", "00:00      -                -"} {
+		if !strings.Contains(first.text, want) {
+			t.Fatalf("report %q does not contain %q", first.text, want)
+		}
+	}
+
+	// Later checks in the same hour are recorded but not reported.
+	now = now.Add(usageCheckInterval)
+	check(30, 11)
+	if len(api.posts) != 1 {
+		t.Fatalf("posts = %d, want no report within the hour", len(api.posts))
+	}
+
+	// The next hour reports the change and the pace; the chart shows each
+	// hour's last check.
+	now = time.Date(2026, 10, 20, 2, 5, 0, 0, time.Local)
+	check(60, 12.5)
+	if len(api.posts) != 2 {
+		t.Fatalf("posts = %d, want the next hour's report", len(api.posts))
+	}
+	for _, want := range []string{"5時間: 残り 40.0%（前回から -40.0pt・このペースだと", "1週間: 残り 87.5%（前回から -2.5pt・", "01:00   70.0% ███████      89.0% █████████", "02:00   40.0% ████         87.5% █████████```"} {
+		if !strings.Contains(api.posts[1].text, want) {
+			t.Fatalf("report %q does not contain %q", api.posts[1].text, want)
+		}
+	}
+	if got := len(store.usage.History); got != 3 {
+		t.Fatalf("history = %d checks, want 3", got)
+	}
+
+	// An hour without any change is skipped.
+	now = now.Add(time.Hour)
+	check(60, 12.5)
+	if len(api.posts) != 2 {
+		t.Fatalf("posts = %d, want the unchanged hour skipped", len(api.posts))
+	}
+}
+
+func TestReportUsageSkipsUnrecordedCheck(t *testing.T) {
+	api := &fakeSlack{}
+	store := &fakeStore{}
+	bot := newUsageBot(t, store, api, &fakeUsage{})
+	at := time.Date(2026, 10, 20, 1, 5, 0, 0, time.Local)
+	store.usage.History = []state.UsageSample{{At: at, Remaining: map[string]float64{"primary": 80}}}
+	bot.now = func() time.Time { return at.Add(time.Hour) }
+	bot.reportUsage(context.Background())
+	if len(api.posts) != 0 {
+		t.Fatalf("posted %q, want an old check not reported", api.posts[0].text)
+	}
+}
+
+func TestUsageHourlyReportNamesReset(t *testing.T) {
+	at := time.Date(2026, 10, 20, 1, 0, 0, 0, time.UTC)
+	previous := state.UsageSample{At: at, Remaining: map[string]float64{"primary": 5}, ResetsAt: map[string]int64{"primary": 100}}
+	latest := state.UsageSample{At: at.Add(time.Hour), Remaining: map[string]float64{"primary": 100}, ResetsAt: map[string]int64{"primary": 200}}
+	text := usageHourlyReport(&previous, latest)
+	if !strings.Contains(text, "5時間: 残り 100.0%（"+usageHourlyWasReset) {
+		t.Fatalf("report %q does not name the reset", text)
+	}
+}
+
+func TestAppendUsageSampleDropsOldChecks(t *testing.T) {
+	at := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	var history []state.UsageSample
+	for i := range 200 {
+		history = appendUsageSample(history, state.UsageSample{At: at.Add(time.Duration(i) * usageCheckInterval)})
+	}
+	if first := history[0].At; history[len(history)-1].At.Sub(first) > usageHistoryKeep {
+		t.Fatalf("history spans from %v, longer than %v", first, usageHistoryKeep)
 	}
 }

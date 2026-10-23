@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"slices"
+	"time"
 )
 
 const usageFilename = "usage.json"
@@ -18,6 +20,18 @@ type Usage struct {
 	Day string `json:"day,omitempty"`
 	// Windows summarizes each window's checks on Day.
 	Windows map[string]UsageDay `json:"windows,omitempty"`
+	// History holds the recent checks, oldest first, for the hourly chart.
+	History []UsageSample `json:"history,omitempty"`
+	// Reported is the last hourly report, the base of its changes.
+	Reported *UsageSample `json:"reported,omitempty"`
+}
+
+// UsageSample is one check: each window's remaining percent and reset time
+// (Unix seconds, 0 when unknown).
+type UsageSample struct {
+	At        time.Time          `json:"at"`
+	Remaining map[string]float64 `json:"remaining"`
+	ResetsAt  map[string]int64   `json:"resetsAt,omitempty"`
 }
 
 // UsageDay summarizes one usage window's checks during a day, in remaining
@@ -53,5 +67,19 @@ func (s *Store) SetUsage(usage Usage) error {
 func cloneUsage(usage Usage) Usage {
 	usage.Alerts = maps.Clone(usage.Alerts)
 	usage.Windows = maps.Clone(usage.Windows)
+	usage.History = slices.Clone(usage.History)
+	for i, sample := range usage.History {
+		usage.History[i] = cloneUsageSample(sample)
+	}
+	if usage.Reported != nil {
+		reported := cloneUsageSample(*usage.Reported)
+		usage.Reported = &reported
+	}
 	return usage
+}
+
+func cloneUsageSample(sample UsageSample) UsageSample {
+	sample.Remaining = maps.Clone(sample.Remaining)
+	sample.ResetsAt = maps.Clone(sample.ResetsAt)
+	return sample
 }

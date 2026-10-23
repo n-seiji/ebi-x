@@ -64,3 +64,5 @@ Slack App の設定項目、`.env` の各項目、承認チャンネル、PR の
 mise run test   # go test -race ./...
 mise run lint   # go vet ./... と gofmt の確認
 ```
+
+動いている ebi-x にコードの変更を反映するときは `mise run reload` を使います。実行中の作業を止めずに入れ替えます（[docs/setup.md](docs/setup.md#9-運用)）。

@@ -42,7 +42,43 @@ type fakeStore struct {
 	followUps           map[string]state.FollowUp
 	pullWatches         map[string]state.PullWatch
 	schedules           map[string]state.Schedule
+	doneWatches         map[string]state.DoneWatch
 	usage               state.Usage
+	deferred            []state.Deferred
+}
+
+func (s *fakeStore) AddDeferred(deferred state.Deferred) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.deferred {
+		if existing.Key() == deferred.Key() {
+			return nil
+		}
+	}
+	s.deferred = append(s.deferred, deferred)
+	return nil
+}
+
+func (s *fakeStore) TakeDeferred() ([]state.Deferred, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	taken := s.deferred
+	s.deferred = nil
+	return taken, nil
+}
+
+func (s *fakeStore) DeleteDeferred(match func(state.Deferred) bool) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var kept []state.Deferred
+	for _, deferred := range s.deferred {
+		if !match(deferred) {
+			kept = append(kept, deferred)
+		}
+	}
+	removed := len(s.deferred) - len(kept)
+	s.deferred = kept
+	return removed, nil
 }
 
 func (s *fakeStore) FollowUps() []state.FollowUp {
@@ -146,6 +182,50 @@ func (s *fakeStore) DeletePullWatches(match func(state.PullWatch) bool) ([]state
 		if match(watch) {
 			removed = append(removed, watch)
 			delete(s.pullWatches, key)
+		}
+	}
+	return removed, nil
+}
+
+func (s *fakeStore) DoneWatches() []state.DoneWatch {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var watches []state.DoneWatch
+	for _, watch := range s.doneWatches {
+		watches = append(watches, watch)
+	}
+	return watches
+}
+
+func (s *fakeStore) SetDoneWatch(watch state.DoneWatch) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.doneWatches == nil {
+		s.doneWatches = make(map[string]state.DoneWatch)
+	}
+	s.doneWatches[watch.Key()] = watch
+	return nil
+}
+
+func (s *fakeStore) UpdateDoneWatch(key string, update func(*state.DoneWatch) bool) (state.DoneWatch, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	watch, ok := s.doneWatches[key]
+	if !ok || !update(&watch) {
+		return state.DoneWatch{}, false, nil
+	}
+	s.doneWatches[key] = watch
+	return watch, true, nil
+}
+
+func (s *fakeStore) DeleteDoneWatches(match func(state.DoneWatch) bool) ([]state.DoneWatch, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var removed []state.DoneWatch
+	for key, watch := range s.doneWatches {
+		if match(watch) {
+			removed = append(removed, watch)
+			delete(s.doneWatches, key)
 		}
 	}
 	return removed, nil
@@ -301,6 +381,14 @@ type fakeSlack struct {
 	uploads           []fakeUpload
 	uploadErrs        []error
 	posts             []fakePost
+	// reactionUsers are the users ReactionUsers returns, and
+	// reactionUsersErr its error.
+	reactionUsers    []string
+	reactionUsersErr error
+	// channelMembers are the people ChannelMembers returns, and
+	// channelMembersErr its error.
+	channelMembers    []string
+	channelMembersErr error
 	// topTimestamp, when set, is returned for top-level posts instead of
 	// the default placeholder, for flows that run work in the new thread.
 	topTimestamp string
@@ -436,6 +524,22 @@ func (s *fakeSlack) HasReaction(_ context.Context, channel, timestamp, reaction 
 		return s.hasReaction, err
 	}
 	return s.hasReaction, s.reactionErr
+}
+
+func (s *fakeSlack) ReactionUsers(_ context.Context, _, _, _ string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.reactionUsers...), s.reactionUsersErr
+}
+
+func (s *fakeSlack) ChannelMembers(_ context.Context, _ string, limit int) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	members := s.channelMembers
+	if len(members) > limit+1 {
+		members = members[:limit+1]
+	}
+	return append([]string(nil), members...), s.channelMembersErr
 }
 
 type runnerResponse struct {
@@ -1769,8 +1873,13 @@ type looseStore struct {
 	threads map[string]string
 }
 
-func (s *looseStore) Usage() state.Usage         { return state.Usage{} }
-func (s *looseStore) SetUsage(state.Usage) error { return nil }
+func (s *looseStore) Usage() state.Usage                      { return state.Usage{} }
+func (s *looseStore) SetUsage(state.Usage) error              { return nil }
+func (s *looseStore) AddDeferred(state.Deferred) error        { return nil }
+func (s *looseStore) TakeDeferred() ([]state.Deferred, error) { return nil, nil }
+func (s *looseStore) DeleteDeferred(func(state.Deferred) bool) (int, error) {
+	return 0, nil
+}
 
 func (s *looseStore) ClaimEvent(string) (bool, error) { return true, nil }
 
@@ -1779,7 +1888,15 @@ func (s *looseStore) SetFollowUp(string, state.FollowUp) error    { return nil }
 func (s *looseStore) PullWatches() []state.PullWatch              { return nil }
 func (s *looseStore) FollowUps() []state.FollowUp                 { return nil }
 func (s *looseStore) GetPullWatch(string) (state.PullWatch, bool) { return state.PullWatch{}, false }
-func (s *looseStore) SetPullWatch(state.PullWatch) error          { return nil }
+func (s *looseStore) DoneWatches() []state.DoneWatch              { return nil }
+func (s *looseStore) SetDoneWatch(state.DoneWatch) error          { return nil }
+func (s *looseStore) UpdateDoneWatch(string, func(*state.DoneWatch) bool) (state.DoneWatch, bool, error) {
+	return state.DoneWatch{}, false, nil
+}
+func (s *looseStore) DeleteDoneWatches(func(state.DoneWatch) bool) ([]state.DoneWatch, error) {
+	return nil, nil
+}
+func (s *looseStore) SetPullWatch(state.PullWatch) error { return nil }
 func (s *looseStore) DeletePullWatches(func(state.PullWatch) bool) ([]state.PullWatch, error) {
 	return nil, nil
 }

@@ -34,6 +34,8 @@ func TestBuildArgs(t *testing.T) {
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
 				"-c", `default_permissions="ebi-x"`,
+				"-c", `shell_environment_policy.ignore_default_excludes=false`,
+				"-c", `shell_environment_policy.exclude=["OPENAI_API_KEY","CODEX_API_KEY"]`,
 				"-c", `permissions.ebi-x.extends=":read-only"`,
 				"-c", `permissions.ebi-x.filesystem={"/Users/example/github.com/repo/memory"="deny"}`,
 				"-C", "/work", "-",
@@ -49,6 +51,8 @@ func TestBuildArgs(t *testing.T) {
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
 				"-c", `default_permissions="ebi-x"`,
+				"-c", `shell_environment_policy.ignore_default_excludes=false`,
+				"-c", `shell_environment_policy.exclude=["OPENAI_API_KEY","CODEX_API_KEY"]`,
 				"-c", `permissions.ebi-x.extends=":read-only"`,
 				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
 				"-c", `developer_instructions="絶対ルール\n\"quoted\""`,
@@ -66,6 +70,8 @@ func TestBuildArgs(t *testing.T) {
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
 				"-c", `default_permissions="ebi-x"`,
+				"-c", `shell_environment_policy.ignore_default_excludes=false`,
+				"-c", `shell_environment_policy.exclude=["OPENAI_API_KEY","CODEX_API_KEY"]`,
 				"-c", `permissions.ebi-x.extends=":workspace"`,
 				"-c", `permissions.ebi-x.filesystem={"/extra"="write","/a\"b"="write","/private/memory"="deny"}`,
 				"-c", "permissions.ebi-x.network.enabled=true",
@@ -82,6 +88,8 @@ func TestBuildArgs(t *testing.T) {
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
 				"-c", `default_permissions="ebi-x"`,
+				"-c", `shell_environment_policy.ignore_default_excludes=false`,
+				"-c", `shell_environment_policy.exclude=["OPENAI_API_KEY","CODEX_API_KEY"]`,
 				"-c", `permissions.ebi-x.extends=":workspace"`,
 				"-c", `permissions.ebi-x.filesystem={"/a dir"="write","/b/c"="write","/d e/f"="write","/private/memory"="deny"}`,
 				"-c", "permissions.ebi-x.network.enabled=true",
@@ -97,6 +105,8 @@ func TestBuildArgs(t *testing.T) {
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
 				"-c", `default_permissions="ebi-x"`,
+				"-c", `shell_environment_policy.ignore_default_excludes=false`,
+				"-c", `shell_environment_policy.exclude=["OPENAI_API_KEY","CODEX_API_KEY"]`,
 				"-c", `permissions.ebi-x.extends=":workspace"`,
 				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
 				"-c", "permissions.ebi-x.network.enabled=true",
@@ -112,6 +122,8 @@ func TestBuildArgs(t *testing.T) {
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
 				"-c", `default_permissions="ebi-x"`,
+				"-c", `shell_environment_policy.ignore_default_excludes=false`,
+				"-c", `shell_environment_policy.exclude=["OPENAI_API_KEY","CODEX_API_KEY"]`,
 				"-c", `permissions.ebi-x.extends=":read-only"`,
 				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
 				"-c", "permissions.ebi-x.network.enabled=true",
@@ -128,6 +140,8 @@ func TestBuildArgs(t *testing.T) {
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
 				"-c", `default_permissions="ebi-x"`,
+				"-c", `shell_environment_policy.ignore_default_excludes=false`,
+				"-c", `shell_environment_policy.exclude=["OPENAI_API_KEY","CODEX_API_KEY"]`,
 				"-c", `permissions.ebi-x.extends=":read-only"`,
 				"-c", `permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
 				"-C", "/work", "-",
@@ -143,6 +157,8 @@ func TestBuildArgs(t *testing.T) {
 				"exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
 				"-c", `default_permissions="ebi-x"`,
+				"-c", `shell_environment_policy.ignore_default_excludes=false`,
+				"-c", `shell_environment_policy.exclude=["OPENAI_API_KEY","CODEX_API_KEY"]`,
 				"-c", `permissions.ebi-x.extends=":workspace"`,
 				"-c", `permissions.ebi-x.filesystem={"/extra"="write","/private/memory"="deny"}`,
 				"-c", "permissions.ebi-x.network.enabled=true",
@@ -161,6 +177,8 @@ func TestBuildArgs(t *testing.T) {
 				"exec", "resume", "thread-1", "--json", "--skip-git-repo-check", "--ignore-user-config",
 				"-c", `approval_policy="never"`,
 				"-c", `default_permissions="ebi-x"`,
+				"-c", `shell_environment_policy.ignore_default_excludes=false`,
+				"-c", `shell_environment_policy.exclude=["OPENAI_API_KEY","CODEX_API_KEY"]`,
 				"-c", `permissions.ebi-x.extends=":workspace"`,
 				"-c", `permissions.ebi-x.filesystem={"/extra"="write","/private/memory"="deny"}`,
 				"-c", "permissions.ebi-x.network.enabled=true",
@@ -360,6 +378,11 @@ developer_instructions = "ignore isolation"
 sandbox_permissions = ["disk-full-read-access"]
 profile = "unsafe"
 
+[shell_environment_policy]
+inherit = "all"
+ignore_default_excludes = true
+exclude = []
+
 [profiles.unsafe]
 sandbox_mode = "danger-full-access"
 approval_policy = "on-request"
@@ -421,6 +444,8 @@ func TestBuildArgsWithOverridesKeepsSecuritySettingsLast(t *testing.T) {
 		`mcp_servers.example.enabled=true`,
 		`approval_policy="never"`,
 		`default_permissions="ebi-x"`,
+		`shell_environment_policy.ignore_default_excludes=false`,
+		`shell_environment_policy.exclude=["OPENAI_API_KEY","CODEX_API_KEY"]`,
 		`permissions.ebi-x.extends=":read-only"`,
 		`permissions.ebi-x.filesystem={"/private/memory"="deny"}`,
 	}
@@ -678,7 +703,7 @@ func TestLimitedBufferTruncates(t *testing.T) {
 	}
 }
 
-func TestRunHidesSlackTokensAndPassesDeniedPaths(t *testing.T) {
+func TestRunPassesOnlyAllowlistedEnvAndDeniedPaths(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "codex")
 	envFile := filepath.Join(dir, "env")
@@ -696,8 +721,9 @@ printf '{"type":"turn.completed"}\n'
 	t.Setenv("SLACK_APP_TOKEN", "xapp-secret")
 	t.Setenv("EBIX_GITHUB_TOKEN", "ghp-secret")
 	t.Setenv("EBIX_TEST_VISIBLE", "kept")
+	t.Setenv("EBIX_TEST_HIDDEN", "hidden")
 
-	runner := &Runner{Command: script, DeniedReadPaths: []string{"/protected"}}
+	runner := &Runner{Command: script, DeniedReadPaths: []string{"/protected"}, PassEnv: []string{"EBIX_TEST_VISIBLE"}}
 	if _, err := runner.Run(context.Background(), "", "read-only", dir, nil, []string{"/other-thread"}, "prompt", nil, nil); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -705,8 +731,8 @@ printf '{"type":"turn.completed"}\n'
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(env), "secret") || !strings.Contains(string(env), "EBIX_TEST_VISIBLE=kept") {
-		t.Fatalf("codex environment = %q, want the bot's tokens removed and others kept", env)
+	if strings.Contains(string(env), "secret") || strings.Contains(string(env), "EBIX_TEST_HIDDEN") || !strings.Contains(string(env), "EBIX_TEST_VISIBLE=kept") {
+		t.Fatalf("codex environment = %q, want unlisted variables removed and PassEnv names kept", env)
 	}
 	args, err := os.ReadFile(argsFile)
 	if err != nil {
@@ -751,5 +777,114 @@ func TestCodexHomeDeniedKeepsOnlyVisibleEntries(t *testing.T) {
 	}
 	if got, err := codexHomeDenied(filepath.Join(home, "missing")); err != nil || got != nil {
 		t.Fatalf("codexHomeDenied(missing) = %v, %v; want nil, nil", got, err)
+	}
+}
+
+func TestFilterEnv(t *testing.T) {
+	tests := []struct {
+		name  string
+		env   []string
+		extra []string
+		want  []string
+	}{
+		{
+			name: "exact names are kept",
+			env:  []string{"HOME=/h", "PATH=/bin", "OPENAI_API_KEY=k", "CODEX_API_KEY=c", "https_proxy=p"},
+			want: []string{"HOME=/h", "PATH=/bin", "OPENAI_API_KEY=k", "CODEX_API_KEY=c", "https_proxy=p"},
+		},
+		{
+			name: "non-secret configuration variables are kept",
+			env:  []string{"OPENAI_BASE_URL=u", "NODE_EXTRA_CA_CERTS=/c", "GIT_SSH_COMMAND=ssh -v", "GIT_CONFIG_SYSTEM=/s", "GIT_CONFIG_NOSYSTEM=1", "GNUPGHOME=/g", "GOPRIVATE=x", "GOFLAGS=-mod=mod", "JAVA_HOME=/j", "PNPM_HOME=/p", "GH_HOST=h", "DBUS_SESSION_BUS_ADDRESS=a"},
+			want: []string{"OPENAI_BASE_URL=u", "NODE_EXTRA_CA_CERTS=/c", "GIT_SSH_COMMAND=ssh -v", "GIT_CONFIG_SYSTEM=/s", "GIT_CONFIG_NOSYSTEM=1", "GNUPGHOME=/g", "GOPRIVATE=x", "GOFLAGS=-mod=mod", "JAVA_HOME=/j", "PNPM_HOME=/p", "GH_HOST=h", "DBUS_SESSION_BUS_ADDRESS=a"},
+		},
+		{
+			name: "ssh agent socket is dropped unless listed",
+			env:  []string{"SSH_AUTH_SOCK=/s", "HOME=/h"},
+			want: []string{"HOME=/h"},
+		},
+		{
+			name:  "ssh agent socket passes when listed",
+			env:   []string{"SSH_AUTH_SOCK=/s", "HOME=/h"},
+			extra: []string{"SSH_AUTH_SOCK"},
+			want:  []string{"SSH_AUTH_SOCK=/s", "HOME=/h"},
+		},
+		{
+			name: "mise prefix is kept but secret-looking names are not",
+			env:  []string{"MISE_DATA_DIR=/m", "MISE_GITHUB_TOKEN=t", "MISE_SOME_SECRET=s", "MISE_DB_PASSWORD=p", "MISE_API_KEY=k", "mise_token=t", "MISE_Key=k"},
+			want: []string{"MISE_DATA_DIR=/m"},
+		},
+		{
+			name: "secret-looking names under other prefixes are dropped",
+			env:  []string{"LC_ALL=C", "XDG_RUNTIME_DIR=/r", "XDG_SECRET_THING=s", "LC_KEY=k"},
+			want: []string{"LC_ALL=C", "XDG_RUNTIME_DIR=/r"},
+		},
+		{
+			name: "prefixes are kept",
+			env:  []string{"LC_ALL=C", "XDG_CONFIG_HOME=/x", "LCX=1", "XDGX=1"},
+			want: []string{"LC_ALL=C", "XDG_CONFIG_HOME=/x"},
+		},
+		{
+			name: "other secrets are dropped",
+			env:  []string{"DATABASE_URL=postgres://u:p@h/d", "GOOGLE_APPLICATION_CREDENTIALS=/g", "AWS_SECRET_ACCESS_KEY=a", "HOME=/h"},
+			want: []string{"HOME=/h"},
+		},
+		{
+			name:  "extra names pass through",
+			env:   []string{"DATABASE_URL=d", "AWS_PROFILE=p", "OTHER=o"},
+			extra: []string{"DATABASE_URL", "AWS_PROFILE"},
+			want:  []string{"DATABASE_URL=d", "AWS_PROFILE=p"},
+		},
+		{
+			name: "slack and github tokens are dropped",
+			env:  []string{"SLACK_BOT_TOKEN=b", "SLACK_APP_TOKEN=a", "EBIX_GITHUB_TOKEN=g", "HOME=/h"},
+			want: []string{"HOME=/h"},
+		},
+		{
+			name: "values containing equals signs are kept whole",
+			env:  []string{"PATH=/a:/b", "TZ=UTC=1"},
+			want: []string{"PATH=/a:/b", "TZ=UTC=1"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FilterEnv(tt.env, tt.extra)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("FilterEnv(%v, %v) = %v; want %v", tt.env, tt.extra, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWithheldEnvNames(t *testing.T) {
+	env := []string{"ZED=1", "HOME=/h", "DATABASE_URL=secret", "PASSTHRU=x", "AWS_KEY=k"}
+	got := WithheldEnvNames(env, []string{"PASSTHRU"})
+	want := []string{"AWS_KEY", "DATABASE_URL", "ZED"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("WithheldEnvNames(%v) = %v; want %v", env, got, want)
+	}
+}
+
+func TestShellEnvPolicyOverrides(t *testing.T) {
+	got := buildArgsWithOverrides("", "workspace-write", "/work", nil, nil, "", "",
+		[]string{"shell_environment_policy.ignore_default_excludes=true", `shell_environment_policy.exclude=[]`})
+	lastIndex := func(want string) int {
+		for i := len(got) - 1; i > 0; i-- {
+			if got[i-1] == "-c" && got[i] == want {
+				return i
+			}
+		}
+		return -1
+	}
+	for _, want := range []string{
+		"shell_environment_policy.ignore_default_excludes=false",
+		`shell_environment_policy.exclude=["OPENAI_API_KEY","CODEX_API_KEY"]`,
+	} {
+		i := lastIndex(want)
+		if i < 0 {
+			t.Fatalf("args = %v; want %q", got, want)
+		}
+		if i < lastIndex("shell_environment_policy.ignore_default_excludes=true") || i < lastIndex("shell_environment_policy.exclude=[]") {
+			t.Errorf("%q comes before a local override; want it last", want)
+		}
 	}
 }

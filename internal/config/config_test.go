@@ -685,6 +685,7 @@ func clearConfigEnv(t *testing.T) {
 		"SLACK_APP_TOKEN",
 		"EBIX_GITHUB_TOKEN",
 		"EBIX_GITHUB_API_URL",
+		"EBIX_CODEX_ENV",
 		"SLACK_ALLOWED_USER_IDS",
 		"SLACK_ALLOWED_CHANNEL_IDS",
 		"SLACK_ALLOW_ALL_PUBLIC_CHANNELS",
@@ -706,6 +707,7 @@ func clearConfigEnv(t *testing.T) {
 		"CODEX_MAX_PARALLEL_PLAN",
 		"EBIX_SHARED_WRITE_CHANNEL_IDS",
 		"EBIX_DENIED_READ_PATHS",
+		"EBIX_ALLOWED_READ_PATHS",
 		"CODEX_HOME",
 	} {
 		value, exists := os.LookupEnv(key)
@@ -872,5 +874,40 @@ func TestRuntimeDataIsGitIgnored(t *testing.T) {
 		if !under(path) {
 			t.Errorf("%s is outside the ignored data directory", path)
 		}
+	}
+}
+
+func TestParseCodexEnv(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    []string
+		wantErr string
+	}{
+		{name: "empty", value: "", want: nil},
+		{name: "trims and skips blanks", value: " DATABASE_URL, ,AWS_PROFILE ", want: []string{"DATABASE_URL", "AWS_PROFILE"}},
+		{name: "leading digit", value: "1ABC", wantErr: "not a valid variable name"},
+		{name: "dash", value: "A-B", wantErr: "not a valid variable name"},
+		{name: "assignment", value: "FOO=bar", wantErr: "not a valid variable name"},
+		{name: "slack bot token", value: "FOO,SLACK_BOT_TOKEN", wantErr: "SLACK_BOT_TOKEN"},
+		{name: "slack app token", value: "SLACK_APP_TOKEN", wantErr: "SLACK_APP_TOKEN"},
+		{name: "github token", value: "EBIX_GITHUB_TOKEN", wantErr: "EBIX_GITHUB_TOKEN"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseCodexEnv(tt.value)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("parseCodexEnv(%q) error = %v; want containing %q", tt.value, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseCodexEnv(%q) error = %v", tt.value, err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("parseCodexEnv(%q) = %v; want %v", tt.value, got, tt.want)
+			}
+		})
 	}
 }

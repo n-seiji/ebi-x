@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,15 +30,39 @@ const (
 	maxArgBytes = 120 << 10
 )
 
-// secretEnvNames are environment variables Codex and the commands it runs
-// never need. They are removed so no shell environment policy can expose them.
-var secretEnvNames = map[string]struct{}{
-	"SLACK_BOT_TOKEN": {},
-	"SLACK_APP_TOKEN": {},
-	// The bot reads watched pull requests with it; the agent uses its own
-	// credentials, if any.
-	"EBIX_GITHUB_TOKEN": {},
+// envAllowNames and envAllowPrefixes are the only variables the Codex child
+// inherits; the rest of the bot's environment (.env contents, the operator's
+// shell) is withheld so a prompt-injected turn cannot read it back. Everything
+// here is non-secret configuration except the two Codex API keys, which the
+// shell environment policy (see shellEnvPolicyOverrides) keeps out of the
+// commands Codex runs. SSH_AUTH_SOCK is deliberately absent: the config layer
+// adds it through PassEnv only when a push or signature needs ~/.ssh.
+var envAllowNames = map[string]struct{}{
+	"HOME": {}, "PATH": {}, "USER": {}, "LOGNAME": {}, "SHELL": {},
+	"LANG": {}, "TZ": {}, "TERM": {}, "TMPDIR": {}, "CODEX_HOME": {},
+	"HTTP_PROXY": {}, "HTTPS_PROXY": {}, "NO_PROXY": {}, "ALL_PROXY": {},
+	"http_proxy": {}, "https_proxy": {}, "no_proxy": {}, "all_proxy": {},
+	"SSL_CERT_FILE": {}, "SSL_CERT_DIR": {},
+	// Codex authenticates with these.
+	"OPENAI_API_KEY": {}, "CODEX_API_KEY": {},
+	// Endpoint and certificate configuration.
+	"OPENAI_BASE_URL": {}, "CODEX_CA_CERTIFICATE": {}, "NODE_EXTRA_CA_CERTS": {},
+	"REQUESTS_CA_BUNDLE": {}, "CURL_CA_BUNDLE": {}, "GIT_SSL_CAINFO": {},
+	// git configuration.
+	"GIT_SSH_COMMAND": {}, "GIT_CONFIG_GLOBAL": {}, "GIT_CONFIG_SYSTEM": {}, "GIT_CONFIG_NOSYSTEM": {}, "GNUPGHOME": {},
+	// Toolchain locations and settings.
+	"GOPATH": {}, "GOPRIVATE": {}, "GOPROXY": {}, "GONOSUMDB": {}, "GONOPROXY": {}, "GOFLAGS": {},
+	"CARGO_HOME": {}, "RUSTUP_HOME": {}, "JAVA_HOME": {}, "PYENV_ROOT": {},
+	"NVM_DIR": {}, "VOLTA_HOME": {}, "PNPM_HOME": {},
+	// GitHub CLI location, and the desktop session bus.
+	"GH_HOST": {}, "GH_CONFIG_DIR": {}, "DBUS_SESSION_BUS_ADDRESS": {},
 }
+
+var envAllowPrefixes = []string{"LC_", "XDG_", "MISE_"}
+
+// envSecretMarkers are substrings that disqualify a name from matching an
+// allowed prefix, so MISE_GITHUB_TOKEN stays out although MISE_ is allowed.
+var envSecretMarkers = []string{"TOKEN", "SECRET", "PASSWORD", "KEY"}
 
 // Runner executes Codex CLI turns.
 type Runner struct {
@@ -50,6 +75,9 @@ type Runner struct {
 	// commands must not read or write. They are enforced with a Codex
 	// permission profile, independently of prompt instructions.
 	DeniedReadPaths []string
+	// PassEnv lists extra environment variable names Codex inherits beyond
+	// the built-in allowlist.
+	PassEnv []string
 	// CodexHome holds Codex credentials, configuration, and the history of
 	// every thread. Each turn denies everything in it except codexHomeVisible.
 	CodexHome string
@@ -97,7 +125,7 @@ func (r *Runner) Run(
 	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, r.Command, args...)
-	cmd.Env = filterEnv(os.Environ())
+	cmd.Env = FilterEnv(os.Environ(), r.PassEnv)
 	cmd.Stdin = strings.NewReader(prompt)
 
 	stdout, err := cmd.StdoutPipe()
@@ -177,17 +205,86 @@ func codexHomeDenied(home string) ([]string, error) {
 	return denied, nil
 }
 
-// filterEnv returns env without the bot's own credentials.
-func filterEnv(env []string) []string {
-	filtered := make([]string, 0, len(env))
+// FilterEnv returns the entries of env that Codex may inherit: the built-in
+// allowlist plus the names in extra.
+func FilterEnv(env, extra []string) []string {
+	kept, _ := splitEnv(env, extra)
+	return kept
+}
+
+// WithheldEnvNames returns the sorted names in env that FilterEnv drops.
+func WithheldEnvNames(env, extra []string) []string {
+	_, withheld := splitEnv(env, extra)
+	slices.Sort(withheld)
+	return withheld
+}
+
+func splitEnv(env, extra []string) (kept, withheld []string) {
 	for _, entry := range env {
 		name, _, _ := strings.Cut(entry, "=")
-		if _, secret := secretEnvNames[name]; secret {
-			continue
+		if envAllowed(name, extra) {
+			kept = append(kept, entry)
+		} else {
+			withheld = append(withheld, name)
 		}
-		filtered = append(filtered, entry)
 	}
-	return filtered
+	return kept, withheld
+}
+
+func envAllowed(name string, extra []string) bool {
+	if _, ok := envAllowNames[name]; ok {
+		return true
+	}
+	if slices.Contains(extra, name) {
+		return true
+	}
+	upper := strings.ToUpper(name)
+	for _, marker := range envSecretMarkers {
+		if strings.Contains(upper, marker) {
+			return false
+		}
+	}
+	for _, prefix := range envAllowPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// shellEnvPolicyOverrides pins Codex's shell environment policy, which
+// decides what the commands it runs inherit from its own environment. Codex
+// keeps its default excludes (names containing KEY, SECRET, or TOKEN) and
+// additionally drops the two API keys it authenticates with by name, so
+// neither depends on Codex's defaults or on local configuration.
+func shellEnvPolicyOverrides() []string {
+	excluded := make([]string, len(shellEnvExcluded))
+	for i, name := range shellEnvExcluded {
+		excluded[i] = strconv.Quote(name)
+	}
+	return []string{
+		"-c", "shell_environment_policy.ignore_default_excludes=false",
+		"-c", "shell_environment_policy.exclude=[" + strings.Join(excluded, ",") + "]",
+	}
+}
+
+var shellEnvExcluded = []string{"OPENAI_API_KEY", "CODEX_API_KEY"}
+
+// shellEnvDefaultExcludeMarkers are the substrings of Codex's default shell
+// environment excludes, which ignore_default_excludes=false keeps on. They
+// differ from envSecretMarkers, ebi-x's own rule for allowed prefixes.
+var shellEnvDefaultExcludeMarkers = []string{"KEY", "SECRET", "TOKEN"}
+
+// HiddenFromCommands reports whether Codex removes the variable from the
+// commands it runs although Codex itself inherits it.
+func HiddenFromCommands(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, marker := range shellEnvDefaultExcludeMarkers {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	return slices.Contains(shellEnvExcluded, name)
 }
 
 func buildArgs(threadID, sandbox, cwd string, writableRoots, deniedReadPaths []string, model, developerInstructions string) []string {
@@ -213,6 +310,7 @@ func buildArgsWithOverrides(threadID, sandbox, cwd string, writableRoots, denied
 	// Security invariants come after local values so local configuration can
 	// never weaken them.
 	args = append(args, "-c", `approval_policy="never"`, "-c", `default_permissions="ebi-x"`)
+	args = append(args, shellEnvPolicyOverrides()...)
 	parentProfile := ":read-only"
 	if sandbox == "workspace-write" {
 		parentProfile = ":workspace"

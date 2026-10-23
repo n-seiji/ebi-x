@@ -3,6 +3,7 @@ package codex
 import (
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"math"
 	"os"
@@ -105,6 +106,8 @@ func flattenConfig(prefix []string, value map[string]any, overrides *[]string) e
 	keys := make([]string, 0, len(value))
 	for key := range value {
 		if len(prefix) == 0 && isSecurityOwnedKey(key) {
+			// Key name only: values may hold secrets.
+			log.Printf("ignoring local Codex config key %q: security settings are owned by ebi-x", key)
 			continue
 		}
 		keys = append(keys, key)
@@ -136,6 +139,7 @@ func isSecurityOwnedKey(key string) bool {
 		"permission",
 		"profile",
 		"sandbox",
+		"shell_environment_policy",
 	} {
 		if strings.HasPrefix(key, prefix) {
 			return true

@@ -16,8 +16,12 @@ const (
 	// usageCheckInterval is how often the Codex usage is checked and
 	// recorded. It also sees usage from outside ebi-x on the same account.
 	usageCheckInterval = 30 * time.Minute
-	usageReadTimeout   = 30 * time.Second
-	usageDayLayout     = "2006-01-02"
+	// usageChartHours is how many hours the hourly report's bar chart shows,
+	// and usageHistoryKeep how long checks are kept for it.
+	usageChartHours  = 12
+	usageHistoryKeep = usageChartHours * time.Hour
+	usageReadTimeout = 30 * time.Second
+	usageDayLayout   = "2006-01-02"
 
 	usageLowMessage       = "⚠️ Codex の利用枠（%s）の残りが %d%% を下回りました。%s"
 	usageExhaustedMessage = "🚫 Codex の利用枠（%s）を使い切りました。%sまで、ebi-x は作業できません。"
@@ -28,6 +32,18 @@ const (
 	usageUnavailableReply = "⚠️ Codex の利用枠を読み取れませんでした。"
 	usageDailyHeader      = "📊 %s の Codex の利用枠（%d回確認）"
 	usageDailyLine        = "- %s: %d%% → %d%%（最低 %d%%）"
+	usageHourlyHeader     = "📈 Codex の利用枠（%s 時点）"
+	usageHourlyLine       = "- %s: 残り %.1f%%"
+	usageHourlyChange     = "前回から %+.1fpt"
+	usageHourlyWasReset   = "前回からリセット済み"
+	usageHourlyEmptyAt    = "このペースだと%sに使い切り"
+	usageHourlyResetAt    = "%sにリセット"
+	usageChartHeader      = "時刻   %-16s %s"
+	usageChartTimeLayout  = "15:04"
+	usageChartMissing     = "    -"
+	// usageChartBarWidth is the bar length of a full window; one block is
+	// 10%.
+	usageChartBarWidth = 10
 	// usageLimitFailureMessage replaces workFailureMessage when the turn
 	// stopped on the usage limit, so the requester knows why and when to
 	// ask again.
@@ -68,7 +84,8 @@ func (b *Bot) usageWatchEnabled() bool {
 // runUsageWatch checks the Codex usage until ctx is done. Each check is
 // recorded for the day's summary, which the first check of the next day
 // posts in the approval channel, and a window that runs low is announced
-// there.
+// there. The first check of each hour also posts the remaining usage there
+// with a chart, unless nothing changed since the last report.
 func (b *Bot) runUsageWatch(ctx context.Context) {
 	if !b.usageWatchEnabled() {
 		return
@@ -84,6 +101,7 @@ func (b *Bot) runUsageWatch(ctx context.Context) {
 		case err == nil:
 			failing = false
 			b.recordUsage(ctx, limits)
+			b.reportUsage(ctx)
 		}
 		if err := b.sleep(ctx, usageCheckInterval); err != nil {
 			return
@@ -173,6 +191,7 @@ func (b *Bot) recordUsage(ctx context.Context, limits *codex.RateLimits) {
 		days[key] = record
 	}
 	next.Windows = days
+	next.History = appendUsageSample(next.History, usageSample(b.now(), windows))
 
 	alerts, lines := usageAlerts(saved.Alerts, windows)
 	next.Alerts = alerts
@@ -187,6 +206,173 @@ func (b *Bot) recordUsage(ctx context.Context, limits *codex.RateLimits) {
 	if err := b.store.SetUsage(next); err != nil {
 		log.Printf("slackbot: save Codex usage: %v", err)
 	}
+}
+
+// reportUsage posts the latest check in the approval channel with a bar
+// chart of the recent hours, once an hour. An hour with no change since the
+// last report is skipped.
+func (b *Bot) reportUsage(ctx context.Context) {
+	b.usageMu.Lock()
+	defer b.usageMu.Unlock()
+	saved := b.store.Usage()
+	if len(saved.History) == 0 {
+		return
+	}
+	now := b.now()
+	previous := saved.Reported
+	if previous != nil && sameLocalHour(previous.At, now) {
+		return
+	}
+	latest := saved.History[len(saved.History)-1]
+	if now.Sub(latest.At) >= usageCheckInterval {
+		// This check was not recorded; do not report an older one as now.
+		return
+	}
+	if previous == nil || usageSampleChanged(*previous, latest) {
+		text := usageHourlyReport(previous, latest) + "\n" + usageChart(saved.History, latest.At)
+		if err := b.post(ctx, b.config.ApprovalChannelID, "", text); err != nil {
+			log.Printf("slackbot: post Codex usage report: %v", err)
+			// Report again at the next check.
+			return
+		}
+	}
+	next := saved
+	next.Reported = &latest
+	if err := b.store.SetUsage(next); err != nil {
+		log.Printf("slackbot: save Codex usage: %v", err)
+	}
+}
+
+// usageChart draws each window's remaining percent at the end of each of
+// the last usageChartHours hours as a text bar chart in a code block. An hour
+// without a check, when ebi-x was not running, shows "-".
+func usageChart(history []state.UsageSample, now time.Time) string {
+	current := localHour(now)
+	labels := make([]any, 0, len(usageWindowKeys))
+	for _, key := range usageWindowKeys {
+		labels = append(labels, usageSampleLabel(key))
+	}
+	lines := []string{"```" + fmt.Sprintf(usageChartHeader, labels...)}
+	for i := usageChartHours - 1; i >= 0; i-- {
+		hour := current.Add(-time.Duration(i) * time.Hour)
+		var sample *state.UsageSample
+		for j := range history {
+			if at := history[j].At.In(time.Local); !at.Before(hour) && at.Before(hour.Add(time.Hour)) {
+				sample = &history[j]
+			}
+		}
+		line := hour.Format(usageChartTimeLayout)
+		for _, key := range usageWindowKeys {
+			remaining, ok := 0.0, false
+			if sample != nil {
+				remaining, ok = sample.Remaining[key]
+			}
+			if !ok {
+				line += fmt.Sprintf("  %-15s", usageChartMissing)
+				continue
+			}
+			bar := strings.Repeat("█", int(math.Round(math.Min(remaining, 100)/100*usageChartBarWidth)))
+			line += fmt.Sprintf("  %5.1f%% %-*s", remaining, usageChartBarWidth, bar)
+		}
+		lines = append(lines, strings.TrimRight(line, " "))
+	}
+	return strings.Join(lines, "\n") + "```"
+}
+
+// usageHourlyReport describes latest, with each window's change since the
+// previous report and, while it falls, when it would run out at that pace.
+func usageHourlyReport(previous *state.UsageSample, latest state.UsageSample) string {
+	lines := []string{fmt.Sprintf(usageHourlyHeader, latest.At.In(time.Local).Format("1/2 15:04"))}
+	for _, key := range usageWindowKeys {
+		remaining, ok := latest.Remaining[key]
+		if !ok {
+			continue
+		}
+		line := fmt.Sprintf(usageHourlyLine, usageSampleLabel(key), remaining)
+		resetsAt := latest.ResetsAt[key]
+		var notes []string
+		if previous != nil {
+			if before, ok := previous.Remaining[key]; ok {
+				switch {
+				case previous.ResetsAt[key] != resetsAt && remaining > before:
+					notes = append(notes, usageHourlyWasReset)
+				default:
+					change := remaining - before
+					notes = append(notes, fmt.Sprintf(usageHourlyChange, change))
+					elapsed := latest.At.Sub(previous.At)
+					if change < 0 && remaining > 0 && elapsed > 0 {
+						empty := latest.At.Add(time.Duration(float64(elapsed) * remaining / -change))
+						if resetsAt <= 0 || empty.Before(time.Unix(resetsAt, 0)) {
+							notes = append(notes, fmt.Sprintf(usageHourlyEmptyAt, formatFollowUpTime(empty)))
+						}
+					}
+				}
+			}
+		}
+		if resetsAt > 0 {
+			notes = append(notes, fmt.Sprintf(usageHourlyResetAt, formatFollowUpTime(time.Unix(resetsAt, 0))))
+		}
+		if len(notes) > 0 {
+			line += "（" + strings.Join(notes, "・") + "）"
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// usageSampleLabel names a window slot; a sample does not keep the window's
+// length, so the label assumes Codex's usual 5-hour and weekly windows.
+func usageSampleLabel(key string) string {
+	return usageWindowLabel(key, codex.RateLimitWindow{})
+}
+
+func usageSample(at time.Time, windows map[string]codex.RateLimitWindow) state.UsageSample {
+	sample := state.UsageSample{At: at, Remaining: make(map[string]float64, len(windows)), ResetsAt: make(map[string]int64, len(windows))}
+	for key, window := range windows {
+		sample.Remaining[key] = math.Max(0, 100-window.UsedPercent)
+		if window.ResetsAt > 0 {
+			sample.ResetsAt[key] = window.ResetsAt
+		}
+	}
+	return sample
+}
+
+// appendUsageSample adds sample and drops checks older than
+// usageHistoryKeep.
+func appendUsageSample(history []state.UsageSample, sample state.UsageSample) []state.UsageSample {
+	history = append(history, sample)
+	cutoff := sample.At.Add(-usageHistoryKeep)
+	first := 0
+	for first < len(history) && history[first].At.Before(cutoff) {
+		first++
+	}
+	return history[first:]
+}
+
+// usageSampleChanged reports whether any window's remaining percent, as
+// reported to a tenth, or its reset time differs.
+func usageSampleChanged(a, b state.UsageSample) bool {
+	if len(a.Remaining) != len(b.Remaining) {
+		return true
+	}
+	for key, remaining := range a.Remaining {
+		other, ok := b.Remaining[key]
+		if !ok || math.Round(remaining*10) != math.Round(other*10) || a.ResetsAt[key] != b.ResetsAt[key] {
+			return true
+		}
+	}
+	return false
+}
+
+func sameLocalHour(a, b time.Time) bool {
+	return localHour(a).Equal(localHour(b))
+}
+
+// localHour returns the start of t's hour in local time. time.Truncate
+// counts from UTC, which splits hours wrongly in zones offset by 30 minutes.
+func localHour(t time.Time) time.Time {
+	t = t.In(time.Local)
+	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, time.Local)
 }
 
 // usageAlerts returns the levels announced after this check and the
