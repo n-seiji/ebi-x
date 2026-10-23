@@ -18,13 +18,13 @@ func TestParseDoneWatchCommand(t *testing.T) {
 		days int
 		ok   bool
 	}{
-		{"<@U2> <@U3> 資料を見てください <@UBOT> 監視して", 2, true},
-		{"<@U2> お願いします\n<@UBOT> 監視して。", 2, true},
+		{"<@U2> <@U3> 資料を見てください <@UBOT> 監視して", 1, true},
+		{"<@U2> お願いします\n<@UBOT> 監視して。", 1, true},
 		{"<@U2> <@UBOT> 毎日監視して", 1, true},
 		{"<@U2> <@UBOT> 1日おきに監視して", 2, true},
 		{"<@U2> <@UBOT> 2日おきに監視して", 3, true},
 		{"<@U2> <@UBOT> 3日ごとに監視して", 3, true},
-		{"<@U2> <@UBOT> 監視お願いします！", 2, true},
+		{"<@U2> <@UBOT> 監視お願いします！", 1, true},
 		{"<@U2> <@UBOT> 7日ごとに監視して", 7, true},
 		{"<@U2> <@UBOT> 8日ごとに監視して", 0, false},
 		{"<@U2> <@UBOT> 30日ごとに監視して", 0, false},
@@ -70,15 +70,15 @@ func TestDoneWatchStartsWithoutTurn(t *testing.T) {
 	}
 	want := state.DoneWatch{
 		Channel: "C1", ThreadTS: "100.1", MessageTS: "100.1", AuthorID: "U1",
-		Targets: []string{"U2", "U3"}, IntervalDays: 2,
-		NextAt: followUpNow.Add(48 * time.Hour), CreatedAt: followUpNow,
+		Targets: []string{"U2", "U3"}, IntervalDays: 1,
+		NextAt: nextDoneWatchReminder(followUpNow, 1), CreatedAt: followUpNow,
 	}
 	got, ok := store.doneWatches["C1:100.1"]
 	if !ok || got.ThreadTS != want.ThreadTS || got.MessageTS != want.MessageTS || got.AuthorID != want.AuthorID ||
-		strings.Join(got.Targets, ",") != "U2,U3" || got.IntervalDays != 2 || !got.NextAt.Equal(want.NextAt) {
+		strings.Join(got.Targets, ",") != "U2,U3" || got.IntervalDays != 1 || !got.NextAt.Equal(want.NextAt) {
 		t.Fatalf("watch = %#v, want %#v", got, want)
 	}
-	if post := api.postTexts[len(api.postTexts)-1]; !strings.Contains(post, "対象は元メッセージで @メンションされた2人") || !strings.Contains(post, "1日おき") {
+	if post := api.postTexts[len(api.postTexts)-1]; !strings.Contains(post, "対象は元メッセージで @メンションされた2人") || !strings.Contains(post, "平日の毎日19時") || !strings.Contains(post, "10回通知したら") {
 		t.Fatalf("notice = %q", post)
 	}
 }
@@ -139,7 +139,7 @@ func TestCheckDoneWatchRemindsPendingWhenDue(t *testing.T) {
 		t.Fatalf("posts = %#v, want one reminder to U2 only", api.posts)
 	}
 	got := store.doneWatches["C1:100.1"]
-	if got.Reminders != 1 || !got.NextAt.Equal(followUpNow.Add(48*time.Hour)) {
+	if got.Reminders != 1 || !got.NextAt.Equal(nextDoneWatchReminder(followUpNow, 2)) {
 		t.Fatalf("watch after reminder = %#v", got)
 	}
 }
@@ -153,19 +153,19 @@ func TestCheckDoneWatchEnds(t *testing.T) {
 		name      string
 		reacted   []string
 		err       error
-		createdAt time.Time
+		reminders int
 		want      string
 	}{
-		{"all done", []string{"U2"}, nil, time.Time{}, doneWatchCompleted},
-		{"a week passed", nil, nil, followUpNow.Add(-doneWatchDuration), "1週間たったため"},
-		{"message deleted", nil, slack.SlackErrorResponse{Err: "message_not_found"}, time.Time{}, doneWatchGoneMessage},
+		{"all done", []string{"U2"}, nil, 0, doneWatchCompleted},
+		{"last reminder", nil, nil, maxDoneWatchReminders - 1, "10回通知したため、監視はこれで終了します"},
+		{"message deleted", nil, slack.SlackErrorResponse{Err: "message_not_found"}, 0, doneWatchGoneMessage},
 	}
 	for _, test := range tests {
 		store := &fakeStore{claim: true}
 		api := &fakeSlack{reactionUsers: test.reacted, reactionUsersErr: test.err}
 		bot := newFollowUpBot(t, store, api, &fakeRunner{})
 		watch := watch
-		watch.CreatedAt = test.createdAt
+		watch.Reminders = test.reminders
 		store.SetDoneWatch(watch)
 
 		bot.checkDoneWatch(context.Background(), watch)
@@ -375,6 +375,28 @@ func TestDoneWatchNotesNamedPeopleOutsideChannel(t *testing.T) {
 		}
 		if test.wantNote != "" && !strings.Contains(post, test.wantNote) {
 			t.Errorf("%s: notice = %q, want %q", test.name, post, test.wantNote)
+		}
+	}
+}
+
+func TestNextDoneWatchReminderSkipsWeekends(t *testing.T) {
+	at := func(day, hour int) time.Time { return time.Date(2026, 10, day, hour, 0, 0, 0, time.Local) }
+	tests := []struct {
+		name  string
+		after time.Time
+		days  int
+		want  time.Time
+	}{
+		{"weekday before 19:00", at(19, 10), 1, at(19, 19)},
+		{"weekday at 19:00", at(19, 19), 1, at(20, 19)},
+		{"Friday evening", at(23, 20), 1, at(26, 19)},
+		{"Saturday", at(24, 10), 1, at(26, 19)},
+		{"every other weekday from Friday", at(23, 10), 2, at(26, 19)},
+		{"every three weekdays from Thursday night", at(22, 20), 3, at(27, 19)},
+	}
+	for _, test := range tests {
+		if got := nextDoneWatchReminder(test.after, test.days); !got.Equal(test.want) {
+			t.Errorf("%s: nextDoneWatchReminder(%v, %d) = %v, want %v", test.name, test.after, test.days, got, test.want)
 		}
 	}
 }

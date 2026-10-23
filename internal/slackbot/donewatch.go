@@ -20,18 +20,20 @@ const (
 	// doneWatchPollInterval is how often watched messages are checked, so a
 	// watch ends soon after the last person reacts.
 	doneWatchPollInterval = 30 * time.Minute
-	// defaultDoneWatchDays is the gap between reminders when the command
-	// names none: every other day.
-	defaultDoneWatchDays = 2
+	// defaultDoneWatchDays is the gap between reminders, in weekdays, when
+	// the command names none: every weekday.
+	defaultDoneWatchDays = 1
 	maxDoneWatchDays     = 7
-	// doneWatchDuration is how long a watch runs unless everyone reacts or
-	// someone stops it first.
-	doneWatchDuration = 7 * 24 * time.Hour
+	// doneWatchHour is the local hour reminders go out at.
+	doneWatchHour = 19
+	// maxDoneWatchReminders is how many reminders a watch sends before it
+	// ends, unless everyone reacts or someone stops it first.
+	maxDoneWatchReminders = 10
 	// maxDoneWatchesPerUser bounds the watches one person keeps running.
 	maxDoneWatchesPerUser = 10
 	maxDoneWatchTargets   = 100
 
-	doneWatchStartedNotice    = "👀 :done: の監視を始めます。対象は元メッセージで @メンションされた%d人です。%sに確認し、まだ :done: を付けていない人にこのスレッドで通知します（次回 %s）。%s\n全員が付けるか1週間たったら終了します。止める場合は、このスレッドで「@ebi-x 監視をとめて」と mention してください。"
+	doneWatchStartedNotice    = "👀 :done: の監視を始めます。対象は元メッセージで @メンションされた%d人です。%sに、まだ :done: を付けていない人にこのスレッドで通知します（次回 %s）。%s\n全員が付けるか、%d回通知したら終了します。止める場合は、このスレッドで「@ebi-x 監視をとめて」と mention してください。"
 	doneWatchAllDoneNotice    = "✅ 対象の全員がすでに :done: を付けているため、監視は始めていません。"
 	doneWatchNoTargetNotice   = "⚠️ @メンションされた人が見つからなかったため、監視は始めていません。対象の人を @メンションしたメッセージの末尾で「@ebi-x 監視して」と書いてください。"
 	doneWatchLimitNotice      = "⚠️ 1人が同時に続けられる監視は%d件までのため、監視は始めていません。不要な監視を、そのスレッドで「@ebi-x 監視をとめて」と mention して止めてください。"
@@ -42,8 +44,8 @@ const (
 	doneWatchAllOutsideNotice = "⚠️ ユーザーグループのメンバーは全員このチャンネルにいないため、通知が届きません。監視は始めていません。メンバーをチャンネルに招待してから、もう一度「@ebi-x 監視して」と mention してください。"
 	doneWatchFailedNotice     = "⚠️ 監視を始められませんでした。もう一度 mention してください。"
 	doneWatchReminder         = "%s\n:done: のリアクションがまだのようです。対応が済んだら、%sに :done: を付けてください。（%d回目の通知）"
+	doneWatchLastReminder     = "\n%d回通知したため、監視はこれで終了します。"
 	doneWatchCompleted        = "✅ 対象の全員が :done: を付けたため、監視を終了しました。"
-	doneWatchExpired          = "⚠️ 監視を始めてから1週間たったため、監視を終了しました。まだの人: %s"
 	doneWatchGoneMessage      = "元メッセージが見つからなくなったため、:done: の監視を終了しました。"
 	doneWatchStoppedMessage   = ":done: の監視を終了しました。"
 	doneWatchNothingToStop    = "このスレッドで続けている :done: の監視はありません。"
@@ -215,7 +217,7 @@ func (b *Bot) startDoneWatch(ctx context.Context, channel, threadTS, timestamp, 
 	watch := state.DoneWatch{
 		Channel: channel, ThreadTS: threadTS, MessageTS: messageTS, AuthorID: authorID,
 		Targets: targets, IntervalDays: days,
-		NextAt: now.Add(time.Duration(days) * 24 * time.Hour), CreatedAt: now,
+		NextAt: nextDoneWatchReminder(now, days), CreatedAt: now,
 	}
 	if err := b.store.SetDoneWatch(watch); err != nil {
 		log.Printf("slackbot: save done watch %s: %v", key, err)
@@ -230,7 +232,26 @@ func (b *Bot) startDoneWatch(ctx context.Context, channel, threadTS, timestamp, 
 	if len(namedOutside) > 0 {
 		outsideNote += fmt.Sprintf(doneWatchNamedOutsideNote, userMentions(namedOutside))
 	}
-	b.postDoneWatchNotice(ctx, channel, threadTS, fmt.Sprintf(doneWatchStartedNotice, len(targets), doneWatchIntervalLabel(days), formatFollowUpTime(watch.NextAt), outsideNote))
+	b.postDoneWatchNotice(ctx, channel, threadTS, fmt.Sprintf(doneWatchStartedNotice, len(targets), doneWatchIntervalLabel(days), formatFollowUpTime(watch.NextAt), outsideNote, maxDoneWatchReminders))
+}
+
+// nextDoneWatchReminder returns the days-th weekday 19:00 local time after
+// after, so reminders skip Saturdays and Sundays.
+func nextDoneWatchReminder(after time.Time, days int) time.Time {
+	local := after.In(time.Local)
+	at := time.Date(local.Year(), local.Month(), local.Day(), doneWatchHour, 0, 0, 0, time.Local)
+	if !at.After(local) {
+		at = at.AddDate(0, 0, 1)
+	}
+	left := max(days, 1)
+	for {
+		if weekday := at.Weekday(); weekday != time.Saturday && weekday != time.Sunday {
+			if left--; left == 0 {
+				return at
+			}
+		}
+		at = at.AddDate(0, 0, 1)
+	}
 }
 
 // expandDoneWatchTargets adds the people that @channel and user group
@@ -293,11 +314,11 @@ func (b *Bot) postDoneWatchNotice(ctx context.Context, channel, threadTS, text s
 func doneWatchIntervalLabel(days int) string {
 	switch days {
 	case 1:
-		return "毎日"
+		return fmt.Sprintf("平日の毎日%d時", doneWatchHour)
 	case 2:
-		return "1日おき"
+		return fmt.Sprintf("平日1日おきの%d時", doneWatchHour)
 	}
-	return fmt.Sprintf("%d日ごと", days)
+	return fmt.Sprintf("平日%d日ごとの%d時", days, doneWatchHour)
 }
 
 // notIn returns the users that are not among members, in order.
@@ -366,7 +387,9 @@ func userMentions(users []string) string {
 	return strings.Join(mentions, " ")
 }
 
-// runDoneWatches checks the watched messages until ctx is done.
+// runDoneWatches checks the watched messages until ctx is done. It wakes for
+// the next reminder when that comes before the next poll, so reminders go
+// out on the hour.
 func (b *Bot) runDoneWatches(ctx context.Context) {
 	for {
 		for _, watch := range b.store.DoneWatches() {
@@ -375,7 +398,13 @@ func (b *Bot) runDoneWatches(ctx context.Context) {
 			}
 			b.checkDoneWatch(ctx, watch)
 		}
-		if err := b.sleep(ctx, doneWatchPollInterval); err != nil {
+		wait := doneWatchPollInterval
+		for _, watch := range b.store.DoneWatches() {
+			if until := watch.NextAt.Sub(b.now()); until > 0 && until < wait {
+				wait = until
+			}
+		}
+		if err := b.sleep(ctx, wait); err != nil {
 			return
 		}
 	}
@@ -404,8 +433,9 @@ func (b *Bot) checkDoneWatch(ctx context.Context, watch state.DoneWatch) {
 		b.endDoneWatch(ctx, watch, doneWatchCompleted)
 		return
 	}
-	if !watch.CreatedAt.IsZero() && !b.now().Before(watch.CreatedAt.Add(doneWatchDuration)) {
-		b.endDoneWatch(ctx, watch, fmt.Sprintf(doneWatchExpired, userMentions(pending)))
+	// A crash after the last reminder was counted leaves the watch behind.
+	if watch.Reminders >= maxDoneWatchReminders {
+		b.endDoneWatch(ctx, watch, "")
 		return
 	}
 	if b.now().Before(watch.NextAt) {
@@ -419,7 +449,7 @@ func (b *Bot) checkDoneWatch(ctx context.Context, watch state.DoneWatch) {
 			return false
 		}
 		saved.Reminders++
-		saved.NextAt = now.Add(time.Duration(max(saved.IntervalDays, 1)) * 24 * time.Hour)
+		saved.NextAt = nextDoneWatchReminder(now, saved.IntervalDays)
 		return true
 	})
 	if err != nil {
@@ -436,8 +466,15 @@ func (b *Bot) checkDoneWatch(ctx context.Context, watch state.DoneWatch) {
 		log.Printf("slackbot: link done watch message %s: %v", key, err)
 	}
 	text := fmt.Sprintf(doneWatchReminder, userMentions(pending), original, watch.Reminders)
+	last := watch.Reminders >= maxDoneWatchReminders
+	if last {
+		text += fmt.Sprintf(doneWatchLastReminder, maxDoneWatchReminders)
+	}
 	if err := b.post(ctx, watch.Channel, watch.ThreadTS, text); err != nil {
 		log.Printf("slackbot: post done watch reminder %s: %v", key, err)
+	}
+	if last {
+		b.endDoneWatch(ctx, watch, "")
 	}
 }
 
