@@ -43,6 +43,41 @@ type fakeStore struct {
 	pullWatches         map[string]state.PullWatch
 	schedules           map[string]state.Schedule
 	usage               state.Usage
+	deferred            []state.Deferred
+}
+
+func (s *fakeStore) AddDeferred(deferred state.Deferred) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.deferred {
+		if existing.Key() == deferred.Key() {
+			return nil
+		}
+	}
+	s.deferred = append(s.deferred, deferred)
+	return nil
+}
+
+func (s *fakeStore) TakeDeferred() ([]state.Deferred, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	taken := s.deferred
+	s.deferred = nil
+	return taken, nil
+}
+
+func (s *fakeStore) DeleteDeferred(match func(state.Deferred) bool) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var kept []state.Deferred
+	for _, deferred := range s.deferred {
+		if !match(deferred) {
+			kept = append(kept, deferred)
+		}
+	}
+	removed := len(s.deferred) - len(kept)
+	s.deferred = kept
+	return removed, nil
 }
 
 func (s *fakeStore) FollowUps() []state.FollowUp {
@@ -1769,8 +1804,13 @@ type looseStore struct {
 	threads map[string]string
 }
 
-func (s *looseStore) Usage() state.Usage         { return state.Usage{} }
-func (s *looseStore) SetUsage(state.Usage) error { return nil }
+func (s *looseStore) Usage() state.Usage                      { return state.Usage{} }
+func (s *looseStore) SetUsage(state.Usage) error              { return nil }
+func (s *looseStore) AddDeferred(state.Deferred) error        { return nil }
+func (s *looseStore) TakeDeferred() ([]state.Deferred, error) { return nil, nil }
+func (s *looseStore) DeleteDeferred(func(state.Deferred) bool) (int, error) {
+	return 0, nil
+}
 
 func (s *looseStore) ClaimEvent(string) (bool, error) { return true, nil }
 

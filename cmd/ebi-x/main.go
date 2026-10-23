@@ -26,9 +26,18 @@ import (
 const checkoutGCInterval = time.Hour
 
 func main() {
+	// config.Load copies .env into the environment; a reload starts from the
+	// environment ebi-x was launched with, so edits to .env take effect too.
+	launchEnv := os.Environ()
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("load configuration: %v", err)
+	}
+	// A reload execs the binary at this path, so a rebuilt binary takes
+	// effect without a new process.
+	executable, err := os.Executable()
+	if err != nil {
+		log.Printf("find own executable; reload is unavailable: %v", err)
 	}
 	releaseLock, err := state.LockDir(cfg.StateDir)
 	if err != nil {
@@ -127,6 +136,10 @@ func main() {
 
 	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
+	reloadRequested := make(chan os.Signal, 1)
+	if reloadSignal != nil && executable != "" {
+		signal.Notify(reloadRequested, reloadSignal)
+	}
 	acceptCtx, stopAccepting := context.WithCancel(context.Background())
 	turnCtx, cancelTurns := context.WithCancel(context.Background())
 	defer cancelTurns()
@@ -143,18 +156,35 @@ func main() {
 		socketDone <- slackbot.RunSocketMode(acceptCtx, turnCtx, cfg.SlackBotToken, cfg.SlackAppToken, bot, &turns)
 	}()
 
+	reloading := false
+	socketStopped := false
 	select {
 	case <-signalCtx.Done():
 		log.Printf("shutdown requested")
-		stopAccepting()
-		if err := <-socketDone; err != nil {
-			log.Printf("stop Slack Socket Mode: %v", err)
+	case <-reloadRequested:
+		// Keep receiving Slack events while running turns finish: requests
+		// that arrive meanwhile are saved and started by the new binary.
+		log.Printf("reload requested; finishing running work before restarting")
+		reloading = true
+		drained := bot.Drain()
+		select {
+		case <-drained:
+			log.Printf("running work finished; restarting")
+		case <-signalCtx.Done():
+			log.Printf("shutdown requested during reload")
+			reloading = false
 		}
 	case err := <-socketDone:
 		if err != nil {
 			log.Printf("Slack Socket Mode stopped: %v", err)
 		}
-		stopAccepting()
+		socketStopped = true
+	}
+	stopAccepting()
+	if !socketStopped {
+		if err := <-socketDone; err != nil {
+			log.Printf("stop Slack Socket Mode: %v", err)
+		}
 	}
 
 	<-gcDone
@@ -172,6 +202,15 @@ func main() {
 		cancelTurns()
 		<-drained
 		log.Printf("shutdown complete after forced cancellation")
+	}
+	if reloading {
+		stopSignals()
+		signal.Stop(reloadRequested)
+		releaseLock()
+		log.Printf("restarting from %s", executable)
+		if err := reexec(executable, launchEnv); err != nil {
+			log.Fatalf("restart from %s: %v", executable, err)
+		}
 	}
 }
 

@@ -100,6 +100,9 @@ type Store interface {
 	DeletePullWatches(match func(state.PullWatch) bool) ([]state.PullWatch, error)
 	Usage() state.Usage
 	SetUsage(usage state.Usage) error
+	AddDeferred(deferred state.Deferred) error
+	TakeDeferred() ([]state.Deferred, error)
+	DeleteDeferred(match func(state.Deferred) bool) (int, error)
 }
 
 // Runner executes one Codex turn. deniedPaths are hidden from the turn in
@@ -207,8 +210,11 @@ type Bot struct {
 	// adminAlerts is when each kind of alert was last posted in the
 	// approval channel.
 	adminAlerts map[string]time.Time
-	now         func() time.Time
-	sleep       func(context.Context, time.Duration) error
+	// drain defers new requests while the running ones finish before a
+	// restart.
+	drain *drainer
+	now   func() time.Time
+	sleep func(context.Context, time.Duration) error
 }
 
 type triggerSource uint8
@@ -254,6 +260,7 @@ func New(api SlackAPI, store Store, runner Runner, config Config, playbooks []pl
 		approvers:           makeSet(config.ApproverUserIDs),
 		sharedWriteChannels: makeSet(config.SharedWriteChannelIDs),
 		workSlots:           make(chan struct{}, max(config.MaxParallelWork, 1)),
+		drain:               newDrainer(),
 		threadLocks:         make(map[string]*sync.Mutex),
 		workLocks:           make(map[string]*sync.Mutex),
 		running:             make(map[string]map[string]runningRequest),
@@ -407,6 +414,14 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	if !claimed {
 		return
 	}
+	// While draining for a restart, a request that has not started is saved
+	// for the next process instead of keeping this one alive.
+	finish, ok := b.beginRequest()
+	if !ok {
+		b.deferRequest(ctx, trigger)
+		return
+	}
+	defer finish()
 	// stopCtx ends when the request is stopped from Slack. Only waiting and
 	// the Codex turn use it; Slack calls keep ctx, so a stop never keeps the
 	// bot from reporting.
@@ -455,6 +470,10 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		slackThread = formatThreadContext(threadMessages, timestamp)
 	}
 	output, started, workErr := b.work(ctx, stopCtx, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread, trigger)
+	if !started && errors.Is(workErr, errDraining) && stopCtx.Err() == nil {
+		b.deferRequest(ctx, trigger)
+		return
+	}
 	if !started {
 		log.Printf("slackbot: start work %q: %v", eventKey, workErr)
 		b.fail(ctx, eventKey, state.Received, state.Failed, channel, threadTS, timestamp, failure(workStartFailureMessage))
@@ -584,10 +603,22 @@ func (o workOutput) attachmentNotice() string {
 // reached the working state; when it did not, nothing was run and the event
 // may be retried. stopCtx bounds the waiting and the turn; ctx the rest.
 func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread string, trigger processingTrigger) (output workOutput, started bool, err error) {
-	release, err := b.acquireWork(stopCtx, threadKey, channel, threadTS)
+	// Work still waiting for its turn when a restart begins is deferred
+	// rather than started, so the restart only waits for running turns.
+	if b.draining() {
+		return workOutput{}, false, errDraining
+	}
+	waitCtx, stopWaiting := b.untilDrain(stopCtx)
+	release, err := b.acquireWork(waitCtx, threadKey, channel, threadTS)
 	if err != nil {
+		cause := context.Cause(waitCtx)
+		stopWaiting()
+		if errors.Is(cause, errDraining) {
+			return workOutput{}, false, errDraining
+		}
 		return workOutput{}, false, err
 	}
+	stopWaiting()
 	defer release()
 
 	// Checkouts are cloned only when the turn asks for them, so a request
@@ -1199,9 +1230,14 @@ func RunSocketMode(acceptCtx, turnCtx context.Context, botToken, appToken string
 	bot.api = &webAPI{client: client}
 	bot.config.BotUserID = auth.UserID
 	// Follow-ups post to Slack, so they start once the client is ready.
-	wg.Go(func() { bot.runFollowUps(acceptCtx, turnCtx, wg) })
-	wg.Go(func() { bot.runPullWatches(acceptCtx, turnCtx, wg) })
-	wg.Go(func() { bot.runSchedules(acceptCtx, turnCtx, wg) })
+	// They stop when a restart begins; what is due is left for the next
+	// process.
+	loopCtx, stopLoops := bot.untilDrain(acceptCtx)
+	defer stopLoops()
+	wg.Go(func() { bot.runFollowUps(loopCtx, turnCtx, wg) })
+	wg.Go(func() { bot.runPullWatches(loopCtx, turnCtx, wg) })
+	wg.Go(func() { bot.runSchedules(loopCtx, turnCtx, wg) })
+	wg.Go(func() { bot.runDeferred(turnCtx, wg) })
 	wg.Go(func() { bot.runUsageWatch(acceptCtx) })
 	socketClient := socketmode.New(client)
 	runErr := make(chan error, 1)
