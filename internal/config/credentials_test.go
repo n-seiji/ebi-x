@@ -38,7 +38,7 @@ func writeGlobalGitConfig(t *testing.T, content string) {
 // resolve runs resolveCredentialPaths with a fresh checkouts directory.
 func resolve(t *testing.T, roots, protected []string, allowed string) ([]string, error) {
 	t.Helper()
-	return resolveCredentialPaths(roots, protected, allowed, filepath.Join(t.TempDir(), "checkouts"))
+	return resolveCredentialPaths(roots, protected, allowed, filepath.Join(t.TempDir(), "checkouts"), os.Environ())
 }
 
 func runGit(t *testing.T, dir string, args ...string) {
@@ -191,7 +191,7 @@ func TestResolveCredentialPathsRemovesProbe(t *testing.T) {
 	root := newCredentialRepo(t, "git@github.com:o/r.git")
 	checkouts := filepath.Join(t.TempDir(), "checkouts")
 
-	if _, err := resolveCredentialPaths([]string{root}, nil, "", checkouts); err != nil {
+	if _, err := resolveCredentialPaths([]string{root}, nil, "", checkouts, os.Environ()); err != nil {
 		t.Fatalf("resolveCredentialPaths() error = %v, want nil", err)
 	}
 	entries, err := os.ReadDir(checkouts)
@@ -338,7 +338,7 @@ func TestResolveCredentialPathsRemovesStaleProbes(t *testing.T) {
 		}
 	}
 
-	if _, err := resolveCredentialPaths([]string{root}, nil, "", checkouts); err != nil {
+	if _, err := resolveCredentialPaths([]string{root}, nil, "", checkouts, os.Environ()); err != nil {
 		t.Fatalf("resolveCredentialPaths() error = %v, want nil", err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
@@ -346,5 +346,82 @@ func TestResolveCredentialPathsRemovesStaleProbes(t *testing.T) {
 	}
 	if _, err := os.Stat(keep); err != nil {
 		t.Errorf("unrelated checkout %s was removed: %v", keep, err)
+	}
+}
+
+func TestLoadPassesSSHAgentOnlyWhenSSHIsReadable(t *testing.T) {
+	tests := []struct {
+		name    string
+		allowed string
+		codex   string
+		origin  string
+		want    bool
+	}{
+		{"default withholds the agent socket", "", "", "", false},
+		{"allowed ~/.ssh passes it", "~/.ssh", "", "", true},
+		{"ssh origin passes it", "", "", "git@github.com:o/r.git", true},
+		{"https origin does not", "", "", "https://github.com/o/r.git", false},
+		{"operator listing passes it", "", "SSH_AUTH_SOCK", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workingDir := t.TempDir()
+			withWorkingDir(t, workingDir)
+			clearConfigEnv(t)
+			setRequiredEnv(t)
+			credentialTestHome(t)
+			t.Setenv("EBIX_HOME", filepath.Join(workingDir, "ebix"))
+			t.Setenv("EBIX_ALLOWED_READ_PATHS", tt.allowed)
+			t.Setenv("EBIX_CODEX_ENV", tt.codex)
+			if tt.origin != "" {
+				t.Setenv("EBIX_WRITABLE_ROOTS", newCredentialRepo(t, tt.origin))
+			}
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v, want nil", err)
+			}
+			if got := slices.Contains(cfg.CodexEnv, "SSH_AUTH_SOCK"); got != tt.want {
+				t.Errorf("CodexEnv = %v; SSH_AUTH_SOCK passed = %t, want %t", cfg.CodexEnv, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLoadDetectsPushCredentialsInCodexEnvironment checks that detection sees
+// the environment Codex gets: an insteadOf rewrite passed in GIT_CONFIG_* is
+// withheld from Codex, so a turn still pushes over SSH and needs ~/.ssh.
+func TestLoadDetectsPushCredentialsInCodexEnvironment(t *testing.T) {
+	tests := []struct {
+		name    string
+		codex   string
+		wantSSH bool // ~/.ssh left readable
+	}{
+		{"rewrite withheld from Codex", "", true},
+		{"rewrite passed to Codex", "GIT_CONFIG_COUNT,GIT_CONFIG_KEY_0,GIT_CONFIG_VALUE_0", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workingDir := t.TempDir()
+			withWorkingDir(t, workingDir)
+			clearConfigEnv(t)
+			setRequiredEnv(t)
+			home := credentialTestHome(t)
+			t.Setenv("EBIX_HOME", filepath.Join(workingDir, "ebix"))
+			t.Setenv("EBIX_CODEX_ENV", tt.codex)
+			t.Setenv("EBIX_WRITABLE_ROOTS", newCredentialRepo(t, "git@github.com:o/r.git"))
+			t.Setenv("GIT_CONFIG_COUNT", "1")
+			t.Setenv("GIT_CONFIG_KEY_0", "url.https://github.com/.insteadOf")
+			t.Setenv("GIT_CONFIG_VALUE_0", "git@github.com:")
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v, want nil", err)
+			}
+			ssh := filepath.Join(home, ".ssh")
+			if got := !slices.Contains(cfg.CredentialPaths, ssh); got != tt.wantSSH {
+				t.Errorf("CredentialPaths = %v; %s readable = %t, want %t", cfg.CredentialPaths, ssh, got, tt.wantSSH)
+			}
+		})
 	}
 }
