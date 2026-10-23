@@ -25,6 +25,8 @@ func TestParseDoneWatchCommand(t *testing.T) {
 		{"<@U2> <@UBOT> 2日おきに監視して", 3, true},
 		{"<@U2> <@UBOT> 3日ごとに監視して", 3, true},
 		{"<@U2> <@UBOT> 監視お願いします！", 2, true},
+		{"<@U2> <@UBOT> 7日ごとに監視して", 7, true},
+		{"<@U2> <@UBOT> 8日ごとに監視して", 0, false},
 		{"<@U2> <@UBOT> 30日ごとに監視して", 0, false},
 		{"<@UBOT> サーバーを監視して", 0, false},
 		{"<@UBOT> 監視して <@U2> 見てください", 0, false},
@@ -151,19 +153,19 @@ func TestCheckDoneWatchEnds(t *testing.T) {
 		name      string
 		reacted   []string
 		err       error
-		reminders int
+		createdAt time.Time
 		want      string
 	}{
-		{"all done", []string{"U2"}, nil, 0, doneWatchCompleted},
-		{"limit", nil, nil, maxDoneWatchReminders, "通知が上限の10回に達したため"},
-		{"message deleted", nil, slack.SlackErrorResponse{Err: "message_not_found"}, 0, doneWatchGoneMessage},
+		{"all done", []string{"U2"}, nil, time.Time{}, doneWatchCompleted},
+		{"a week passed", nil, nil, followUpNow.Add(-doneWatchDuration), "1週間たったため"},
+		{"message deleted", nil, slack.SlackErrorResponse{Err: "message_not_found"}, time.Time{}, doneWatchGoneMessage},
 	}
 	for _, test := range tests {
 		store := &fakeStore{claim: true}
 		api := &fakeSlack{reactionUsers: test.reacted, reactionUsersErr: test.err}
 		bot := newFollowUpBot(t, store, api, &fakeRunner{})
 		watch := watch
-		watch.Reminders = test.reminders
+		watch.CreatedAt = test.createdAt
 		store.SetDoneWatch(watch)
 
 		bot.checkDoneWatch(context.Background(), watch)
@@ -230,6 +232,93 @@ func TestDoneWatchChannelTargetsMembers(t *testing.T) {
 	}
 }
 
+func TestDoneWatchUserGroupTargetsMembers(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{
+		channelMembers: []string{"U1", "U2", "U5", "U7", "U8", "B1"},
+		groupMembers: map[string][]string{
+			"S1": {"U1", "U2", "U5", "B1"},
+			"S2": {"U5", "U7"},
+		},
+	}
+	bot := newFollowUpBot(t, store, api, &fakeRunner{})
+
+	bot.HandleMention(context.Background(), doneWatchMention("<@U9> <!subteam^S1|@dev_team> <!subteam^S2> 回答してください <@UBOT> 監視して"))
+
+	got, ok := store.doneWatches["C1:100.1"]
+	if !ok || strings.Join(got.Targets, ",") != "U9,U2,U5,U7" {
+		t.Fatalf("watches = %#v, want the named user, then both groups' members once each without the author or bots", store.doneWatches)
+	}
+	if last := api.postTexts[len(api.postTexts)-1]; strings.Contains(last, "このチャンネルにいない") {
+		t.Fatalf("start notice = %q, want no left-out note", last)
+	}
+}
+
+func TestDoneWatchUserGroupKeepsChannelMembersOnly(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{
+		channelMembers: []string{"U1", "U2"},
+		groupMembers:   map[string][]string{"S1": {"U1", "U2", "U3", "U4", "B9"}},
+	}
+	bot := newFollowUpBot(t, store, api, &fakeRunner{})
+
+	bot.HandleMention(context.Background(), doneWatchMention("<!subteam^S1> 回答してください <@UBOT> 監視して"))
+
+	got, ok := store.doneWatches["C1:100.1"]
+	if !ok || strings.Join(got.Targets, ",") != "U2" {
+		t.Fatalf("watches = %#v, want only the group member in the channel", store.doneWatches)
+	}
+	if last := api.postTexts[len(api.postTexts)-1]; !strings.Contains(last, fmt.Sprintf(doneWatchOutsideNotice, 2)) {
+		t.Fatalf("start notice = %q, want it to say 2 people outside the channel were left out", last)
+	}
+}
+
+func TestDoneWatchUserGroupAllOutsideChannel(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{
+		channelMembers: []string{"U1"},
+		groupMembers:   map[string][]string{"S1": {"U3", "U4"}},
+	}
+	bot := newFollowUpBot(t, store, api, &fakeRunner{})
+
+	bot.HandleMention(context.Background(), doneWatchMention("<!subteam^S1> 回答してください <@UBOT> 監視して"))
+
+	if len(store.doneWatches) != 0 || api.postTexts[len(api.postTexts)-1] != doneWatchAllOutsideNotice {
+		t.Fatalf("watches = %#v, posts = %q, want no watch", store.doneWatches, api.postTexts)
+	}
+}
+
+func TestDoneWatchUserGroupFromThreadRoot(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{
+		channelMembers: []string{"U1", "U2", "U3"},
+		groupMembers:   map[string][]string{"S1": {"U2", "U3"}},
+		threadMessages: []ThreadMessage{{AuthorID: "U1", Timestamp: "100.0", Text: "<!subteam^S1> 回答してください"}},
+	}
+	bot := newFollowUpBot(t, store, api, &fakeRunner{})
+	event := doneWatchMention("<@UBOT> 監視して")
+	event.ThreadTimeStamp = "100.0"
+
+	bot.HandleMention(context.Background(), event)
+
+	got, ok := store.doneWatches["C1:100.0"]
+	if !ok || strings.Join(got.Targets, ",") != "U2,U3" {
+		t.Fatalf("watches = %#v, want the group's members from the thread root", store.doneWatches)
+	}
+}
+
+func TestDoneWatchUserGroupMissingScope(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{groupMembersErr: slack.SlackErrorResponse{Err: "missing_scope"}}
+	bot := newFollowUpBot(t, store, api, &fakeRunner{})
+
+	bot.HandleMention(context.Background(), doneWatchMention("<!subteam^S1> 回答してください <@UBOT> 監視して"))
+
+	if len(store.doneWatches) != 0 || api.postTexts[len(api.postTexts)-1] != doneWatchScopeNotice {
+		t.Fatalf("watches = %#v, posts = %q", store.doneWatches, api.postTexts)
+	}
+}
+
 func TestDoneWatchChannelRefusals(t *testing.T) {
 	many := make([]string, maxDoneWatchTargets+5)
 	for i := range many {
@@ -253,6 +342,39 @@ func TestDoneWatchChannelRefusals(t *testing.T) {
 
 		if len(store.doneWatches) != 0 || api.postTexts[len(api.postTexts)-1] != test.want {
 			t.Errorf("%s: watches = %#v, posts = %q", test.name, store.doneWatches, api.postTexts)
+		}
+	}
+}
+
+func TestDoneWatchNotesNamedPeopleOutsideChannel(t *testing.T) {
+	tests := []struct {
+		name     string
+		members  []string
+		err      error
+		wantNote string // "" for no note
+	}{
+		{"one outside", []string{"U1", "U2"}, nil, "<@U3> はまだこのチャンネルに参加していないようです"},
+		{"all inside", []string{"U1", "U2", "U3"}, nil, ""},
+		{"no channels:read", nil, slack.SlackErrorResponse{Err: "missing_scope"}, ""},
+	}
+	for _, test := range tests {
+		store := &fakeStore{claim: true}
+		api := &fakeSlack{channelMembers: test.members, channelMembersErr: test.err}
+		bot := newFollowUpBot(t, store, api, &fakeRunner{})
+
+		bot.HandleMention(context.Background(), doneWatchMention("<@U2> <@U3> 確認お願いします <@UBOT> 監視して"))
+
+		got, ok := store.doneWatches["C1:100.1"]
+		if !ok || strings.Join(got.Targets, ",") != "U2,U3" {
+			t.Errorf("%s: watch = %#v, want U2 and U3 kept as targets", test.name, got)
+			continue
+		}
+		post := api.postTexts[len(api.postTexts)-1]
+		if test.wantNote == "" && strings.Contains(post, "参加していない") {
+			t.Errorf("%s: notice = %q, want no outside note", test.name, post)
+		}
+		if test.wantNote != "" && !strings.Contains(post, test.wantNote) {
+			t.Errorf("%s: notice = %q, want %q", test.name, post, test.wantNote)
 		}
 	}
 }

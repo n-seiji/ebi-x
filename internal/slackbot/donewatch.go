@@ -23,26 +23,30 @@ const (
 	// defaultDoneWatchDays is the gap between reminders when the command
 	// names none: every other day.
 	defaultDoneWatchDays = 2
-	maxDoneWatchDays     = 14
-	// maxDoneWatchReminders caps the reminders one watch posts.
-	maxDoneWatchReminders = 10
+	maxDoneWatchDays     = 7
+	// doneWatchDuration is how long a watch runs unless everyone reacts or
+	// someone stops it first.
+	doneWatchDuration = 7 * 24 * time.Hour
 	// maxDoneWatchesPerUser bounds the watches one person keeps running.
 	maxDoneWatchesPerUser = 10
 	maxDoneWatchTargets   = 100
 
-	doneWatchStartedNotice  = "👀 :done: の監視を始めます。対象は元メッセージで @メンションされた%d人です。%sに確認し、まだ :done: を付けていない人にこのスレッドで通知します（次回 %s）。\n全員が付けたら終了します。止める場合は、このスレッドで「@ebi-x 監視をとめて」と mention してください。"
-	doneWatchAllDoneNotice  = "✅ 対象の全員がすでに :done: を付けているため、監視は始めていません。"
-	doneWatchNoTargetNotice = "⚠️ @メンションされた人が見つからなかったため、監視は始めていません。対象の人を @メンションしたメッセージの末尾で「@ebi-x 監視して」と書いてください。"
-	doneWatchLimitNotice    = "⚠️ 1人が同時に続けられる監視は%d件までのため、監視は始めていません。不要な監視を、そのスレッドで「@ebi-x 監視をとめて」と mention して止めてください。"
-	doneWatchTooManyNotice  = "⚠️ 対象が%d人を超えるため、監視は始めていません。"
-	doneWatchScopeNotice    = "⚠️ @channel の対象を調べるには、Slack アプリに channels:read・groups:read・users:read の scope が必要です。管理者に追加を頼んでください。"
-	doneWatchFailedNotice   = "⚠️ 監視を始められませんでした。もう一度 mention してください。"
-	doneWatchReminder       = "%s\n:done: のリアクションがまだのようです。対応が済んだら、%sに :done: を付けてください。（%d回目の通知）"
-	doneWatchCompleted      = "✅ 対象の全員が :done: を付けたため、監視を終了しました。"
-	doneWatchLimitReached   = "⚠️ 通知が上限の%d回に達したため、監視を終了しました。まだの人: %s"
-	doneWatchGoneMessage    = "元メッセージが見つからなくなったため、:done: の監視を終了しました。"
-	doneWatchStoppedMessage = ":done: の監視を終了しました。"
-	doneWatchNothingToStop  = "このスレッドで続けている :done: の監視はありません。"
+	doneWatchStartedNotice    = "👀 :done: の監視を始めます。対象は元メッセージで @メンションされた%d人です。%sに確認し、まだ :done: を付けていない人にこのスレッドで通知します（次回 %s）。%s\n全員が付けるか1週間たったら終了します。止める場合は、このスレッドで「@ebi-x 監視をとめて」と mention してください。"
+	doneWatchAllDoneNotice    = "✅ 対象の全員がすでに :done: を付けているため、監視は始めていません。"
+	doneWatchNoTargetNotice   = "⚠️ @メンションされた人が見つからなかったため、監視は始めていません。対象の人を @メンションしたメッセージの末尾で「@ebi-x 監視して」と書いてください。"
+	doneWatchLimitNotice      = "⚠️ 1人が同時に続けられる監視は%d件までのため、監視は始めていません。不要な監視を、そのスレッドで「@ebi-x 監視をとめて」と mention して止めてください。"
+	doneWatchTooManyNotice    = "⚠️ 対象が%d人を超えるため、監視は始めていません。"
+	doneWatchScopeNotice      = "⚠️ @channel やユーザーグループの対象を調べるには、Slack アプリに channels:read・groups:read・usergroups:read・users:read の scope が必要です。管理者に追加を頼んでください。"
+	doneWatchOutsideNotice    = "ユーザーグループのうち、このチャンネルにいない%d人は通知が届かないため対象から外しました。"
+	doneWatchNamedOutsideNote = "%s はまだこのチャンネルに参加していないようです。招待しないと通知が届きません。"
+	doneWatchAllOutsideNotice = "⚠️ ユーザーグループのメンバーは全員このチャンネルにいないため、通知が届きません。監視は始めていません。メンバーをチャンネルに招待してから、もう一度「@ebi-x 監視して」と mention してください。"
+	doneWatchFailedNotice     = "⚠️ 監視を始められませんでした。もう一度 mention してください。"
+	doneWatchReminder         = "%s\n:done: のリアクションがまだのようです。対応が済んだら、%sに :done: を付けてください。（%d回目の通知）"
+	doneWatchCompleted        = "✅ 対象の全員が :done: を付けたため、監視を終了しました。"
+	doneWatchExpired          = "⚠️ 監視を始めてから1週間たったため、監視を終了しました。まだの人: %s"
+	doneWatchGoneMessage      = "元メッセージが見つからなくなったため、:done: の監視を終了しました。"
+	doneWatchStoppedMessage   = ":done: の監視を終了しました。"
+	doneWatchNothingToStop    = "このスレッドで続けている :done: の監視はありません。"
 )
 
 // doneWatchCommand is what follows the bot's mention at the end of a message
@@ -58,6 +62,10 @@ var slackUserMention = regexp.MustCompile(`<@([UW][A-Z0-9]+)(?:\|[^>]*)?>`)
 // slackBroadcast matches @channel, @here, and @everyone, which a watch reads
 // as every member of the channel.
 var slackBroadcast = regexp.MustCompile(`<!(?:channel|here|everyone)(?:\|[^>]*)?>`)
+
+// slackUserGroup matches a user group mention such as @dev_team, which a
+// watch reads as every member of the group.
+var slackUserGroup = regexp.MustCompile(`<!subteam\^([A-Z0-9]+)(?:\|[^>]*)?>`)
 
 // parseDoneWatchCommand reports whether text ends with the bot's mention and
 // a watch command, and the days between reminders it asks for.
@@ -125,7 +133,8 @@ func (b *Bot) startDoneWatch(ctx context.Context, channel, threadTS, timestamp, 
 	messageTS := timestamp
 	targets := mentionedUsers(text, b.config.BotUserID)
 	everyone := slackBroadcast.MatchString(text)
-	if len(targets) == 0 && !everyone && threadTS != timestamp {
+	groups := mentionedGroups(text)
+	if len(targets) == 0 && !everyone && len(groups) == 0 && threadTS != timestamp {
 		messages, err := b.api.GetThreadMessages(ctx, channel, threadTS, threadTS)
 		if err != nil {
 			log.Printf("slackbot: read thread %s for done watch: %v", threadRef(channel, threadTS), err)
@@ -137,14 +146,21 @@ func (b *Bot) startDoneWatch(ctx context.Context, channel, threadTS, timestamp, 
 				messageTS = threadTS
 				targets = mentionedUsers(message.Text, b.config.BotUserID)
 				everyone = slackBroadcast.MatchString(message.Text)
+				groups = mentionedGroups(message.Text)
 				break
 			}
 		}
 	}
-	if everyone {
-		members, err := b.api.ChannelMembers(ctx, channel, maxDoneWatchTargets+1)
+	outside := 0
+	var namedOutside []string
+	if everyone || len(groups) > 0 {
+		channelMembers, err := b.api.ChannelMembers(ctx, channel)
+		if err == nil {
+			namedOutside = notIn(targets, channelMembers)
+			targets, outside, err = b.expandDoneWatchTargets(ctx, channelMembers, targets, everyone, groups, authorID)
+		}
 		if err != nil {
-			log.Printf("slackbot: list members of %s for done watch: %v", channel, err)
+			log.Printf("slackbot: list members for done watch in %s: %v", channel, err)
 			notice := doneWatchFailedNotice
 			if response, ok := errors.AsType[slack.SlackErrorResponse](err); ok && response.Err == "missing_scope" {
 				notice = doneWatchScopeNotice
@@ -152,10 +168,22 @@ func (b *Bot) startDoneWatch(ctx context.Context, channel, threadTS, timestamp, 
 			b.postDoneWatchNotice(ctx, channel, threadTS, notice)
 			return
 		}
-		targets = mergeTargets(targets, members, authorID, b.config.BotUserID)
+	} else if len(targets) > 0 {
+		// Named people stay targets even when they are not in the channel,
+		// since the author meant them; the start notice says so, so the
+		// author can invite them. Without channels:read the note is skipped.
+		if channelMembers, err := b.api.ChannelMembers(ctx, channel); err == nil {
+			namedOutside = notIn(targets, channelMembers)
+		} else {
+			log.Printf("slackbot: list members of %s for done watch: %v", channel, err)
+		}
 	}
 	if len(targets) == 0 {
-		b.postDoneWatchNotice(ctx, channel, threadTS, doneWatchNoTargetNotice)
+		notice := doneWatchNoTargetNotice
+		if outside > 0 {
+			notice = doneWatchAllOutsideNotice
+		}
+		b.postDoneWatchNotice(ctx, channel, threadTS, notice)
 		return
 	}
 	if len(targets) > maxDoneWatchTargets {
@@ -195,7 +223,64 @@ func (b *Bot) startDoneWatch(ctx context.Context, channel, threadTS, timestamp, 
 		return
 	}
 	b.addReaction(ctx, channel, timestamp, "eyes")
-	b.postDoneWatchNotice(ctx, channel, threadTS, fmt.Sprintf(doneWatchStartedNotice, len(targets), doneWatchIntervalLabel(days), formatFollowUpTime(watch.NextAt)))
+	outsideNote := ""
+	if outside > 0 {
+		outsideNote = fmt.Sprintf(doneWatchOutsideNotice, outside)
+	}
+	if len(namedOutside) > 0 {
+		outsideNote += fmt.Sprintf(doneWatchNamedOutsideNote, userMentions(namedOutside))
+	}
+	b.postDoneWatchNotice(ctx, channel, threadTS, fmt.Sprintf(doneWatchStartedNotice, len(targets), doneWatchIntervalLabel(days), formatFollowUpTime(watch.NextAt), outsideNote))
+}
+
+// expandDoneWatchTargets adds the people that @channel and user group
+// mentions stand for. Only channel members count, since a mention does not
+// reach anyone else; outside is how many group members were left out for
+// that.
+func (b *Bot) expandDoneWatchTargets(ctx context.Context, channelMembers, named []string, everyone bool, groups []string, authorID string) (targets []string, outside int, err error) {
+	inChannel := makeSet(channelMembers)
+	var members []string
+	if everyone {
+		members = append(members, channelMembers...)
+	}
+	var away []string
+	for _, group := range groups {
+		groupMembers, err := b.api.UserGroupMembers(ctx, group)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, member := range groupMembers {
+			if _, ok := inChannel[member]; ok {
+				members = append(members, member)
+			} else {
+				away = append(away, member)
+			}
+		}
+	}
+	// One People call over everyone keeps it to a single users.list walk.
+	people, err := b.api.People(ctx, append(members, away...))
+	if err != nil {
+		return nil, 0, err
+	}
+	isPerson := makeSet(people)
+	var humans []string
+	for _, member := range members {
+		if _, ok := isPerson[member]; ok {
+			humans = append(humans, member)
+		}
+	}
+	targets = mergeTargets(named, humans, authorID, b.config.BotUserID)
+	chosen := makeSet(targets)
+	counted := map[string]struct{}{}
+	for _, member := range away {
+		_, person := isPerson[member]
+		_, target := chosen[member]
+		_, seen := counted[member]
+		if person && !target && !seen && member != authorID {
+			counted[member] = struct{}{}
+		}
+	}
+	return targets, len(counted), nil
 }
 
 func (b *Bot) postDoneWatchNotice(ctx context.Context, channel, threadTS, text string) {
@@ -215,8 +300,36 @@ func doneWatchIntervalLabel(days int) string {
 	return fmt.Sprintf("%d日ごと", days)
 }
 
-// mergeTargets adds the channel's members after the people mentioned by
-// name, leaving out the author and the bot unless they were named.
+// notIn returns the users that are not among members, in order.
+func notIn(users, members []string) []string {
+	in := makeSet(members)
+	var out []string
+	for _, user := range users {
+		if _, ok := in[user]; !ok {
+			out = append(out, user)
+		}
+	}
+	return out
+}
+
+// mentionedGroups lists the user groups mentioned in text, in order and
+// without repeats.
+func mentionedGroups(text string) []string {
+	var groups []string
+	seen := map[string]struct{}{}
+	for _, match := range slackUserGroup.FindAllStringSubmatch(text, -1) {
+		if _, ok := seen[match[1]]; ok {
+			continue
+		}
+		seen[match[1]] = struct{}{}
+		groups = append(groups, match[1])
+	}
+	return groups
+}
+
+// mergeTargets adds the channel's and the groups' members after the people
+// mentioned by name, leaving out the author and the bot unless they were
+// named.
 func mergeTargets(named, members []string, authorID, botUserID string) []string {
 	targets := append([]string(nil), named...)
 	seen := makeSet(named)
@@ -291,18 +404,18 @@ func (b *Bot) checkDoneWatch(ctx context.Context, watch state.DoneWatch) {
 		b.endDoneWatch(ctx, watch, doneWatchCompleted)
 		return
 	}
-	if b.now().Before(watch.NextAt) {
+	if !watch.CreatedAt.IsZero() && !b.now().Before(watch.CreatedAt.Add(doneWatchDuration)) {
+		b.endDoneWatch(ctx, watch, fmt.Sprintf(doneWatchExpired, userMentions(pending)))
 		return
 	}
-	if watch.Reminders >= maxDoneWatchReminders {
-		b.endDoneWatch(ctx, watch, fmt.Sprintf(doneWatchLimitReached, maxDoneWatchReminders, userMentions(pending)))
+	if b.now().Before(watch.NextAt) {
 		return
 	}
 	// Count the reminder before posting, so a crash cannot remind twice, and
 	// only while the watch is still saved, so a stop during this check wins.
 	now := b.now()
 	watch, ok, err := b.store.UpdateDoneWatch(key, func(saved *state.DoneWatch) bool {
-		if now.Before(saved.NextAt) || saved.Reminders >= maxDoneWatchReminders {
+		if now.Before(saved.NextAt) {
 			return false
 		}
 		saved.Reminders++
