@@ -77,6 +77,9 @@ type Store struct {
 	schedulesMu sync.Mutex
 	schedules   map[string]Schedule
 
+	doneWatchesMu sync.Mutex
+	doneWatches   map[string]DoneWatch
+
 	usageMu sync.Mutex
 	usage   Usage
 }
@@ -137,6 +140,14 @@ func NewStore(dir string) (*Store, error) {
 		schedules = make(map[string]Schedule)
 	}
 
+	doneWatches := make(map[string]DoneWatch)
+	if err := loadJSON(filepath.Join(dir, doneWatchesFilename), &doneWatches); err != nil {
+		return nil, fmt.Errorf("load done watches: %w", err)
+	}
+	if doneWatches == nil {
+		doneWatches = make(map[string]DoneWatch)
+	}
+
 	var usage Usage
 	if err := loadJSON(filepath.Join(dir, usageFilename), &usage); err != nil {
 		return nil, fmt.Errorf("load usage: %w", err)
@@ -156,6 +167,7 @@ func NewStore(dir string) (*Store, error) {
 		followUps:     followUps,
 		pullWatches:   pullWatches,
 		schedules:     schedules,
+		doneWatches:   doneWatches,
 		usage:         usage,
 	}, nil
 }
