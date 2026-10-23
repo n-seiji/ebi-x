@@ -57,6 +57,8 @@ type SlackAPI interface {
 	GetThreadMessages(ctx context.Context, channel, threadTS, latest string) ([]ThreadMessage, error)
 	SetStatus(ctx context.Context, channel, threadTS, status string) error
 	HasReaction(ctx context.Context, channel, timestamp, reaction string) (bool, error)
+	// ReactionUsers lists the users who reacted to the message with reaction.
+	ReactionUsers(ctx context.Context, channel, timestamp, reaction string) ([]string, error)
 	AddReaction(ctx context.Context, channel, timestamp, name string) error
 	RemoveReaction(ctx context.Context, channel, timestamp, name string) error
 	UploadFile(ctx context.Context, channel, threadTS, filename string, size int64, content io.Reader) error
@@ -98,6 +100,9 @@ type Store interface {
 	GetPullWatch(key string) (state.PullWatch, bool)
 	SetPullWatch(watch state.PullWatch) error
 	DeletePullWatches(match func(state.PullWatch) bool) ([]state.PullWatch, error)
+	DoneWatches() []state.DoneWatch
+	SetDoneWatch(watch state.DoneWatch) error
+	DeleteDoneWatches(match func(state.DoneWatch) bool) ([]state.DoneWatch, error)
 	Usage() state.Usage
 	SetUsage(usage state.Usage) error
 }
@@ -314,6 +319,17 @@ func (b *Bot) handleMention(ctx context.Context, event *slackevents.AppMentionEv
 	}
 	if isStopCommand(message) {
 		b.stopThread(ctx, event.Channel, threadTS, event.TimeStamp)
+		return
+	}
+	// Reminding people to react is the bot's own job, not the agent's, so
+	// these commands never start a turn. Workflows cannot start a watch,
+	// since it mentions people on its own for days.
+	if isDoneWatchStopCommand(message) {
+		b.stopDoneWatchCommand(ctx, event.Channel, threadTS)
+		return
+	}
+	if days, ok := parseDoneWatchCommand(event.Text, b.config.BotUserID); ok && event.BotID == "" {
+		b.startDoneWatch(ctx, event.Channel, threadTS, event.TimeStamp, event.Text, event.User, days)
 		return
 	}
 	b.processTrigger(ctx, processingTrigger{
@@ -1165,6 +1181,20 @@ func (w *webAPI) HasReaction(ctx context.Context, channel, timestamp, reaction s
 	return false, nil
 }
 
+func (w *webAPI) ReactionUsers(ctx context.Context, channel, timestamp, reaction string) ([]string, error) {
+	// Full asks for every user; without it Slack shortens long lists.
+	reactions, err := w.client.GetReactionsContext(ctx, slack.ItemRef{Channel: channel, Timestamp: timestamp}, slack.GetReactionsParameters{Full: true})
+	if err != nil {
+		return nil, err
+	}
+	for _, itemReaction := range reactions {
+		if itemReaction.Name == reaction {
+			return itemReaction.Users, nil
+		}
+	}
+	return nil, nil
+}
+
 func (w *webAPI) AddReaction(ctx context.Context, channel, timestamp, name string) error {
 	return w.client.AddReactionContext(ctx, name, slack.ItemRef{Channel: channel, Timestamp: timestamp})
 }
@@ -1203,6 +1233,7 @@ func RunSocketMode(acceptCtx, turnCtx context.Context, botToken, appToken string
 	wg.Go(func() { bot.runPullWatches(acceptCtx, turnCtx, wg) })
 	wg.Go(func() { bot.runSchedules(acceptCtx, turnCtx, wg) })
 	wg.Go(func() { bot.runUsageWatch(acceptCtx) })
+	wg.Go(func() { bot.runDoneWatches(acceptCtx) })
 	socketClient := socketmode.New(client)
 	runErr := make(chan error, 1)
 	go func() {

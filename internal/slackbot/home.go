@@ -84,6 +84,13 @@ func (b *Bot) publishHome(ctx context.Context, userID string) {
 		}
 	}
 
+	var doneWatches []homeThread
+	for _, watch := range b.store.DoneWatches() {
+		if watch.AuthorID == userID {
+			doneWatches = append(doneWatches, homeThread{channel: watch.Channel, threadTS: watch.ThreadTS, detail: doneWatchSummary(watch)})
+		}
+	}
+
 	links := make(map[string]string)
 	sections := []string{homeTitle}
 	sections = append(sections, b.homeSection(ctx, links, "⏳ 作業中", running, func(item homeThread) string {
@@ -96,6 +103,9 @@ func (b *Bot) publishHome(ctx context.Context, userID string) {
 		return item.detail
 	}))
 	sections = append(sections, b.homeSection(ctx, links, "🔁 定期実行", schedules, func(item homeThread) string {
+		return item.detail
+	}))
+	sections = append(sections, b.homeSection(ctx, links, "✅ :done: の監視", doneWatches, func(item homeThread) string {
 		return item.detail
 	}))
 	sections = append(sections, homeUserSettings(b.readUserSettings(userID)))

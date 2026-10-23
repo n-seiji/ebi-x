@@ -42,6 +42,7 @@ type fakeStore struct {
 	followUps           map[string]state.FollowUp
 	pullWatches         map[string]state.PullWatch
 	schedules           map[string]state.Schedule
+	doneWatches         map[string]state.DoneWatch
 	usage               state.Usage
 }
 
@@ -146,6 +147,39 @@ func (s *fakeStore) DeletePullWatches(match func(state.PullWatch) bool) ([]state
 		if match(watch) {
 			removed = append(removed, watch)
 			delete(s.pullWatches, key)
+		}
+	}
+	return removed, nil
+}
+
+func (s *fakeStore) DoneWatches() []state.DoneWatch {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var watches []state.DoneWatch
+	for _, watch := range s.doneWatches {
+		watches = append(watches, watch)
+	}
+	return watches
+}
+
+func (s *fakeStore) SetDoneWatch(watch state.DoneWatch) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.doneWatches == nil {
+		s.doneWatches = make(map[string]state.DoneWatch)
+	}
+	s.doneWatches[watch.Key()] = watch
+	return nil
+}
+
+func (s *fakeStore) DeleteDoneWatches(match func(state.DoneWatch) bool) ([]state.DoneWatch, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var removed []state.DoneWatch
+	for key, watch := range s.doneWatches {
+		if match(watch) {
+			removed = append(removed, watch)
+			delete(s.doneWatches, key)
 		}
 	}
 	return removed, nil
@@ -301,6 +335,10 @@ type fakeSlack struct {
 	uploads           []fakeUpload
 	uploadErrs        []error
 	posts             []fakePost
+	// reactionUsers are the users ReactionUsers returns, and
+	// reactionUsersErr its error.
+	reactionUsers    []string
+	reactionUsersErr error
 	// topTimestamp, when set, is returned for top-level posts instead of
 	// the default placeholder, for flows that run work in the new thread.
 	topTimestamp string
@@ -436,6 +474,12 @@ func (s *fakeSlack) HasReaction(_ context.Context, channel, timestamp, reaction 
 		return s.hasReaction, err
 	}
 	return s.hasReaction, s.reactionErr
+}
+
+func (s *fakeSlack) ReactionUsers(_ context.Context, _, _, _ string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.reactionUsers...), s.reactionUsersErr
 }
 
 type runnerResponse struct {
@@ -1779,7 +1823,12 @@ func (s *looseStore) SetFollowUp(string, state.FollowUp) error    { return nil }
 func (s *looseStore) PullWatches() []state.PullWatch              { return nil }
 func (s *looseStore) FollowUps() []state.FollowUp                 { return nil }
 func (s *looseStore) GetPullWatch(string) (state.PullWatch, bool) { return state.PullWatch{}, false }
-func (s *looseStore) SetPullWatch(state.PullWatch) error          { return nil }
+func (s *looseStore) DoneWatches() []state.DoneWatch              { return nil }
+func (s *looseStore) SetDoneWatch(state.DoneWatch) error          { return nil }
+func (s *looseStore) DeleteDoneWatches(func(state.DoneWatch) bool) ([]state.DoneWatch, error) {
+	return nil, nil
+}
+func (s *looseStore) SetPullWatch(state.PullWatch) error { return nil }
 func (s *looseStore) DeletePullWatches(func(state.PullWatch) bool) ([]state.PullWatch, error) {
 	return nil, nil
 }
