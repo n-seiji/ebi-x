@@ -125,7 +125,7 @@ func (r *Runner) Run(
 	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, r.Command, args...)
-	cmd.Env = filterEnv(os.Environ(), r.PassEnv)
+	cmd.Env = FilterEnv(os.Environ(), r.PassEnv)
 	cmd.Stdin = strings.NewReader(prompt)
 
 	stdout, err := cmd.StdoutPipe()
@@ -205,14 +205,14 @@ func codexHomeDenied(home string) ([]string, error) {
 	return denied, nil
 }
 
-// filterEnv returns the entries of env that Codex may inherit: the built-in
+// FilterEnv returns the entries of env that Codex may inherit: the built-in
 // allowlist plus the names in extra.
-func filterEnv(env, extra []string) []string {
+func FilterEnv(env, extra []string) []string {
 	kept, _ := splitEnv(env, extra)
 	return kept
 }
 
-// WithheldEnvNames returns the sorted names in env that filterEnv drops.
+// WithheldEnvNames returns the sorted names in env that FilterEnv drops.
 func WithheldEnvNames(env, extra []string) []string {
 	_, withheld := splitEnv(env, extra)
 	slices.Sort(withheld)
@@ -269,6 +269,23 @@ func shellEnvPolicyOverrides() []string {
 }
 
 var shellEnvExcluded = []string{"OPENAI_API_KEY", "CODEX_API_KEY"}
+
+// shellEnvDefaultExcludeMarkers are the substrings of Codex's default shell
+// environment excludes, which ignore_default_excludes=false keeps on. They
+// differ from envSecretMarkers, ebi-x's own rule for allowed prefixes.
+var shellEnvDefaultExcludeMarkers = []string{"KEY", "SECRET", "TOKEN"}
+
+// HiddenFromCommands reports whether Codex removes the variable from the
+// commands it runs although Codex itself inherits it.
+func HiddenFromCommands(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, marker := range shellEnvDefaultExcludeMarkers {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	return slices.Contains(shellEnvExcluded, name)
+}
 
 func buildArgs(threadID, sandbox, cwd string, writableRoots, deniedReadPaths []string, model, developerInstructions string) []string {
 	return buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, deniedReadPaths, model, developerInstructions, nil)

@@ -100,7 +100,7 @@ func (r *Runner) ReadRateLimits(ctx context.Context) (*RateLimits, error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, r.Command, "app-server")
-	cmd.Env = filterEnv(os.Environ(), r.PassEnv)
+	cmd.Env = FilterEnv(os.Environ(), r.PassEnv)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("codex app-server: stdin pipe: %w", err)

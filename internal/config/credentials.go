@@ -61,7 +61,7 @@ type pushExemption struct {
 // checkoutsDir is where thread checkouts are created; push credentials are
 // detected from a scratch repository there, which sees the same git
 // configuration (global, system, and includeIf) a thread checkout will.
-func resolveCredentialPaths(writableRoots, protectedPaths []string, allowed, checkoutsDir string) ([]string, error) {
+func resolveCredentialPaths(writableRoots, protectedPaths []string, allowed, checkoutsDir string, env []string) ([]string, error) {
 	known := make(map[string]struct{}, len(credentialPaths))
 	for _, item := range credentialPaths {
 		path, err := canonicalHomePath(item)
@@ -90,7 +90,7 @@ func resolveCredentialPaths(writableRoots, protectedPaths []string, allowed, che
 		if !repo {
 			continue
 		}
-		exemptions, err := pushExemptions(ctx, root, checkoutsDir)
+		exemptions, err := pushExemptions(ctx, env, root, checkoutsDir)
 		if err != nil {
 			return nil, fmt.Errorf("detect push credentials of %q: %w", root, err)
 		}
@@ -133,7 +133,7 @@ func canonicalHomePath(path string) (string, error) {
 // manager copies over. So the detection runs in a scratch repository under
 // checkoutsDir with that same origin URL, where git reads the same global and
 // system configuration a checkout will.
-func pushExemptions(ctx context.Context, root, checkoutsDir string) ([]pushExemption, error) {
+func pushExemptions(ctx context.Context, env []string, root, checkoutsDir string) ([]pushExemption, error) {
 	origin, err := workspace.OriginURL(ctx, root)
 	if err != nil {
 		log.Printf("credential detection: read origin of %s: %v", root, err)
@@ -147,22 +147,22 @@ func pushExemptions(ctx context.Context, root, checkoutsDir string) ([]pushExemp
 		return nil, fmt.Errorf("create credential probe: %w", err)
 	}
 	defer os.RemoveAll(probe)
-	if _, err := gitConfigOutput(ctx, probe, "init", "-q"); err != nil {
+	if _, err := gitConfigOutput(ctx, env, probe, "init", "-q"); err != nil {
 		return nil, err
 	}
 
 	var exemptions []pushExemption
 	if origin != "" {
-		if _, err := gitConfigOutput(ctx, probe, "config", "remote.origin.url", origin); err != nil {
+		if _, err := gitConfigOutput(ctx, env, probe, "config", "remote.origin.url", origin); err != nil {
 			return nil, err
 		}
-		found, err := originExemptions(ctx, root, probe)
+		found, err := originExemptions(ctx, env, root, probe)
 		if err != nil {
 			return nil, err
 		}
 		exemptions = append(exemptions, found...)
 	}
-	found, err := signingExemptions(ctx, root, probe)
+	found, err := signingExemptions(ctx, env, root, probe)
 	if err != nil {
 		return nil, err
 	}
@@ -194,10 +194,10 @@ func removeStaleProbes(checkoutsDir string) {
 	}
 }
 
-// gitConfigOutput runs git in dir and returns its stdout.
-func gitConfigOutput(ctx context.Context, dir string, args ...string) (string, error) {
+// gitConfigOutput runs git in dir with env and returns its stdout.
+func gitConfigOutput(ctx context.Context, env []string, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(slices.Clone(env), "GIT_TERMINAL_PROMPT=0")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -212,8 +212,8 @@ func gitConfigOutput(ctx context.Context, dir string, args ...string) (string, e
 
 // gitConfigValues returns the values git prints for a config query, one per
 // line, and none when the key is not set (exit status 1).
-func gitConfigValues(ctx context.Context, dir string, args ...string) ([]string, error) {
-	out, err := gitConfigOutput(ctx, dir, append([]string{"config"}, args...)...)
+func gitConfigValues(ctx context.Context, env []string, dir string, args ...string) ([]string, error) {
+	out, err := gitConfigOutput(ctx, env, dir, append([]string{"config"}, args...)...)
 	if err != nil {
 		if exitErr := (*exec.ExitError)(nil); errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return nil, nil
@@ -225,8 +225,8 @@ func gitConfigValues(ctx context.Context, dir string, args ...string) ([]string,
 
 // originExemptions returns the credential stores pushing to the probe's
 // origin needs.
-func originExemptions(ctx context.Context, root, probe string) ([]pushExemption, error) {
-	out, err := gitConfigOutput(ctx, probe, "remote", "get-url", "--push", "origin")
+func originExemptions(ctx context.Context, env []string, root, probe string) ([]pushExemption, error) {
+	out, err := gitConfigOutput(ctx, env, probe, "remote", "get-url", "--push", "origin")
 	if err != nil {
 		log.Printf("credential detection: resolve the push URL of %s: %v", root, err)
 		return nil, nil
@@ -248,7 +248,7 @@ func originExemptions(ctx context.Context, root, probe string) ([]pushExemption,
 	u.User = nil
 	where := "pushes to its origin " + u.Host
 
-	helpers, err := helperChain(ctx, probe)
+	helpers, err := helperChain(ctx, env, probe)
 	if err != nil {
 		log.Printf("credential detection: read credential helpers of %s: %v", root, err)
 		return nil, nil
@@ -300,8 +300,8 @@ func originExemptions(ctx context.Context, root, probe string) ([]pushExemption,
 // breaks a push. Empty values, which reset the list at the point they appear,
 // are ignored for the same reason: honoring one could drop a helper the
 // remaining sections still call.
-func helperChain(ctx context.Context, probe string) ([]string, error) {
-	lines, err := gitConfigValues(ctx, probe, "--get-regexp", `^credential\..*helper$`)
+func helperChain(ctx context.Context, env []string, probe string) ([]string, error) {
+	lines, err := gitConfigValues(ctx, env, probe, "--get-regexp", `^credential\..*helper$`)
 	if err != nil {
 		return nil, err
 	}
@@ -326,8 +326,8 @@ func helperLabel(helper string) string {
 }
 
 // signingExemptions returns the credential stores commit signing needs.
-func signingExemptions(ctx context.Context, root, probe string) ([]pushExemption, error) {
-	signing, err := gitConfigValues(ctx, probe, "--type=bool", "--get", "commit.gpgsign")
+func signingExemptions(ctx context.Context, env []string, root, probe string) ([]pushExemption, error) {
+	signing, err := gitConfigValues(ctx, env, probe, "--type=bool", "--get", "commit.gpgsign")
 	if err != nil {
 		log.Printf("credential detection: read commit.gpgsign of %s: %v", root, err)
 		return nil, nil
@@ -335,7 +335,7 @@ func signingExemptions(ctx context.Context, root, probe string) ([]pushExemption
 	if len(signing) == 0 || signing[len(signing)-1] != "true" {
 		return nil, nil
 	}
-	format, err := gitConfigValues(ctx, probe, "--get", "gpg.format")
+	format, err := gitConfigValues(ctx, env, probe, "--get", "gpg.format")
 	if err != nil {
 		log.Printf("credential detection: read gpg.format of %s: %v", root, err)
 		return nil, nil

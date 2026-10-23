@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/n-seiji/ebi-x/internal/codex"
 )
 
 const (
@@ -262,7 +264,10 @@ func Load() (*Config, error) {
 	// Credential stores stay out of the isolation checks below: Codex gives
 	// deny precedence over writable roots, and a root containing ~ must not
 	// fail startup.
-	credentialPaths, err := resolveCredentialPaths(writableRoots, protectedPaths, os.Getenv("EBIX_ALLOWED_READ_PATHS"), checkoutsDir)
+	// Detection runs git with the environment Codex will get, so variables
+	// withheld from it (such as a GIT_CONFIG_* insteadOf rewrite) cannot make
+	// the detected push URL differ from the one a turn pushes to.
+	credentialPaths, err := resolveCredentialPaths(writableRoots, protectedPaths, os.Getenv("EBIX_ALLOWED_READ_PATHS"), checkoutsDir, codex.FilterEnv(os.Environ(), codexEnv))
 	if err != nil {
 		return nil, err
 	}
@@ -351,7 +356,7 @@ func parseCodexEnv(value string) ([]string, error) {
 	}
 	var hidden []string
 	for _, name := range names {
-		if upper := strings.ToUpper(name); strings.Contains(upper, "KEY") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "TOKEN") {
+		if codex.HiddenFromCommands(name) {
 			hidden = append(hidden, name)
 		}
 	}

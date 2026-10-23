@@ -847,9 +847,9 @@ func TestFilterEnv(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := filterEnv(tt.env, tt.extra)
+			got := FilterEnv(tt.env, tt.extra)
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("filterEnv(%v, %v) = %v; want %v", tt.env, tt.extra, got, tt.want)
+				t.Errorf("FilterEnv(%v, %v) = %v; want %v", tt.env, tt.extra, got, tt.want)
 			}
 		})
 	}

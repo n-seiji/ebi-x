@@ -530,7 +530,7 @@ Codex が実行するコマンドは、明示的に禁止しない限りファ�
 
 作業ターンは sandbox の中から git push（と署名付きコミット）するため、起動時に `EBIX_WRITABLE_ROOTS` のうち Git リポジトリの最上位ディレクトリごとに、push と署名に必要な認証情報だけを上の既定リストから外します。外したパスは、リポジトリと理由を起動ログに1行ずつ出します（URL は出しません）。
 
-スレッドごとの checkout は元のリポジトリの `.git/config` を引き継がず（`origin` の URL だけをコピーします）、`includeIf "gitdir:"` も checkout のパスで判定されます。そのため検出は、元のリポジトリではなく `data/checkouts` 配下に作る使い捨てのリポジトリ（`origin` は元のリポジトリの `remote.origin.url`）で git に問い合わせて行い、グローバル・システムの git 設定だけを反映します。リポジトリ内のローカル設定（`.git/config`）にだけ書いた credential helper や `pushInsteadOf` は検出されません。
+スレッドごとの checkout は元のリポジトリの `.git/config` を引き継がず（`origin` の URL だけをコピーします）、`includeIf "gitdir:"` も checkout のパスで判定されます。そのため検出は、元のリポジトリではなく `data/checkouts` 配下に作る使い捨てのリポジトリ（`origin` は元のリポジトリの `remote.origin.url`）で git に問い合わせて行い、グローバル・システムの git 設定だけを反映します。リポジトリ内のローカル設定（`.git/config`）にだけ書いた credential helper や `pushInsteadOf` は検出されません。検出の git は Codex に渡すのと同じ環境変数（後述の許可リストと `EBIX_CODEX_ENV`）で動かすので、`GIT_CONFIG_*` で入れた `insteadOf` など、Codex に渡さない設定は検出にも効きません。
 
 - push 先は `git remote get-url --push origin`（`pushInsteadOf` / `pushurl` 反映後）で決めます。SSH（`git@host:...`、`ssh://...`）なら `~/.ssh`
 - HTTP(S) の場合、`credential.helper` と URL ごとの `credential.<url>.helper` をすべて（push 先の URL に一致するかどうかによらず、空の値によるリセットも無視して）集め、認識できた helper ごとに外します。URL の一致判定を再実装せず、外しすぎることはあっても push を壊さないためです
