@@ -78,7 +78,7 @@ func TestDoneWatchStartsWithoutTurn(t *testing.T) {
 		strings.Join(got.Targets, ",") != "U2,U3" || got.IntervalDays != 1 || !got.NextAt.Equal(want.NextAt) {
 		t.Fatalf("watch = %#v, want %#v", got, want)
 	}
-	if post := api.postTexts[len(api.postTexts)-1]; !strings.Contains(post, "対象は元メッセージで @メンションされた2人") || !strings.Contains(post, "平日の毎日19時") || !strings.Contains(post, "10回通知したら") {
+	if post := api.postTexts[len(api.postTexts)-1]; !strings.Contains(post, "対象は元メッセージで @メンションされた2人") || !strings.Contains(post, "平日の毎日19時") || !strings.Contains(post, "5回通知したら") {
 		t.Fatalf("notice = %q", post)
 	}
 }
@@ -157,7 +157,7 @@ func TestCheckDoneWatchEnds(t *testing.T) {
 		want      string
 	}{
 		{"all done", []string{"U2"}, nil, 0, doneWatchCompleted},
-		{"last reminder", nil, nil, maxDoneWatchReminders - 1, "10回通知したため、監視はこれで終了します"},
+		{"last reminder", nil, nil, maxDoneWatchReminders - 1, "5回通知したため、監視はこれで終了します"},
 		{"message deleted", nil, slack.SlackErrorResponse{Err: "message_not_found"}, 0, doneWatchGoneMessage},
 	}
 	for _, test := range tests {

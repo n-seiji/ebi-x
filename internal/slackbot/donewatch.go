@@ -28,7 +28,7 @@ const (
 	doneWatchHour = 19
 	// maxDoneWatchReminders is how many reminders a watch sends before it
 	// ends, unless everyone reacts or someone stops it first.
-	maxDoneWatchReminders = 10
+	maxDoneWatchReminders = 5
 	// maxDoneWatchesPerUser bounds the watches one person keeps running.
 	maxDoneWatchesPerUser = 10
 	maxDoneWatchTargets   = 100
