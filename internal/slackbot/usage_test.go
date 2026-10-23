@@ -307,11 +307,24 @@ func TestReportUsagePostsHourlyWithChart(t *testing.T) {
 	}
 }
 
+func TestReportUsageSkipsUnrecordedCheck(t *testing.T) {
+	api := &fakeSlack{}
+	store := &fakeStore{}
+	bot := newUsageBot(t, store, api, &fakeUsage{})
+	at := time.Date(2026, 10, 20, 1, 5, 0, 0, time.Local)
+	store.usage.History = []state.UsageSample{{At: at, Remaining: map[string]float64{"primary": 80}}}
+	bot.now = func() time.Time { return at.Add(time.Hour) }
+	bot.reportUsage(context.Background())
+	if len(api.posts) != 0 {
+		t.Fatalf("posted %q, want an old check not reported", api.posts[0].text)
+	}
+}
+
 func TestUsageHourlyReportNamesReset(t *testing.T) {
 	at := time.Date(2026, 10, 20, 1, 0, 0, 0, time.UTC)
 	previous := state.UsageSample{At: at, Remaining: map[string]float64{"primary": 5}, ResetsAt: map[string]int64{"primary": 100}}
 	latest := state.UsageSample{At: at.Add(time.Hour), Remaining: map[string]float64{"primary": 100}, ResetsAt: map[string]int64{"primary": 200}}
-	text := usageHourlyReport(&previous, latest, latest.At)
+	text := usageHourlyReport(&previous, latest)
 	if !strings.Contains(text, "5時間: 残り 100.0%（"+usageHourlyWasReset) {
 		t.Fatalf("report %q does not name the reset", text)
 	}

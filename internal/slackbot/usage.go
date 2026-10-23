@@ -15,7 +15,7 @@ import (
 const (
 	// usageCheckInterval is how often the Codex usage is checked and
 	// recorded. It also sees usage from outside ebi-x on the same account.
-	usageCheckInterval = 10 * time.Minute
+	usageCheckInterval = 30 * time.Minute
 	// usageChartHours is how many hours the hourly report's bar chart shows,
 	// and usageHistoryKeep how long checks are kept for it.
 	usageChartHours  = 12
@@ -209,8 +209,8 @@ func (b *Bot) recordUsage(ctx context.Context, limits *codex.RateLimits) {
 }
 
 // reportUsage posts the latest check in the approval channel with a bar
-// chart of the recent hours, once an hour. An hour with no change since the last
-// report is skipped.
+// chart of the recent hours, once an hour. An hour with no change since the
+// last report is skipped.
 func (b *Bot) reportUsage(ctx context.Context) {
 	b.usageMu.Lock()
 	defer b.usageMu.Unlock()
@@ -224,8 +224,12 @@ func (b *Bot) reportUsage(ctx context.Context) {
 		return
 	}
 	latest := saved.History[len(saved.History)-1]
+	if now.Sub(latest.At) >= usageCheckInterval {
+		// This check was not recorded; do not report an older one as now.
+		return
+	}
 	if previous == nil || usageSampleChanged(*previous, latest) {
-		text := usageHourlyReport(previous, latest, now) + "\n" + usageChart(saved.History, now)
+		text := usageHourlyReport(previous, latest) + "\n" + usageChart(saved.History, latest.At)
 		if err := b.post(ctx, b.config.ApprovalChannelID, "", text); err != nil {
 			log.Printf("slackbot: post Codex usage report: %v", err)
 			// Report again at the next check.
@@ -234,7 +238,6 @@ func (b *Bot) reportUsage(ctx context.Context) {
 	}
 	next := saved
 	next.Reported = &latest
-	next.Reported.At = now
 	if err := b.store.SetUsage(next); err != nil {
 		log.Printf("slackbot: save Codex usage: %v", err)
 	}
@@ -244,7 +247,7 @@ func (b *Bot) reportUsage(ctx context.Context) {
 // the last usageChartHours hours as a text bar chart in a code block. An hour
 // without a check, when ebi-x was not running, shows "-".
 func usageChart(history []state.UsageSample, now time.Time) string {
-	current := now.In(time.Local).Truncate(time.Hour)
+	current := localHour(now)
 	labels := make([]any, 0, len(usageWindowKeys))
 	for _, key := range usageWindowKeys {
 		labels = append(labels, usageSampleLabel(key))
@@ -278,8 +281,8 @@ func usageChart(history []state.UsageSample, now time.Time) string {
 
 // usageHourlyReport describes latest, with each window's change since the
 // previous report and, while it falls, when it would run out at that pace.
-func usageHourlyReport(previous *state.UsageSample, latest state.UsageSample, now time.Time) string {
-	lines := []string{fmt.Sprintf(usageHourlyHeader, now.In(time.Local).Format("1/2 15:04"))}
+func usageHourlyReport(previous *state.UsageSample, latest state.UsageSample) string {
+	lines := []string{fmt.Sprintf(usageHourlyHeader, latest.At.In(time.Local).Format("1/2 15:04"))}
 	for _, key := range usageWindowKeys {
 		remaining, ok := latest.Remaining[key]
 		if !ok {
@@ -362,7 +365,14 @@ func usageSampleChanged(a, b state.UsageSample) bool {
 }
 
 func sameLocalHour(a, b time.Time) bool {
-	return a.In(time.Local).Truncate(time.Hour).Equal(b.In(time.Local).Truncate(time.Hour))
+	return localHour(a).Equal(localHour(b))
+}
+
+// localHour returns the start of t's hour in local time. time.Truncate
+// counts from UTC, which splits hours wrongly in zones offset by 30 minutes.
+func localHour(t time.Time) time.Time {
+	t = t.In(time.Local)
+	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, time.Local)
 }
 
 // usageAlerts returns the levels announced after this check and the
