@@ -23,14 +23,15 @@ const (
 	// defaultDoneWatchDays is the gap between reminders when the command
 	// names none: every other day.
 	defaultDoneWatchDays = 2
-	maxDoneWatchDays     = 14
-	// maxDoneWatchReminders caps the reminders one watch posts.
-	maxDoneWatchReminders = 10
+	maxDoneWatchDays     = 7
+	// doneWatchDuration is how long a watch runs unless everyone reacts or
+	// someone stops it first.
+	doneWatchDuration = 7 * 24 * time.Hour
 	// maxDoneWatchesPerUser bounds the watches one person keeps running.
 	maxDoneWatchesPerUser = 10
 	maxDoneWatchTargets   = 100
 
-	doneWatchStartedNotice    = "👀 :done: の監視を始めます。対象は元メッセージで @メンションされた%d人です。%sに確認し、まだ :done: を付けていない人にこのスレッドで通知します（次回 %s）。%s\n全員が付けたら終了します。止める場合は、このスレッドで「@ebi-x 監視をとめて」と mention してください。"
+	doneWatchStartedNotice    = "👀 :done: の監視を始めます。対象は元メッセージで @メンションされた%d人です。%sに確認し、まだ :done: を付けていない人にこのスレッドで通知します（次回 %s）。%s\n全員が付けるか1週間たったら終了します。止める場合は、このスレッドで「@ebi-x 監視をとめて」と mention してください。"
 	doneWatchAllDoneNotice    = "✅ 対象の全員がすでに :done: を付けているため、監視は始めていません。"
 	doneWatchNoTargetNotice   = "⚠️ @メンションされた人が見つからなかったため、監視は始めていません。対象の人を @メンションしたメッセージの末尾で「@ebi-x 監視して」と書いてください。"
 	doneWatchLimitNotice      = "⚠️ 1人が同時に続けられる監視は%d件までのため、監視は始めていません。不要な監視を、そのスレッドで「@ebi-x 監視をとめて」と mention して止めてください。"
@@ -41,7 +42,7 @@ const (
 	doneWatchFailedNotice     = "⚠️ 監視を始められませんでした。もう一度 mention してください。"
 	doneWatchReminder         = "%s\n:done: のリアクションがまだのようです。対応が済んだら、%sに :done: を付けてください。（%d回目の通知）"
 	doneWatchCompleted        = "✅ 対象の全員が :done: を付けたため、監視を終了しました。"
-	doneWatchLimitReached     = "⚠️ 通知が上限の%d回に達したため、監視を終了しました。まだの人: %s"
+	doneWatchExpired          = "⚠️ 監視を始めてから1週間たったため、監視を終了しました。まだの人: %s"
 	doneWatchGoneMessage      = "元メッセージが見つからなくなったため、:done: の監視を終了しました。"
 	doneWatchStoppedMessage   = ":done: の監視を終了しました。"
 	doneWatchNothingToStop    = "このスレッドで続けている :done: の監視はありません。"
@@ -378,18 +379,18 @@ func (b *Bot) checkDoneWatch(ctx context.Context, watch state.DoneWatch) {
 		b.endDoneWatch(ctx, watch, doneWatchCompleted)
 		return
 	}
-	if b.now().Before(watch.NextAt) {
+	if !watch.CreatedAt.IsZero() && !b.now().Before(watch.CreatedAt.Add(doneWatchDuration)) {
+		b.endDoneWatch(ctx, watch, fmt.Sprintf(doneWatchExpired, userMentions(pending)))
 		return
 	}
-	if watch.Reminders >= maxDoneWatchReminders {
-		b.endDoneWatch(ctx, watch, fmt.Sprintf(doneWatchLimitReached, maxDoneWatchReminders, userMentions(pending)))
+	if b.now().Before(watch.NextAt) {
 		return
 	}
 	// Count the reminder before posting, so a crash cannot remind twice, and
 	// only while the watch is still saved, so a stop during this check wins.
 	now := b.now()
 	watch, ok, err := b.store.UpdateDoneWatch(key, func(saved *state.DoneWatch) bool {
-		if now.Before(saved.NextAt) || saved.Reminders >= maxDoneWatchReminders {
+		if now.Before(saved.NextAt) {
 			return false
 		}
 		saved.Reminders++

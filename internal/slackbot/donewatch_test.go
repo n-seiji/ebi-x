@@ -25,6 +25,8 @@ func TestParseDoneWatchCommand(t *testing.T) {
 		{"<@U2> <@UBOT> 2日おきに監視して", 3, true},
 		{"<@U2> <@UBOT> 3日ごとに監視して", 3, true},
 		{"<@U2> <@UBOT> 監視お願いします！", 2, true},
+		{"<@U2> <@UBOT> 7日ごとに監視して", 7, true},
+		{"<@U2> <@UBOT> 8日ごとに監視して", 0, false},
 		{"<@U2> <@UBOT> 30日ごとに監視して", 0, false},
 		{"<@UBOT> サーバーを監視して", 0, false},
 		{"<@UBOT> 監視して <@U2> 見てください", 0, false},
@@ -151,19 +153,19 @@ func TestCheckDoneWatchEnds(t *testing.T) {
 		name      string
 		reacted   []string
 		err       error
-		reminders int
+		createdAt time.Time
 		want      string
 	}{
-		{"all done", []string{"U2"}, nil, 0, doneWatchCompleted},
-		{"limit", nil, nil, maxDoneWatchReminders, "通知が上限の10回に達したため"},
-		{"message deleted", nil, slack.SlackErrorResponse{Err: "message_not_found"}, 0, doneWatchGoneMessage},
+		{"all done", []string{"U2"}, nil, time.Time{}, doneWatchCompleted},
+		{"a week passed", nil, nil, followUpNow.Add(-doneWatchDuration), "1週間たったため"},
+		{"message deleted", nil, slack.SlackErrorResponse{Err: "message_not_found"}, time.Time{}, doneWatchGoneMessage},
 	}
 	for _, test := range tests {
 		store := &fakeStore{claim: true}
 		api := &fakeSlack{reactionUsers: test.reacted, reactionUsersErr: test.err}
 		bot := newFollowUpBot(t, store, api, &fakeRunner{})
 		watch := watch
-		watch.Reminders = test.reminders
+		watch.CreatedAt = test.createdAt
 		store.SetDoneWatch(watch)
 
 		bot.checkDoneWatch(context.Background(), watch)
