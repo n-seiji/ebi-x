@@ -31,12 +31,15 @@
         "app_mentions:read",
         "assistant:write",
         "channels:history",
+        "channels:read",
         "chat:write",
         "commands",
         "files:write",
+        "groups:read",
         "im:history",
         "reactions:read",
-        "reactions:write"
+        "reactions:write",
+        "users:read"
       ]
     }
   },

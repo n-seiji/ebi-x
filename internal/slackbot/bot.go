@@ -57,6 +57,11 @@ type SlackAPI interface {
 	GetThreadMessages(ctx context.Context, channel, threadTS, latest string) ([]ThreadMessage, error)
 	SetStatus(ctx context.Context, channel, threadTS, status string) error
 	HasReaction(ctx context.Context, channel, timestamp, reaction string) (bool, error)
+	// ReactionUsers lists the users who reacted to the message with reaction.
+	ReactionUsers(ctx context.Context, channel, timestamp, reaction string) ([]string, error)
+	// ChannelMembers lists the people in channel, leaving out bots and
+	// deactivated accounts. It stops once it has found more than limit.
+	ChannelMembers(ctx context.Context, channel string, limit int) ([]string, error)
 	AddReaction(ctx context.Context, channel, timestamp, name string) error
 	RemoveReaction(ctx context.Context, channel, timestamp, name string) error
 	UploadFile(ctx context.Context, channel, threadTS, filename string, size int64, content io.Reader) error
@@ -98,6 +103,10 @@ type Store interface {
 	GetPullWatch(key string) (state.PullWatch, bool)
 	SetPullWatch(watch state.PullWatch) error
 	DeletePullWatches(match func(state.PullWatch) bool) ([]state.PullWatch, error)
+	DoneWatches() []state.DoneWatch
+	SetDoneWatch(watch state.DoneWatch) error
+	UpdateDoneWatch(key string, update func(*state.DoneWatch) bool) (state.DoneWatch, bool, error)
+	DeleteDoneWatches(match func(state.DoneWatch) bool) ([]state.DoneWatch, error)
 	Usage() state.Usage
 	SetUsage(usage state.Usage) error
 	AddDeferred(deferred state.Deferred) error
@@ -321,6 +330,17 @@ func (b *Bot) handleMention(ctx context.Context, event *slackevents.AppMentionEv
 	}
 	if isStopCommand(message) {
 		b.stopThread(ctx, event.Channel, threadTS, event.TimeStamp)
+		return
+	}
+	// Reminding people to react is the bot's own job, not the agent's, so
+	// these commands never start a turn. Workflows cannot start a watch,
+	// since it mentions people on its own for days.
+	if isDoneWatchStopCommand(message) {
+		b.stopDoneWatchCommand(ctx, event.Channel, threadTS)
+		return
+	}
+	if days, ok := parseDoneWatchCommand(event.Text, b.config.BotUserID); ok && event.BotID == "" {
+		b.startDoneWatch(ctx, event.Channel, threadTS, event.TimeStamp, event.Text, event.User, days)
 		return
 	}
 	b.processTrigger(ctx, processingTrigger{
@@ -1196,6 +1216,65 @@ func (w *webAPI) HasReaction(ctx context.Context, channel, timestamp, reaction s
 	return false, nil
 }
 
+func (w *webAPI) ReactionUsers(ctx context.Context, channel, timestamp, reaction string) ([]string, error) {
+	// Full asks for every user; without it Slack shortens long lists.
+	reactions, err := w.client.GetReactionsContext(ctx, slack.ItemRef{Channel: channel, Timestamp: timestamp}, slack.GetReactionsParameters{Full: true})
+	if err != nil {
+		return nil, err
+	}
+	for _, itemReaction := range reactions {
+		if itemReaction.Name == reaction {
+			return itemReaction.Users, nil
+		}
+	}
+	return nil, nil
+}
+
+// ChannelMembers needs channels:read (groups:read for private channels) to
+// list the members and users:read to tell people from bots.
+func (w *webAPI) ChannelMembers(ctx context.Context, channel string, limit int) ([]string, error) {
+	var members []string
+	cursor := ""
+	for {
+		page, nextCursor, err := w.client.GetUsersInConversationContext(ctx, &slack.GetUsersInConversationParameters{
+			ChannelID: channel,
+			Cursor:    cursor,
+			Limit:     200,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list Slack channel members: %w", err)
+		}
+		members = append(members, page...)
+		if nextCursor == "" || nextCursor == cursor {
+			break
+		}
+		cursor = nextCursor
+	}
+	// One users.list walk tells bots apart, instead of a users.info call per
+	// member; slack-go waits out its rate limit.
+	users, err := w.client.GetUsersContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list Slack users: %w", err)
+	}
+	people := make(map[string]bool, len(users))
+	for _, user := range users {
+		if !user.IsBot && !user.IsAppUser && !user.Deleted && user.ID != "USLACKBOT" {
+			people[user.ID] = true
+		}
+	}
+	var humans []string
+	for _, member := range members {
+		if !people[member] {
+			continue
+		}
+		humans = append(humans, member)
+		if len(humans) > limit {
+			break
+		}
+	}
+	return humans, nil
+}
+
 func (w *webAPI) AddReaction(ctx context.Context, channel, timestamp, name string) error {
 	return w.client.AddReactionContext(ctx, name, slack.ItemRef{Channel: channel, Timestamp: timestamp})
 }
@@ -1239,6 +1318,7 @@ func RunSocketMode(acceptCtx, turnCtx context.Context, botToken, appToken string
 	wg.Go(func() { bot.runSchedules(loopCtx, turnCtx, wg) })
 	wg.Go(func() { bot.runDeferred(turnCtx, wg) })
 	wg.Go(func() { bot.runUsageWatch(acceptCtx) })
+	wg.Go(func() { bot.runDoneWatches(acceptCtx) })
 	socketClient := socketmode.New(client)
 	runErr := make(chan error, 1)
 	go func() {
