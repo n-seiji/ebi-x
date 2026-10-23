@@ -52,6 +52,51 @@ func newManager(t *testing.T, roots ...string) (*Manager, string, string) {
 	return m, workspaceDir, checkoutsDir
 }
 
+func TestCheckoutSharesNoObjectFilesWithRepository(t *testing.T) {
+	repo := newRepo(t)
+	m, _, _ := newManager(t, repo)
+	lease, err := m.Acquire(context.Background(), "C1-100.1", true)
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	defer lease.Release()
+	gitDir := lease.Checkouts[0].Path + gitDirSuffix
+
+	origObjects := filepath.Join(repo, ".git", "objects")
+	compared := 0
+	err = filepath.WalkDir(origObjects, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(origObjects, path)
+		if err != nil {
+			return err
+		}
+		orig, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		clone, err := os.Stat(filepath.Join(gitDir, "objects", rel))
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		compared++
+		if os.SameFile(orig, clone) {
+			t.Errorf("checkout object %s is the repository's file; writing it would modify the repository", rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compared == 0 {
+		t.Fatal("no object files compared")
+	}
+}
+
 func TestThreadID(t *testing.T) {
 	if got, err := ThreadID("C123", "1727.000100"); err != nil || got != "C123-1727.000100" {
 		t.Fatalf("ThreadID() = %q, %v", got, err)
