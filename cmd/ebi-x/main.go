@@ -2,10 +2,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"log"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sync"
@@ -25,7 +28,20 @@ import (
 // checkoutGCInterval is how often idle thread checkouts are looked for.
 const checkoutGCInterval = time.Hour
 
+// checkConfigArg makes ebi-x only load its configuration and exit, so a
+// reload can check the new binary before handing over to it.
+const checkConfigArg = "-check-config"
+
+// drainLogInterval is how often a reload reports what it is waiting for.
+const drainLogInterval = time.Minute
+
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == checkConfigArg {
+		if _, err := config.Load(); err != nil {
+			log.Fatalf("load configuration: %v", err)
+		}
+		return
+	}
 	// config.Load copies .env into the environment; a reload starts from the
 	// environment ebi-x was launched with, so edits to .env take effect too.
 	launchEnv := os.Environ()
@@ -158,27 +174,32 @@ func main() {
 
 	reloading := false
 	socketStopped := false
-	select {
-	case <-signalCtx.Done():
-		log.Printf("shutdown requested")
-	case <-reloadRequested:
-		// Keep receiving Slack events while running turns finish: requests
-		// that arrive meanwhile are saved and started by the new binary.
-		log.Printf("reload requested; finishing running work before restarting")
-		reloading = true
-		drained := bot.Drain()
+run:
+	for {
 		select {
-		case <-drained:
-			log.Printf("running work finished; restarting")
 		case <-signalCtx.Done():
-			log.Printf("shutdown requested during reload")
-			reloading = false
+			log.Printf("shutdown requested")
+			break run
+		case <-reloadRequested:
+			// A binary that cannot start would leave nobody serving Slack
+			// once this one exits, so check it before deferring anything.
+			if err := checkExecutable(executable, launchEnv); err != nil {
+				log.Printf("reload refused; %s does not start: %v", executable, err)
+				continue
+			}
+			// Keep receiving Slack events while running turns finish:
+			// requests that arrive meanwhile are saved and started by the
+			// new binary.
+			log.Printf("reload requested; finishing %d running request(s) before restarting", bot.ActiveRequests())
+			reloading = waitForDrain(signalCtx, bot, reloadRequested)
+			break run
+		case err := <-socketDone:
+			if err != nil {
+				log.Printf("Slack Socket Mode stopped: %v", err)
+			}
+			socketStopped = true
+			break run
 		}
-	case err := <-socketDone:
-		if err != nil {
-			log.Printf("Slack Socket Mode stopped: %v", err)
-		}
-		socketStopped = true
 	}
 	stopAccepting()
 	if !socketStopped {
@@ -212,6 +233,42 @@ func main() {
 			log.Fatalf("restart from %s: %v", executable, err)
 		}
 	}
+}
+
+// waitForDrain waits until the bot's running requests are done, logging
+// what it still waits for. It reports false when a shutdown was requested
+// meanwhile, so the process exits instead of restarting.
+func waitForDrain(signalCtx context.Context, bot *slackbot.Bot, reloadRequested <-chan os.Signal) bool {
+	drained := bot.Drain()
+	ticker := time.NewTicker(drainLogInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-drained:
+			log.Printf("running work finished; restarting")
+			return true
+		case <-signalCtx.Done():
+			log.Printf("shutdown requested during reload")
+			return false
+		case <-reloadRequested:
+			log.Printf("reload already in progress; waiting for %d running request(s)", bot.ActiveRequests())
+		case <-ticker.C:
+			log.Printf("reload waiting for %d running request(s)", bot.ActiveRequests())
+		}
+	}
+}
+
+// checkExecutable runs the binary at path with checkConfigArg and returns
+// why it failed, if it did.
+func checkExecutable(path string, env []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, checkConfigArg)
+	cmd.Env = env
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%w: %s", err, bytes.TrimSpace(output))
+	}
+	return nil
 }
 
 // collectIdleCheckouts removes thread checkouts that have not been used for

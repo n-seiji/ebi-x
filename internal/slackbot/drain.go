@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"sync/atomic"
 
 	"github.com/n-seiji/ebi-x/internal/state"
 )
@@ -36,6 +37,8 @@ type drainer struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	active sync.WaitGroup
+	// count is the number of requests in active, for logging.
+	count atomic.Int64
 }
 
 func newDrainer() *drainer {
@@ -72,7 +75,16 @@ func (b *Bot) beginRequest() (finish func(), ok bool) {
 		return nil, false
 	}
 	b.drain.active.Add(1)
-	return b.drain.active.Done, true
+	b.drain.count.Add(1)
+	return func() {
+		b.drain.count.Add(-1)
+		b.drain.active.Done()
+	}, true
+}
+
+// ActiveRequests returns how many requests have started and not finished.
+func (b *Bot) ActiveRequests() int64 {
+	return b.drain.count.Load()
 }
 
 // untilDrain returns a context that is also cancelled, with errDraining as

@@ -86,6 +86,9 @@ func TestDrainDefersNewRequestsUntilRunningWorkEnds(t *testing.T) {
 	if closed(drained) {
 		t.Fatal("drain finished while a turn was still running")
 	}
+	if got := bot.ActiveRequests(); got != 1 {
+		t.Fatalf("ActiveRequests() = %d, want the running turn only", got)
+	}
 	if runner.calls() != 1 {
 		t.Fatalf("runner calls = %d, want only the running turn", runner.calls())
 	}
@@ -110,6 +113,9 @@ func TestDrainDefersNewRequestsUntilRunningWorkEnds(t *testing.T) {
 	}
 	if !slices.Contains(api.postTexts, "Done.") {
 		t.Fatalf("posts = %q, want the running turn's result", api.postTexts)
+	}
+	if got := bot.ActiveRequests(); got != 0 {
+		t.Fatalf("ActiveRequests() = %d after the drain, want 0", got)
 	}
 }
 
