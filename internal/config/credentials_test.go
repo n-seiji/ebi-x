@@ -20,6 +20,9 @@ func credentialTestHome(t *testing.T) string {
 	t.Setenv("HOME", home)
 	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, "gitconfig-test"))
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	// Configuration passed through the environment (GIT_CONFIG_KEY_n, such as
+	// an insteadOf rewrite) would otherwise change the push URL under test.
+	t.Setenv("GIT_CONFIG_COUNT", "0")
 	return home
 }
 
