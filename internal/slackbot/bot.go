@@ -59,8 +59,7 @@ type SlackAPI interface {
 	HasReaction(ctx context.Context, channel, timestamp, reaction string) (bool, error)
 	AddReaction(ctx context.Context, channel, timestamp, name string) error
 	RemoveReaction(ctx context.Context, channel, timestamp, name string) error
-	// UploadFile shares one file; comment, when set, is posted with it.
-	UploadFile(ctx context.Context, channel, threadTS, filename, comment string, size int64, content io.Reader) error
+	UploadFile(ctx context.Context, channel, threadTS, filename string, size int64, content io.Reader) error
 	SetSuggestedPrompts(ctx context.Context, channel string, prompts []suggestedPrompt) error
 	// PublishHome shows sections of mrkdwn text on userID's App Home tab.
 	PublishHome(ctx context.Context, userID string, sections []string) error
@@ -777,7 +776,7 @@ func (b *Bot) uploadAttachments(ctx context.Context, eventKey, channel, threadTS
 				return err
 			}
 			defer content.Close()
-			return b.api.UploadFile(ctx, channel, threadTS, file.Name(), "", file.Size(), content)
+			return b.api.UploadFile(ctx, channel, threadTS, file.Name(), file.Size(), content)
 		}
 		// Only a rate limit proves Slack did not take the file. Retrying any
 		// other failure could share the file twice.
@@ -1177,10 +1176,9 @@ func (w *webAPI) RemoveReaction(ctx context.Context, channel, timestamp, name st
 // UploadFile shares one file in the thread through Slack's external upload
 // flow (files.getUploadURLExternal, then files.completeUploadExternal). It
 // needs the files:write scope.
-func (w *webAPI) UploadFile(ctx context.Context, channel, threadTS, filename, comment string, size int64, content io.Reader) error {
+func (w *webAPI) UploadFile(ctx context.Context, channel, threadTS, filename string, size int64, content io.Reader) error {
 	_, err := w.client.UploadFileV2Context(ctx, slack.UploadFileV2Parameters{
 		Reader:          content,
-		InitialComment:  comment,
 		FileSize:        int(size),
 		Filename:        filename,
 		Title:           filename,

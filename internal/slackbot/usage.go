@@ -1,7 +1,6 @@
 package slackbot
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -17,8 +16,10 @@ const (
 	// usageCheckInterval is how often the Codex usage is checked and
 	// recorded. It also sees usage from outside ebi-x on the same account.
 	usageCheckInterval = 10 * time.Minute
-	// usageHistoryKeep is how long checks are kept for the hourly chart.
-	usageHistoryKeep = usageChartSpan
+	// usageChartHours is how many hours the hourly report's bar chart shows,
+	// and usageHistoryKeep how long checks are kept for it.
+	usageChartHours  = 12
+	usageHistoryKeep = usageChartHours * time.Hour
 	usageReadTimeout = 30 * time.Second
 	usageDayLayout   = "2006-01-02"
 
@@ -37,8 +38,12 @@ const (
 	usageHourlyWasReset   = "前回からリセット済み"
 	usageHourlyEmptyAt    = "このペースだと%sに使い切り"
 	usageHourlyResetAt    = "%sにリセット"
-	usageHourlyChartNote  = "グラフ: 直近24時間の残り（青=5時間・橙=1週間）"
-	usageChartFilename    = "codex-usage.png"
+	usageChartHeader      = "時刻   %-16s %s"
+	usageChartTimeLayout  = "15:04"
+	usageChartMissing     = "    -"
+	// usageChartBarWidth is the bar length of a full window; one block is
+	// 10%.
+	usageChartBarWidth = 10
 	// usageLimitFailureMessage replaces workFailureMessage when the turn
 	// stopped on the usage limit, so the requester knows why and when to
 	// ask again.
@@ -203,8 +208,8 @@ func (b *Bot) recordUsage(ctx context.Context, limits *codex.RateLimits) {
 	}
 }
 
-// reportUsage posts the latest check in the approval channel with a chart
-// of the recent checks, once an hour. An hour with no change since the last
+// reportUsage posts the latest check in the approval channel with a bar
+// chart of the recent hours, once an hour. An hour with no change since the last
 // report is skipped.
 func (b *Bot) reportUsage(ctx context.Context) {
 	b.usageMu.Lock()
@@ -220,8 +225,8 @@ func (b *Bot) reportUsage(ctx context.Context) {
 	}
 	latest := saved.History[len(saved.History)-1]
 	if previous == nil || usageSampleChanged(*previous, latest) {
-		text := usageHourlyReport(previous, latest, now)
-		if err := b.postUsageReport(ctx, text, saved.History, now); err != nil {
+		text := usageHourlyReport(previous, latest, now) + "\n" + usageChart(saved.History, now)
+		if err := b.post(ctx, b.config.ApprovalChannelID, "", text); err != nil {
 			log.Printf("slackbot: post Codex usage report: %v", err)
 			// Report again at the next check.
 			return
@@ -235,20 +240,40 @@ func (b *Bot) reportUsage(ctx context.Context) {
 	}
 }
 
-// postUsageReport shares the chart with text as its comment, or posts the
-// text alone when the chart cannot be shared.
-func (b *Bot) postUsageReport(ctx context.Context, text string, history []state.UsageSample, now time.Time) error {
-	chart, err := renderUsageChart(history, now)
-	if err == nil {
-		err = b.retrySlack(ctx, func() error {
-			return b.api.UploadFile(ctx, b.config.ApprovalChannelID, "", usageChartFilename, text+"\n"+usageHourlyChartNote, int64(len(chart)), bytes.NewReader(chart))
-		})
+// usageChart draws each window's remaining percent at the end of each of
+// the last usageChartHours hours as a text bar chart in a code block. An hour
+// without a check, when ebi-x was not running, shows "-".
+func usageChart(history []state.UsageSample, now time.Time) string {
+	current := now.In(time.Local).Truncate(time.Hour)
+	labels := make([]any, 0, len(usageWindowKeys))
+	for _, key := range usageWindowKeys {
+		labels = append(labels, usageSampleLabel(key))
 	}
-	if err == nil {
-		return nil
+	lines := []string{"```" + fmt.Sprintf(usageChartHeader, labels...)}
+	for i := usageChartHours - 1; i >= 0; i-- {
+		hour := current.Add(-time.Duration(i) * time.Hour)
+		var sample *state.UsageSample
+		for j := range history {
+			if at := history[j].At.In(time.Local); !at.Before(hour) && at.Before(hour.Add(time.Hour)) {
+				sample = &history[j]
+			}
+		}
+		line := hour.Format(usageChartTimeLayout)
+		for _, key := range usageWindowKeys {
+			remaining, ok := 0.0, false
+			if sample != nil {
+				remaining, ok = sample.Remaining[key]
+			}
+			if !ok {
+				line += fmt.Sprintf("  %-15s", usageChartMissing)
+				continue
+			}
+			bar := strings.Repeat("█", int(math.Round(math.Min(remaining, 100)/100*usageChartBarWidth)))
+			line += fmt.Sprintf("  %5.1f%% %-*s", remaining, usageChartBarWidth, bar)
+		}
+		lines = append(lines, strings.TrimRight(line, " "))
 	}
-	log.Printf("slackbot: share Codex usage chart: %v", err)
-	return b.post(ctx, b.config.ApprovalChannelID, "", text)
+	return strings.Join(lines, "\n") + "```"
 }
 
 // usageHourlyReport describes latest, with each window's change since the

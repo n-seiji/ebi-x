@@ -316,11 +316,10 @@ type fakeUpload struct {
 	channel  string
 	threadTS string
 	filename string
-	comment  string
 	content  string
 }
 
-func (s *fakeSlack) UploadFile(_ context.Context, channel, threadTS, filename, comment string, size int64, content io.Reader) error {
+func (s *fakeSlack) UploadFile(_ context.Context, channel, threadTS, filename string, size int64, content io.Reader) error {
 	data, err := io.ReadAll(content)
 	if err != nil {
 		return err
@@ -338,7 +337,7 @@ func (s *fakeSlack) UploadFile(_ context.Context, channel, threadTS, filename, c
 			return err
 		}
 	}
-	s.uploads = append(s.uploads, fakeUpload{channel: channel, threadTS: threadTS, filename: filename, comment: comment, content: string(data)})
+	s.uploads = append(s.uploads, fakeUpload{channel: channel, threadTS: threadTS, filename: filename, content: string(data)})
 	return nil
 }
 
@@ -2570,7 +2569,7 @@ func TestWebAPIUploadFileUsesExternalUpload(t *testing.T) {
 	})}
 
 	api := &webAPI{client: slack.New("token", slack.OptionAPIURL("https://slack.test/"), slack.OptionHTTPClient(httpClient))}
-	if err := api.UploadFile(context.Background(), "C1", "100.1", "deck.pdf", "", 8, strings.NewReader("pdf-data")); err != nil {
+	if err := api.UploadFile(context.Background(), "C1", "100.1", "deck.pdf", 8, strings.NewReader("pdf-data")); err != nil {
 		t.Fatalf("UploadFile() error = %v", err)
 	}
 	if strings.Join(paths, ",") != "/files.getUploadURLExternal,/upload/1,/files.completeUploadExternal" {

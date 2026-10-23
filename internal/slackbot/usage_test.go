@@ -255,7 +255,7 @@ func TestReportUsagePostsHourlyWithChart(t *testing.T) {
 	store := &fakeStore{}
 	bot := newUsageBot(t, store, api, &fakeUsage{})
 	ctx := context.Background()
-	now := time.Date(2026, 10, 20, 1, 5, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 20, 1, 5, 0, 0, time.Local)
 	bot.now = func() time.Time { return now }
 
 	check := func(primary, secondary float64) {
@@ -263,35 +263,36 @@ func TestReportUsagePostsHourlyWithChart(t *testing.T) {
 		bot.reportUsage(ctx)
 	}
 	check(20, 10)
-	if len(api.uploads) != 1 {
-		t.Fatalf("uploads = %d, want the first report", len(api.uploads))
+	if len(api.posts) != 1 {
+		t.Fatalf("posts = %d, want the first report", len(api.posts))
 	}
-	first := api.uploads[0]
-	if first.channel != "CAPPROVAL" || first.filename != usageChartFilename || !strings.HasPrefix(first.content, "\x89PNG") {
-		t.Fatalf("upload = %+v, want a PNG chart in the approval channel", first)
+	first := api.posts[0]
+	if first.channel != "CAPPROVAL" || first.threadTS != "" {
+		t.Fatalf("posted to %q/%q", first.channel, first.threadTS)
 	}
-	for _, want := range []string{"5時間: 残り 80.0%", "1週間: 残り 90.0%", "にリセット", usageHourlyChartNote} {
-		if !strings.Contains(first.comment, want) {
-			t.Fatalf("comment %q does not contain %q", first.comment, want)
+	for _, want := range []string{"5時間: 残り 80.0%", "1週間: 残り 90.0%", "にリセット", "```時刻", "01:00   80.0% ████████     90.0% █████████```", "00:00      -                -"} {
+		if !strings.Contains(first.text, want) {
+			t.Fatalf("report %q does not contain %q", first.text, want)
 		}
 	}
 
 	// Later checks in the same hour are recorded but not reported.
 	now = now.Add(usageCheckInterval)
 	check(30, 11)
-	if len(api.uploads) != 1 {
-		t.Fatalf("uploads = %d, want no report within the hour", len(api.uploads))
+	if len(api.posts) != 1 {
+		t.Fatalf("posts = %d, want no report within the hour", len(api.posts))
 	}
 
-	// The next hour reports the change and the pace.
-	now = time.Date(2026, 10, 20, 2, 5, 0, 0, time.UTC)
+	// The next hour reports the change and the pace; the chart shows each
+	// hour's last check.
+	now = time.Date(2026, 10, 20, 2, 5, 0, 0, time.Local)
 	check(60, 12.5)
-	if len(api.uploads) != 2 {
-		t.Fatalf("uploads = %d, want the next hour's report", len(api.uploads))
+	if len(api.posts) != 2 {
+		t.Fatalf("posts = %d, want the next hour's report", len(api.posts))
 	}
-	for _, want := range []string{"5時間: 残り 40.0%（前回から -40.0pt・このペースだと", "1週間: 残り 87.5%（前回から -2.5pt・"} {
-		if !strings.Contains(api.uploads[1].comment, want) {
-			t.Fatalf("comment %q does not contain %q", api.uploads[1].comment, want)
+	for _, want := range []string{"5時間: 残り 40.0%（前回から -40.0pt・このペースだと", "1週間: 残り 87.5%（前回から -2.5pt・", "01:00   70.0% ███████      89.0% █████████", "02:00   40.0% ████         87.5% █████████```"} {
+		if !strings.Contains(api.posts[1].text, want) {
+			t.Fatalf("report %q does not contain %q", api.posts[1].text, want)
 		}
 	}
 	if got := len(store.usage.History); got != 3 {
@@ -301,23 +302,8 @@ func TestReportUsagePostsHourlyWithChart(t *testing.T) {
 	// An hour without any change is skipped.
 	now = now.Add(time.Hour)
 	check(60, 12.5)
-	if len(api.uploads) != 2 || len(api.posts) != 0 {
-		t.Fatalf("uploads = %d, posts = %d, want the unchanged hour skipped", len(api.uploads), len(api.posts))
-	}
-}
-
-func TestReportUsageFallsBackToText(t *testing.T) {
-	api := &fakeSlack{uploadErrs: []error{errors.New("missing_scope")}}
-	store := &fakeStore{}
-	bot := newUsageBot(t, store, api, &fakeUsage{})
-	ctx := context.Background()
-	bot.recordUsage(ctx, usageLimits(20, 10))
-	bot.reportUsage(ctx)
-	if len(api.posts) != 1 || !strings.Contains(api.posts[0].text, "5時間: 残り 80.0%") {
-		t.Fatalf("posts = %+v, want the report as text", api.posts)
-	}
-	if store.usage.Reported == nil {
-		t.Fatal("report not remembered")
+	if len(api.posts) != 2 {
+		t.Fatalf("posts = %d, want the unchanged hour skipped", len(api.posts))
 	}
 }
 
