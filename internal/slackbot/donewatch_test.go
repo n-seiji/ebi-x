@@ -345,3 +345,36 @@ func TestDoneWatchChannelRefusals(t *testing.T) {
 		}
 	}
 }
+
+func TestDoneWatchNotesNamedPeopleOutsideChannel(t *testing.T) {
+	tests := []struct {
+		name     string
+		members  []string
+		err      error
+		wantNote string // "" for no note
+	}{
+		{"one outside", []string{"U1", "U2"}, nil, "<@U3> はまだこのチャンネルに参加していないようです"},
+		{"all inside", []string{"U1", "U2", "U3"}, nil, ""},
+		{"no channels:read", nil, slack.SlackErrorResponse{Err: "missing_scope"}, ""},
+	}
+	for _, test := range tests {
+		store := &fakeStore{claim: true}
+		api := &fakeSlack{channelMembers: test.members, channelMembersErr: test.err}
+		bot := newFollowUpBot(t, store, api, &fakeRunner{})
+
+		bot.HandleMention(context.Background(), doneWatchMention("<@U2> <@U3> 確認お願いします <@UBOT> 監視して"))
+
+		got, ok := store.doneWatches["C1:100.1"]
+		if !ok || strings.Join(got.Targets, ",") != "U2,U3" {
+			t.Errorf("%s: watch = %#v, want U2 and U3 kept as targets", test.name, got)
+			continue
+		}
+		post := api.postTexts[len(api.postTexts)-1]
+		if test.wantNote == "" && strings.Contains(post, "参加していない") {
+			t.Errorf("%s: notice = %q, want no outside note", test.name, post)
+		}
+		if test.wantNote != "" && !strings.Contains(post, test.wantNote) {
+			t.Errorf("%s: notice = %q, want %q", test.name, post, test.wantNote)
+		}
+	}
+}

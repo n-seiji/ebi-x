@@ -38,6 +38,7 @@ const (
 	doneWatchTooManyNotice    = "⚠️ 対象が%d人を超えるため、監視は始めていません。"
 	doneWatchScopeNotice      = "⚠️ @channel やユーザーグループの対象を調べるには、Slack アプリに channels:read・groups:read・usergroups:read・users:read の scope が必要です。管理者に追加を頼んでください。"
 	doneWatchOutsideNotice    = "ユーザーグループのうち、このチャンネルにいない%d人は通知が届かないため対象から外しました。"
+	doneWatchNamedOutsideNote = "%s はまだこのチャンネルに参加していないようです。招待しないと通知が届きません。"
 	doneWatchAllOutsideNotice = "⚠️ ユーザーグループのメンバーは全員このチャンネルにいないため、通知が届きません。監視は始めていません。メンバーをチャンネルに招待してから、もう一度「@ebi-x 監視して」と mention してください。"
 	doneWatchFailedNotice     = "⚠️ 監視を始められませんでした。もう一度 mention してください。"
 	doneWatchReminder         = "%s\n:done: のリアクションがまだのようです。対応が済んだら、%sに :done: を付けてください。（%d回目の通知）"
@@ -151,9 +152,13 @@ func (b *Bot) startDoneWatch(ctx context.Context, channel, threadTS, timestamp, 
 		}
 	}
 	outside := 0
+	var namedOutside []string
 	if everyone || len(groups) > 0 {
-		var err error
-		targets, outside, err = b.expandDoneWatchTargets(ctx, channel, targets, everyone, groups, authorID)
+		channelMembers, err := b.api.ChannelMembers(ctx, channel)
+		if err == nil {
+			namedOutside = notIn(targets, channelMembers)
+			targets, outside, err = b.expandDoneWatchTargets(ctx, channelMembers, targets, everyone, groups, authorID)
+		}
 		if err != nil {
 			log.Printf("slackbot: list members for done watch in %s: %v", channel, err)
 			notice := doneWatchFailedNotice
@@ -162,6 +167,15 @@ func (b *Bot) startDoneWatch(ctx context.Context, channel, threadTS, timestamp, 
 			}
 			b.postDoneWatchNotice(ctx, channel, threadTS, notice)
 			return
+		}
+	} else if len(targets) > 0 {
+		// Named people stay targets even when they are not in the channel,
+		// since the author meant them; the start notice says so, so the
+		// author can invite them. Without channels:read the note is skipped.
+		if channelMembers, err := b.api.ChannelMembers(ctx, channel); err == nil {
+			namedOutside = notIn(targets, channelMembers)
+		} else {
+			log.Printf("slackbot: list members of %s for done watch: %v", channel, err)
 		}
 	}
 	if len(targets) == 0 {
@@ -213,6 +227,9 @@ func (b *Bot) startDoneWatch(ctx context.Context, channel, threadTS, timestamp, 
 	if outside > 0 {
 		outsideNote = fmt.Sprintf(doneWatchOutsideNotice, outside)
 	}
+	if len(namedOutside) > 0 {
+		outsideNote += fmt.Sprintf(doneWatchNamedOutsideNote, userMentions(namedOutside))
+	}
 	b.postDoneWatchNotice(ctx, channel, threadTS, fmt.Sprintf(doneWatchStartedNotice, len(targets), doneWatchIntervalLabel(days), formatFollowUpTime(watch.NextAt), outsideNote))
 }
 
@@ -220,11 +237,7 @@ func (b *Bot) startDoneWatch(ctx context.Context, channel, threadTS, timestamp, 
 // mentions stand for. Only channel members count, since a mention does not
 // reach anyone else; outside is how many group members were left out for
 // that.
-func (b *Bot) expandDoneWatchTargets(ctx context.Context, channel string, named []string, everyone bool, groups []string, authorID string) (targets []string, outside int, err error) {
-	channelMembers, err := b.api.ChannelMembers(ctx, channel)
-	if err != nil {
-		return nil, 0, err
-	}
+func (b *Bot) expandDoneWatchTargets(ctx context.Context, channelMembers, named []string, everyone bool, groups []string, authorID string) (targets []string, outside int, err error) {
 	inChannel := makeSet(channelMembers)
 	var members []string
 	if everyone {
@@ -285,6 +298,18 @@ func doneWatchIntervalLabel(days int) string {
 		return "1日おき"
 	}
 	return fmt.Sprintf("%d日ごと", days)
+}
+
+// notIn returns the users that are not among members, in order.
+func notIn(users, members []string) []string {
+	in := makeSet(members)
+	var out []string
+	for _, user := range users {
+		if _, ok := in[user]; !ok {
+			out = append(out, user)
+		}
+	}
+	return out
 }
 
 // mentionedGroups lists the user groups mentioned in text, in order and
