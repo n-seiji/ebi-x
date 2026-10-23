@@ -230,6 +230,52 @@ func TestDoneWatchChannelTargetsMembers(t *testing.T) {
 	}
 }
 
+func TestDoneWatchUserGroupTargetsMembers(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{groupMembers: map[string][]string{
+		"S1": {"U1", "U2", "U5"},
+		"S2": {"U5", "U7"},
+	}}
+	bot := newFollowUpBot(t, store, api, &fakeRunner{})
+
+	bot.HandleMention(context.Background(), doneWatchMention("<@U9> <!subteam^S1|@dev_team> <!subteam^S2> 回答してください <@UBOT> 監視して"))
+
+	got, ok := store.doneWatches["C1:100.1"]
+	if !ok || strings.Join(got.Targets, ",") != "U9,U2,U5,U7" {
+		t.Fatalf("watches = %#v, want the named user, then both groups' members once each without the author", store.doneWatches)
+	}
+}
+
+func TestDoneWatchUserGroupFromThreadRoot(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{
+		groupMembers:   map[string][]string{"S1": {"U2", "U3"}},
+		threadMessages: []ThreadMessage{{AuthorID: "U1", Timestamp: "100.0", Text: "<!subteam^S1> 回答してください"}},
+	}
+	bot := newFollowUpBot(t, store, api, &fakeRunner{})
+	event := doneWatchMention("<@UBOT> 監視して")
+	event.ThreadTimeStamp = "100.0"
+
+	bot.HandleMention(context.Background(), event)
+
+	got, ok := store.doneWatches["C1:100.0"]
+	if !ok || strings.Join(got.Targets, ",") != "U2,U3" {
+		t.Fatalf("watches = %#v, want the group's members from the thread root", store.doneWatches)
+	}
+}
+
+func TestDoneWatchUserGroupMissingScope(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{groupMembersErr: slack.SlackErrorResponse{Err: "missing_scope"}}
+	bot := newFollowUpBot(t, store, api, &fakeRunner{})
+
+	bot.HandleMention(context.Background(), doneWatchMention("<!subteam^S1> 回答してください <@UBOT> 監視して"))
+
+	if len(store.doneWatches) != 0 || api.postTexts[len(api.postTexts)-1] != doneWatchScopeNotice {
+		t.Fatalf("watches = %#v, posts = %q", store.doneWatches, api.postTexts)
+	}
+}
+
 func TestDoneWatchChannelRefusals(t *testing.T) {
 	many := make([]string, maxDoneWatchTargets+5)
 	for i := range many {

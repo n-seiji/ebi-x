@@ -389,6 +389,10 @@ type fakeSlack struct {
 	// channelMembersErr its error.
 	channelMembers    []string
 	channelMembersErr error
+	// groupMembers maps a user group to the people UserGroupMembers
+	// returns, and groupMembersErr is its error.
+	groupMembers    map[string][]string
+	groupMembersErr error
 	// topTimestamp, when set, is returned for top-level posts instead of
 	// the default placeholder, for flows that run work in the new thread.
 	topTimestamp string
@@ -540,6 +544,16 @@ func (s *fakeSlack) ChannelMembers(_ context.Context, _ string, limit int) ([]st
 		members = members[:limit+1]
 	}
 	return append([]string(nil), members...), s.channelMembersErr
+}
+
+func (s *fakeSlack) UserGroupMembers(_ context.Context, group string, limit int) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	members := s.groupMembers[group]
+	if len(members) > limit+1 {
+		members = members[:limit+1]
+	}
+	return append([]string(nil), members...), s.groupMembersErr
 }
 
 type runnerResponse struct {

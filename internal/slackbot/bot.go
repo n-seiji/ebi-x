@@ -62,6 +62,8 @@ type SlackAPI interface {
 	// ChannelMembers lists the people in channel, leaving out bots and
 	// deactivated accounts. It stops once it has found more than limit.
 	ChannelMembers(ctx context.Context, channel string, limit int) ([]string, error)
+	// UserGroupMembers lists the people in the user group the same way.
+	UserGroupMembers(ctx context.Context, group string, limit int) ([]string, error)
 	AddReaction(ctx context.Context, channel, timestamp, name string) error
 	RemoveReaction(ctx context.Context, channel, timestamp, name string) error
 	UploadFile(ctx context.Context, channel, threadTS, filename string, size int64, content io.Reader) error
@@ -1250,8 +1252,23 @@ func (w *webAPI) ChannelMembers(ctx context.Context, channel string, limit int) 
 		}
 		cursor = nextCursor
 	}
-	// One users.list walk tells bots apart, instead of a users.info call per
-	// member; slack-go waits out its rate limit.
+	return w.people(ctx, members, limit)
+}
+
+// UserGroupMembers needs usergroups:read to list the members and users:read
+// to tell people from bots.
+func (w *webAPI) UserGroupMembers(ctx context.Context, group string, limit int) ([]string, error) {
+	members, err := w.client.GetUserGroupMembersContext(ctx, group)
+	if err != nil {
+		return nil, fmt.Errorf("list Slack user group members: %w", err)
+	}
+	return w.people(ctx, members, limit)
+}
+
+// people keeps the members that are active people, stopping once it has
+// more than limit. One users.list walk tells bots apart, instead of a
+// users.info call per member; slack-go waits out its rate limit.
+func (w *webAPI) people(ctx context.Context, members []string, limit int) ([]string, error) {
 	users, err := w.client.GetUsersContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list Slack users: %w", err)

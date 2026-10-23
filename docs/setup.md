@@ -15,7 +15,7 @@ Slack App の作成画面で「From a manifest」を選び、`examples/slack-app
 | Interactivity & Shortcuts | Interactivity をオン、Message Shortcut「ebi-x に頼む」（Callback ID `ebix_request`） | メッセージから依頼する |
 | Agents & AI Apps | Agent App に切り替え（manifest では `features.agent_view`） | サイドバーと Messages タブでのエージェント表示 |
 
-- `:done:` の監視（[usage.md](usage.md#done-の監視)）で `@channel` を使うときは `channels:read` と `users:read`（プライベートチャンネルでは `groups:read` も）を追加します。manifest には入っています。
+- `:done:` の監視（[usage.md](usage.md#done-の監視)）で `@channel` を使うときは `channels:read` と `users:read`（プライベートチャンネルでは `groups:read` も）を、`@dev_team` のようなユーザーグループを使うときは `usergroups:read` と `users:read` を追加します。manifest には入っています。
 - プライベートチャンネルで使う場合は `groups:history` も追加します（スレッドを読むため）。`message.groups` は購読しません。mention なしの返信を処理する購読スレッドは、パブリックチャンネルだけが対象です。
 - Agent App への切り替えは元に戻せません。Slack の有料プランが必要です。
 - scope を変えたらワークスペースへ再インストールします。Bot Token が変わった場合は `.env` も更新します。
