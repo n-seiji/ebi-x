@@ -2,6 +2,7 @@ package slackbot
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -193,5 +194,45 @@ func TestDoneWatchStopCommandKeepsOtherWork(t *testing.T) {
 	bot.HandleMention(context.Background(), event)
 	if api.postTexts[len(api.postTexts)-1] != doneWatchNothingToStop {
 		t.Fatalf("second stop posts = %q", api.postTexts)
+	}
+}
+
+func TestDoneWatchChannelTargetsMembers(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{channelMembers: []string{"U1", "U2", "U5", "U6"}}
+	bot := newFollowUpBot(t, store, api, &fakeRunner{})
+
+	bot.HandleMention(context.Background(), doneWatchMention("<!channel> <@U5> 回答してください <@UBOT> 監視して"))
+
+	got, ok := store.doneWatches["C1:100.1"]
+	if !ok || strings.Join(got.Targets, ",") != "U5,U2,U6" {
+		t.Fatalf("watches = %#v, want the named user, then the other members without the author", store.doneWatches)
+	}
+}
+
+func TestDoneWatchChannelRefusals(t *testing.T) {
+	many := make([]string, maxDoneWatchTargets+5)
+	for i := range many {
+		many[i] = fmt.Sprintf("U%d", i+10)
+	}
+	tests := []struct {
+		name    string
+		members []string
+		err     error
+		want    string
+	}{
+		{"too many", many, nil, fmt.Sprintf(doneWatchTooManyNotice, maxDoneWatchTargets)},
+		{"missing scope", nil, slack.SlackErrorResponse{Err: "missing_scope"}, doneWatchScopeNotice},
+	}
+	for _, test := range tests {
+		store := &fakeStore{claim: true}
+		api := &fakeSlack{channelMembers: test.members, channelMembersErr: test.err}
+		bot := newFollowUpBot(t, store, api, &fakeRunner{})
+
+		bot.HandleMention(context.Background(), doneWatchMention("<!here> 回答してください <@UBOT> 監視して"))
+
+		if len(store.doneWatches) != 0 || api.postTexts[len(api.postTexts)-1] != test.want {
+			t.Errorf("%s: watches = %#v, posts = %q", test.name, store.doneWatches, api.postTexts)
+		}
 	}
 }

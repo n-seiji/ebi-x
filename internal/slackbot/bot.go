@@ -59,6 +59,9 @@ type SlackAPI interface {
 	HasReaction(ctx context.Context, channel, timestamp, reaction string) (bool, error)
 	// ReactionUsers lists the users who reacted to the message with reaction.
 	ReactionUsers(ctx context.Context, channel, timestamp, reaction string) ([]string, error)
+	// ChannelMembers lists the people in channel, leaving out bots and
+	// deactivated accounts. It stops once it has found more than limit.
+	ChannelMembers(ctx context.Context, channel string, limit int) ([]string, error)
 	AddReaction(ctx context.Context, channel, timestamp, name string) error
 	RemoveReaction(ctx context.Context, channel, timestamp, name string) error
 	UploadFile(ctx context.Context, channel, threadTS, filename string, size int64, content io.Reader) error
@@ -1193,6 +1196,40 @@ func (w *webAPI) ReactionUsers(ctx context.Context, channel, timestamp, reaction
 		}
 	}
 	return nil, nil
+}
+
+// ChannelMembers needs channels:read (groups:read for private channels) to
+// list the members and users:read to tell people from bots.
+func (w *webAPI) ChannelMembers(ctx context.Context, channel string, limit int) ([]string, error) {
+	var people []string
+	cursor := ""
+	for {
+		members, nextCursor, err := w.client.GetUsersInConversationContext(ctx, &slack.GetUsersInConversationParameters{
+			ChannelID: channel,
+			Cursor:    cursor,
+			Limit:     200,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list Slack channel members: %w", err)
+		}
+		for _, member := range members {
+			user, err := w.client.GetUserInfoContext(ctx, member)
+			if err != nil {
+				return nil, fmt.Errorf("read Slack user %s: %w", member, err)
+			}
+			if user.IsBot || user.IsAppUser || user.Deleted || user.ID == "USLACKBOT" {
+				continue
+			}
+			people = append(people, member)
+			if len(people) > limit {
+				return people, nil
+			}
+		}
+		if nextCursor == "" || nextCursor == cursor {
+			return people, nil
+		}
+		cursor = nextCursor
+	}
 }
 
 func (w *webAPI) AddReaction(ctx context.Context, channel, timestamp, name string) error {

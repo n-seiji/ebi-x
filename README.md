@@ -7,7 +7,7 @@ ebi-x は、Slack の mention を受けて Codex が1回の実行で依頼を検
 `examples/slack-app-manifest.json` を使うと、以下の設定をまとめて入れられます（Slack App の作成画面で「From a manifest」を選び、貼り付けます）。
 
 1. Slack App を作成し、Socket Mode を有効にします。
-2. Bot Token Scopes に `app_mentions:read`、`chat:write`、`reactions:write`、`reactions:read`、`channels:history`、`files:write`、`im:history`、`assistant:write`、`commands` を追加します。`files:write` は成果物の添付（後述）、`commands` はメッセージから依頼するショートカット（後述）、`im:history` と `assistant:write` はエージェントとしての表示と DM（後述）に使います。プライベートチャンネルで使う場合は `groups:history`（スレッドを読むため）も追加します。scopeを追加・変更した場合は、workspaceへアプリを再インストールしてください。
+2. Bot Token Scopes に `app_mentions:read`、`chat:write`、`reactions:write`、`reactions:read`、`channels:history`、`files:write`、`im:history`、`assistant:write`、`commands` を追加します。`files:write` は成果物の添付（後述）、`commands` はメッセージから依頼するショートカット（後述）、`im:history` と `assistant:write` はエージェントとしての表示と DM（後述）に使います。`:done:` の監視（後述）で @channel を使う場合は `channels:read` と `users:read`（プライベートチャンネルでは `groups:read` も）を追加します。プライベートチャンネルで使う場合は `groups:history`（スレッドを読むため）も追加します。scopeを追加・変更した場合は、workspaceへアプリを再インストールしてください。
 3. Event Subscriptions で `app_mention`、`message.channels`、`message.im`、`app_home_opened` を購読します。`message.groups` は追加しません（mentionなしの返信を処理するスレッド購読は、パブリックチャンネルだけが対象です）。
 4. App Home で Home Tab と Messages Tab を有効にし、「Allow users to send Slash commands and messages from the messages tab」をオンにします。
 5. Interactivity & Shortcuts で Interactivity をオンにし、Message の Shortcut「ebi-x に頼む」（Callback ID `ebix_request`）を作ります。
@@ -268,13 +268,13 @@ Devin の scheduled sessions や dots の定期タスクにならい、「毎朝
   └ @ebi-x  ✅ 対象の全員が :done: を付けたため、監視を終了しました。
 ```
 
-- 対象は、`@ebi-x 監視して` を書いたメッセージで @メンションされた人です。そのメッセージに @メンションがなく、スレッドの返信で書いた場合は、スレッドの最初のメッセージで @メンションされた人が対象です。ユーザーグループ（`@team` など）は対象になりません。
+- 対象は、`@ebi-x 監視して` を書いたメッセージで @メンションされた人です。そのメッセージに @メンションがなく、スレッドの返信で書いた場合は、スレッドの最初のメッセージで @メンションされた人が対象です。`@channel`・`@here`・`@everyone` があれば、チャンネルのメンバー全員（投稿者、bot、無効化されたアカウントを除く）が対象です。`@here` もオンラインかどうかに関係なく全員を対象にします。ユーザーグループ（`@team` など）は対象になりません。対象が100人を超える場合は始めません。
 - 間隔は `@ebi-x 毎日監視して`（毎日）、`@ebi-x 2日おきに監視して`（3日ごと）、`@ebi-x 3日ごとに監視して` のように変えられます。指定がなければ1日おき（2日ごと）です。最長14日です。
 - 確認するのはメッセージに付いた `:done:`（リアクション名 `done`）だけです。ワークスペースに `:done:` の絵文字が必要です。
 - 30分ごとにリアクションを確認し、全員が付けた時点で終了を報告します。通知は間隔ごとに、まだの人だけを @メンションします。通知は10回までで、それでも残る人がいれば、その人を書いて終了します。元メッセージが消された場合も終了します。
 - 止めるには、そのスレッドで `@ebi-x 監視をとめて`（`監視を止めて`・`監視停止` なども可）と mention します。ほかの作業は止めません。`@ebi-x 停止` はほかの作業と一緒に監視も止めます。
 - 始められるのは許可ユーザーだけで、依頼者とチャンネルの許可が外れたら黙って終了します。1人が同時に続けられる監視は10件までです。
-- 状態は `data/state/donewatches.json` に保存し、再起動後も続きます。追加の設定はありません。既存の `reactions:read` scope を使います。
+- 状態は `data/state/donewatches.json` に保存し、再起動後も続きます。追加の設定はありません。`reactions:read` scope を使い、@channel のときは `channels:read`・`users:read`（プライベートチャンネルでは `groups:read`）も使います。これらがない場合はその旨を返信します。
 
 ## PR の見守り
 

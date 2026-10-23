@@ -339,6 +339,10 @@ type fakeSlack struct {
 	// reactionUsersErr its error.
 	reactionUsers    []string
 	reactionUsersErr error
+	// channelMembers are the people ChannelMembers returns, and
+	// channelMembersErr its error.
+	channelMembers    []string
+	channelMembersErr error
 	// topTimestamp, when set, is returned for top-level posts instead of
 	// the default placeholder, for flows that run work in the new thread.
 	topTimestamp string
@@ -480,6 +484,16 @@ func (s *fakeSlack) ReactionUsers(_ context.Context, _, _, _ string) ([]string, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.reactionUsers...), s.reactionUsersErr
+}
+
+func (s *fakeSlack) ChannelMembers(_ context.Context, _ string, limit int) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	members := s.channelMembers
+	if len(members) > limit+1 {
+		members = members[:limit+1]
+	}
+	return append([]string(nil), members...), s.channelMembersErr
 }
 
 type runnerResponse struct {

@@ -28,12 +28,14 @@ const (
 	maxDoneWatchReminders = 10
 	// maxDoneWatchesPerUser bounds the watches one person keeps running.
 	maxDoneWatchesPerUser = 10
-	maxDoneWatchTargets   = 30
+	maxDoneWatchTargets   = 100
 
 	doneWatchStartedNotice  = "👀 :done: の監視を始めます。対象は元メッセージで @メンションされた%d人です。%sに確認し、まだ :done: を付けていない人にこのスレッドで通知します（次回 %s）。\n全員が付けたら終了します。止める場合は、このスレッドで「@ebi-x 監視をとめて」と mention してください。"
 	doneWatchAllDoneNotice  = "✅ 対象の全員がすでに :done: を付けているため、監視は始めていません。"
 	doneWatchNoTargetNotice = "⚠️ @メンションされた人が見つからなかったため、監視は始めていません。対象の人を @メンションしたメッセージの末尾で「@ebi-x 監視して」と書いてください。"
 	doneWatchLimitNotice    = "⚠️ 1人が同時に続けられる監視は%d件までのため、監視は始めていません。不要な監視を、そのスレッドで「@ebi-x 監視をとめて」と mention して止めてください。"
+	doneWatchTooManyNotice  = "⚠️ 対象が%d人を超えるため、監視は始めていません。"
+	doneWatchScopeNotice    = "⚠️ @channel の対象を調べるには、Slack アプリに channels:read・groups:read・users:read の scope が必要です。管理者に追加を頼んでください。"
 	doneWatchFailedNotice   = "⚠️ 監視を始められませんでした。もう一度 mention してください。"
 	doneWatchReminder       = "%s\n:done: のリアクションがまだのようです。対応が済んだら、%sに :done: を付けてください。（%d回目の通知）"
 	doneWatchCompleted      = "✅ 対象の全員が :done: を付けたため、監視を終了しました。"
@@ -52,6 +54,10 @@ var doneWatchStopCommand = regexp.MustCompile(`^監視を?(?:とめ|止め|や�
 
 // slackUserMention matches a user mention in a Slack message's text.
 var slackUserMention = regexp.MustCompile(`<@([UW][A-Z0-9]+)(?:\|[^>]*)?>`)
+
+// slackBroadcast matches @channel, @here, and @everyone, which a watch reads
+// as every member of the channel.
+var slackBroadcast = regexp.MustCompile(`<!(?:channel|here|everyone)(?:\|[^>]*)?>`)
 
 // parseDoneWatchCommand reports whether text ends with the bot's mention and
 // a watch command, and the days between reminders it asks for.
@@ -113,11 +119,13 @@ func mentionedUsers(text, botUserID string) []string {
 
 // startDoneWatch watches the message a "監視して" mention points at. That is
 // the mention's own message when it mentions people, and otherwise the
-// thread's first message.
+// thread's first message. @channel and the like stand for every person in
+// the channel but the author.
 func (b *Bot) startDoneWatch(ctx context.Context, channel, threadTS, timestamp, text, authorID string, days int) {
 	messageTS := timestamp
 	targets := mentionedUsers(text, b.config.BotUserID)
-	if len(targets) == 0 && threadTS != timestamp {
+	everyone := slackBroadcast.MatchString(text)
+	if len(targets) == 0 && !everyone && threadTS != timestamp {
 		messages, err := b.api.GetThreadMessages(ctx, channel, threadTS, threadTS)
 		if err != nil {
 			log.Printf("slackbot: read thread %s for done watch: %v", threadRef(channel, threadTS), err)
@@ -128,16 +136,31 @@ func (b *Bot) startDoneWatch(ctx context.Context, channel, threadTS, timestamp, 
 			if message.Timestamp == threadTS {
 				messageTS = threadTS
 				targets = mentionedUsers(message.Text, b.config.BotUserID)
+				everyone = slackBroadcast.MatchString(message.Text)
 				break
 			}
 		}
+	}
+	if everyone {
+		members, err := b.api.ChannelMembers(ctx, channel, maxDoneWatchTargets+1)
+		if err != nil {
+			log.Printf("slackbot: list members of %s for done watch: %v", channel, err)
+			notice := doneWatchFailedNotice
+			if response, ok := errors.AsType[slack.SlackErrorResponse](err); ok && response.Err == "missing_scope" {
+				notice = doneWatchScopeNotice
+			}
+			b.postDoneWatchNotice(ctx, channel, threadTS, notice)
+			return
+		}
+		targets = mergeTargets(targets, members, authorID, b.config.BotUserID)
 	}
 	if len(targets) == 0 {
 		b.postDoneWatchNotice(ctx, channel, threadTS, doneWatchNoTargetNotice)
 		return
 	}
 	if len(targets) > maxDoneWatchTargets {
-		targets = targets[:maxDoneWatchTargets]
+		b.postDoneWatchNotice(ctx, channel, threadTS, fmt.Sprintf(doneWatchTooManyNotice, maxDoneWatchTargets))
+		return
 	}
 	key := channel + ":" + messageTS
 	others := 0
@@ -190,6 +213,24 @@ func doneWatchIntervalLabel(days int) string {
 		return "1日おき"
 	}
 	return fmt.Sprintf("%d日ごと", days)
+}
+
+// mergeTargets adds the channel's members after the people mentioned by
+// name, leaving out the author and the bot unless they were named.
+func mergeTargets(named, members []string, authorID, botUserID string) []string {
+	targets := append([]string(nil), named...)
+	seen := makeSet(named)
+	for _, member := range members {
+		if member == authorID || member == botUserID {
+			continue
+		}
+		if _, ok := seen[member]; ok {
+			continue
+		}
+		seen[member] = struct{}{}
+		targets = append(targets, member)
+	}
+	return targets
 }
 
 // pendingUsers lists the targets missing from reacted.
