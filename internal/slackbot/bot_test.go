@@ -536,24 +536,27 @@ func (s *fakeSlack) ReactionUsers(_ context.Context, _, _, _ string) ([]string, 
 	return append([]string(nil), s.reactionUsers...), s.reactionUsersErr
 }
 
-func (s *fakeSlack) ChannelMembers(_ context.Context, _ string, limit int) ([]string, error) {
+func (s *fakeSlack) ChannelMembers(context.Context, string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	members := s.channelMembers
-	if len(members) > limit+1 {
-		members = members[:limit+1]
-	}
-	return append([]string(nil), members...), s.channelMembersErr
+	return append([]string(nil), s.channelMembers...), s.channelMembersErr
 }
 
-func (s *fakeSlack) UserGroupMembers(_ context.Context, group string, limit int) ([]string, error) {
+func (s *fakeSlack) UserGroupMembers(_ context.Context, group string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	members := s.groupMembers[group]
-	if len(members) > limit+1 {
-		members = members[:limit+1]
+	return append([]string(nil), s.groupMembers[group]...), s.groupMembersErr
+}
+
+// People treats every user whose ID starts with "B" as a bot.
+func (s *fakeSlack) People(_ context.Context, users []string) ([]string, error) {
+	var people []string
+	for _, user := range users {
+		if !strings.HasPrefix(user, "B") {
+			people = append(people, user)
+		}
 	}
-	return append([]string(nil), members...), s.groupMembersErr
+	return people, nil
 }
 
 type runnerResponse struct {

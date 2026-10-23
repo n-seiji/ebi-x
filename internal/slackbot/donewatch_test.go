@@ -232,23 +232,64 @@ func TestDoneWatchChannelTargetsMembers(t *testing.T) {
 
 func TestDoneWatchUserGroupTargetsMembers(t *testing.T) {
 	store := &fakeStore{claim: true}
-	api := &fakeSlack{groupMembers: map[string][]string{
-		"S1": {"U1", "U2", "U5"},
-		"S2": {"U5", "U7"},
-	}}
+	api := &fakeSlack{
+		channelMembers: []string{"U1", "U2", "U5", "U7", "U8", "B1"},
+		groupMembers: map[string][]string{
+			"S1": {"U1", "U2", "U5", "B1"},
+			"S2": {"U5", "U7"},
+		},
+	}
 	bot := newFollowUpBot(t, store, api, &fakeRunner{})
 
 	bot.HandleMention(context.Background(), doneWatchMention("<@U9> <!subteam^S1|@dev_team> <!subteam^S2> 回答してください <@UBOT> 監視して"))
 
 	got, ok := store.doneWatches["C1:100.1"]
 	if !ok || strings.Join(got.Targets, ",") != "U9,U2,U5,U7" {
-		t.Fatalf("watches = %#v, want the named user, then both groups' members once each without the author", store.doneWatches)
+		t.Fatalf("watches = %#v, want the named user, then both groups' members once each without the author or bots", store.doneWatches)
+	}
+	if last := api.postTexts[len(api.postTexts)-1]; strings.Contains(last, "このチャンネルにいない") {
+		t.Fatalf("start notice = %q, want no left-out note", last)
+	}
+}
+
+func TestDoneWatchUserGroupKeepsChannelMembersOnly(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{
+		channelMembers: []string{"U1", "U2"},
+		groupMembers:   map[string][]string{"S1": {"U1", "U2", "U3", "U4", "B9"}},
+	}
+	bot := newFollowUpBot(t, store, api, &fakeRunner{})
+
+	bot.HandleMention(context.Background(), doneWatchMention("<!subteam^S1> 回答してください <@UBOT> 監視して"))
+
+	got, ok := store.doneWatches["C1:100.1"]
+	if !ok || strings.Join(got.Targets, ",") != "U2" {
+		t.Fatalf("watches = %#v, want only the group member in the channel", store.doneWatches)
+	}
+	if last := api.postTexts[len(api.postTexts)-1]; !strings.Contains(last, fmt.Sprintf(doneWatchOutsideNotice, 2)) {
+		t.Fatalf("start notice = %q, want it to say 2 people outside the channel were left out", last)
+	}
+}
+
+func TestDoneWatchUserGroupAllOutsideChannel(t *testing.T) {
+	store := &fakeStore{claim: true}
+	api := &fakeSlack{
+		channelMembers: []string{"U1"},
+		groupMembers:   map[string][]string{"S1": {"U3", "U4"}},
+	}
+	bot := newFollowUpBot(t, store, api, &fakeRunner{})
+
+	bot.HandleMention(context.Background(), doneWatchMention("<!subteam^S1> 回答してください <@UBOT> 監視して"))
+
+	if len(store.doneWatches) != 0 || api.postTexts[len(api.postTexts)-1] != doneWatchNoTargetNotice {
+		t.Fatalf("watches = %#v, posts = %q, want no watch", store.doneWatches, api.postTexts)
 	}
 }
 
 func TestDoneWatchUserGroupFromThreadRoot(t *testing.T) {
 	store := &fakeStore{claim: true}
 	api := &fakeSlack{
+		channelMembers: []string{"U1", "U2", "U3"},
 		groupMembers:   map[string][]string{"S1": {"U2", "U3"}},
 		threadMessages: []ThreadMessage{{AuthorID: "U1", Timestamp: "100.0", Text: "<!subteam^S1> 回答してください"}},
 	}
