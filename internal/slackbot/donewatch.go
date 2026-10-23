@@ -298,11 +298,22 @@ func (b *Bot) checkDoneWatch(ctx context.Context, watch state.DoneWatch) {
 		b.endDoneWatch(ctx, watch, fmt.Sprintf(doneWatchLimitReached, maxDoneWatchReminders, userMentions(pending)))
 		return
 	}
-	watch.Reminders++
-	watch.NextAt = b.now().Add(time.Duration(max(watch.IntervalDays, 1)) * 24 * time.Hour)
-	// Save before posting, so a crash cannot remind twice.
-	if err := b.store.SetDoneWatch(watch); err != nil {
+	// Count the reminder before posting, so a crash cannot remind twice, and
+	// only while the watch is still saved, so a stop during this check wins.
+	now := b.now()
+	watch, ok, err := b.store.UpdateDoneWatch(key, func(saved *state.DoneWatch) bool {
+		if now.Before(saved.NextAt) || saved.Reminders >= maxDoneWatchReminders {
+			return false
+		}
+		saved.Reminders++
+		saved.NextAt = now.Add(time.Duration(max(saved.IntervalDays, 1)) * 24 * time.Hour)
+		return true
+	})
+	if err != nil {
 		log.Printf("slackbot: save done watch %s: %v", key, err)
+		return
+	}
+	if !ok {
 		return
 	}
 	original := "元メッセージ"
@@ -321,11 +332,13 @@ func (b *Bot) checkDoneWatch(ctx context.Context, watch state.DoneWatch) {
 // thread.
 func (b *Bot) endDoneWatch(ctx context.Context, watch state.DoneWatch, message string) {
 	key := watch.Key()
-	if _, err := b.store.DeleteDoneWatches(func(w state.DoneWatch) bool { return w.Key() == key }); err != nil {
+	removed, err := b.store.DeleteDoneWatches(func(w state.DoneWatch) bool { return w.Key() == key })
+	if err != nil {
 		log.Printf("slackbot: delete done watch %s: %v", key, err)
 		return
 	}
-	if message == "" {
+	// A stop during this check already removed the watch and said so.
+	if len(removed) == 0 || message == "" {
 		return
 	}
 	if err := b.post(ctx, watch.Channel, watch.ThreadTS, message); err != nil {

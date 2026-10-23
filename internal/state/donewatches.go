@@ -66,6 +66,29 @@ func (s *Store) SetDoneWatch(watch DoneWatch) error {
 	return nil
 }
 
+// UpdateDoneWatch applies update to the saved watch with key and saves the
+// result. It does nothing when the watch is gone, so a check that raced a
+// stop cannot bring the watch back, or when update returns false.
+func (s *Store) UpdateDoneWatch(key string, update func(*DoneWatch) bool) (DoneWatch, bool, error) {
+	s.doneWatchesMu.Lock()
+	defer s.doneWatchesMu.Unlock()
+	previous, ok := s.doneWatches[key]
+	if !ok {
+		return DoneWatch{}, false, nil
+	}
+	watch := previous
+	watch.Targets = append([]string(nil), previous.Targets...)
+	if !update(&watch) {
+		return DoneWatch{}, false, nil
+	}
+	s.doneWatches[key] = watch
+	if err := s.saveDoneWatches(); err != nil {
+		s.doneWatches[key] = previous
+		return DoneWatch{}, false, fmt.Errorf("save done watch %q: %w", key, err)
+	}
+	return watch, true, nil
+}
+
 // DeleteDoneWatches removes the watches match selects and returns them.
 func (s *Store) DeleteDoneWatches(match func(DoneWatch) bool) ([]DoneWatch, error) {
 	s.doneWatchesMu.Lock()

@@ -172,6 +172,17 @@ func (s *fakeStore) SetDoneWatch(watch state.DoneWatch) error {
 	return nil
 }
 
+func (s *fakeStore) UpdateDoneWatch(key string, update func(*state.DoneWatch) bool) (state.DoneWatch, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	watch, ok := s.doneWatches[key]
+	if !ok || !update(&watch) {
+		return state.DoneWatch{}, false, nil
+	}
+	s.doneWatches[key] = watch
+	return watch, true, nil
+}
+
 func (s *fakeStore) DeleteDoneWatches(match func(state.DoneWatch) bool) ([]state.DoneWatch, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1839,6 +1850,9 @@ func (s *looseStore) FollowUps() []state.FollowUp                 { return nil }
 func (s *looseStore) GetPullWatch(string) (state.PullWatch, bool) { return state.PullWatch{}, false }
 func (s *looseStore) DoneWatches() []state.DoneWatch              { return nil }
 func (s *looseStore) SetDoneWatch(state.DoneWatch) error          { return nil }
+func (s *looseStore) UpdateDoneWatch(string, func(*state.DoneWatch) bool) (state.DoneWatch, bool, error) {
+	return state.DoneWatch{}, false, nil
+}
 func (s *looseStore) DeleteDoneWatches(func(state.DoneWatch) bool) ([]state.DoneWatch, error) {
 	return nil, nil
 }

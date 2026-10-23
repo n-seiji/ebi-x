@@ -105,6 +105,7 @@ type Store interface {
 	DeletePullWatches(match func(state.PullWatch) bool) ([]state.PullWatch, error)
 	DoneWatches() []state.DoneWatch
 	SetDoneWatch(watch state.DoneWatch) error
+	UpdateDoneWatch(key string, update func(*state.DoneWatch) bool) (state.DoneWatch, bool, error)
 	DeleteDoneWatches(match func(state.DoneWatch) bool) ([]state.DoneWatch, error)
 	Usage() state.Usage
 	SetUsage(usage state.Usage) error
@@ -1201,10 +1202,10 @@ func (w *webAPI) ReactionUsers(ctx context.Context, channel, timestamp, reaction
 // ChannelMembers needs channels:read (groups:read for private channels) to
 // list the members and users:read to tell people from bots.
 func (w *webAPI) ChannelMembers(ctx context.Context, channel string, limit int) ([]string, error) {
-	var people []string
+	var members []string
 	cursor := ""
 	for {
-		members, nextCursor, err := w.client.GetUsersInConversationContext(ctx, &slack.GetUsersInConversationParameters{
+		page, nextCursor, err := w.client.GetUsersInConversationContext(ctx, &slack.GetUsersInConversationParameters{
 			ChannelID: channel,
 			Cursor:    cursor,
 			Limit:     200,
@@ -1212,24 +1213,35 @@ func (w *webAPI) ChannelMembers(ctx context.Context, channel string, limit int) 
 		if err != nil {
 			return nil, fmt.Errorf("list Slack channel members: %w", err)
 		}
-		for _, member := range members {
-			user, err := w.client.GetUserInfoContext(ctx, member)
-			if err != nil {
-				return nil, fmt.Errorf("read Slack user %s: %w", member, err)
-			}
-			if user.IsBot || user.IsAppUser || user.Deleted || user.ID == "USLACKBOT" {
-				continue
-			}
-			people = append(people, member)
-			if len(people) > limit {
-				return people, nil
-			}
-		}
+		members = append(members, page...)
 		if nextCursor == "" || nextCursor == cursor {
-			return people, nil
+			break
 		}
 		cursor = nextCursor
 	}
+	// One users.list walk tells bots apart, instead of a users.info call per
+	// member; slack-go waits out its rate limit.
+	users, err := w.client.GetUsersContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list Slack users: %w", err)
+	}
+	people := make(map[string]bool, len(users))
+	for _, user := range users {
+		if !user.IsBot && !user.IsAppUser && !user.Deleted && user.ID != "USLACKBOT" {
+			people[user.ID] = true
+		}
+	}
+	var humans []string
+	for _, member := range members {
+		if !people[member] {
+			continue
+		}
+		humans = append(humans, member)
+		if len(humans) > limit {
+			break
+		}
+	}
+	return humans, nil
 }
 
 func (w *webAPI) AddReaction(ctx context.Context, channel, timestamp, name string) error {

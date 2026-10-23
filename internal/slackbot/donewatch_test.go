@@ -177,6 +177,26 @@ func TestCheckDoneWatchEnds(t *testing.T) {
 	}
 }
 
+func TestCheckDoneWatchAfterStopStaysStopped(t *testing.T) {
+	// The poll took its snapshot, then the watch was stopped before the
+	// check ran: the check must neither remind nor save the watch again.
+	for _, reacted := range [][]string{nil, {"U2"}} {
+		store := &fakeStore{claim: true}
+		api := &fakeSlack{reactionUsers: reacted}
+		bot := newFollowUpBot(t, store, api, &fakeRunner{})
+		watch := state.DoneWatch{
+			Channel: "C1", ThreadTS: "100.1", MessageTS: "100.1", AuthorID: "U1",
+			Targets: []string{"U2"}, IntervalDays: 2, NextAt: followUpNow,
+		}
+
+		bot.checkDoneWatch(context.Background(), watch)
+
+		if len(store.doneWatches) != 0 || len(api.postTexts) != 0 {
+			t.Errorf("reacted %q: watches = %#v, posts = %q, want none", reacted, store.doneWatches, api.postTexts)
+		}
+	}
+}
+
 func TestDoneWatchStopCommandKeepsOtherWork(t *testing.T) {
 	store := &fakeStore{claim: true}
 	api := &fakeSlack{}
