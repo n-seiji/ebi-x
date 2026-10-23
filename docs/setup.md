@@ -44,6 +44,8 @@ Slack App の作成画面で「From a manifest」を選び、`examples/slack-app
 | `EBIX_CHECKOUT_IDLE_TTL` | `120h` | 使われなくなったスレッド専用クローンを消すまでの時間 |
 | `EBIX_GITHUB_TOKEN` / `EBIX_GITHUB_API_URL` | なし | PR の見守りに使うトークンと API の URL（後述） |
 
+`SLACK_ALLOW_ALL_PUBLIC_CHANNELS=true` があると起動しません。全チャンネルを一度に許可する設定はないので、チャンネルは1つずつ許可します。
+
 時刻はプロセスのローカルタイムゾーンで扱うので、日本時間で運用するなら `TZ=Asia/Tokyo` で起動します。
 
 ## 3. 使える人とチャンネル
