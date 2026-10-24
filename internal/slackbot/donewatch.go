@@ -245,7 +245,7 @@ func nextDoneWatchReminder(after time.Time, days int) time.Time {
 	}
 	left := max(days, 1)
 	for {
-		if weekday := at.Weekday(); weekday != time.Saturday && weekday != time.Sunday {
+		if !isWeekend(at) {
 			if left--; left == 0 {
 				return at
 			}

@@ -85,7 +85,8 @@ func (b *Bot) usageWatchEnabled() bool {
 // recorded for the day's summary, which the first check of the next day
 // posts in the approval channel, and a window that runs low is announced
 // there. The first check of each hour also posts the remaining usage there
-// with a chart, unless nothing changed since the last report.
+// with a chart, unless nothing changed since the last report. Nothing is
+// posted on Saturdays and Sundays.
 func (b *Bot) runUsageWatch(ctx context.Context) {
 	if !b.usageWatchEnabled() {
 		return
@@ -163,9 +164,10 @@ func (b *Bot) recordUsage(ctx context.Context, limits *codex.RateLimits) {
 	defer b.usageMu.Unlock()
 	saved := b.store.Usage()
 	next := saved
+	quiet := isWeekend(b.now())
 	day := b.now().In(time.Local).Format(usageDayLayout)
 	if saved.Day != day {
-		if summary := usageDailySummary(saved); summary != "" {
+		if summary := usageDailySummary(saved); summary != "" && !quiet {
 			if err := b.post(ctx, b.config.ApprovalChannelID, "", summary); err != nil {
 				log.Printf("slackbot: post Codex usage summary: %v", err)
 			}
@@ -195,7 +197,10 @@ func (b *Bot) recordUsage(ctx context.Context, limits *codex.RateLimits) {
 
 	alerts, lines := usageAlerts(saved.Alerts, windows)
 	next.Alerts = alerts
-	if len(lines) > 0 {
+	if quiet {
+		// Announce it at the first weekday check instead.
+		next.Alerts = saved.Alerts
+	} else if len(lines) > 0 {
 		text := strings.Join(lines, "\n") + "\n" + usageSummaryPrefix + usageSummary(limits)
 		if err := b.post(ctx, b.config.ApprovalChannelID, "", text); err != nil {
 			log.Printf("slackbot: post Codex usage alert: %v", err)
@@ -219,6 +224,9 @@ func (b *Bot) reportUsage(ctx context.Context) {
 		return
 	}
 	now := b.now()
+	if isWeekend(now) {
+		return
+	}
 	previous := saved.Reported
 	if previous != nil && sameLocalHour(previous.At, now) {
 		return

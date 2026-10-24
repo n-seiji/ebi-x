@@ -35,6 +35,8 @@ func newUsageBot(t *testing.T, store *fakeStore, api *fakeSlack, usage UsageRead
 	bot := newTestBot(t, store, api, &fakeRunner{})
 	bot.config.ApprovalChannelID = "CAPPROVAL"
 	bot.config.Usage = usage
+	// A Tuesday, since nothing is posted on weekends.
+	bot.now = func() time.Time { return time.Date(2026, 10, 20, 10, 0, 0, 0, time.Local) }
 	return bot
 }
 
@@ -122,6 +124,54 @@ func TestRecordUsagePostsDailySummary(t *testing.T) {
 	}
 	if got := store.Usage(); got.Day != "2026-10-21" || got.Windows["primary"].Checks != 1 {
 		t.Fatalf("usage after the summary = %+v", got)
+	}
+}
+
+func TestUsageWatchPostsNothingOnWeekends(t *testing.T) {
+	api := &fakeSlack{}
+	store := &fakeStore{}
+	bot := newUsageBot(t, store, api, &fakeUsage{})
+	ctx := context.Background()
+	now := time.Date(2026, 10, 23, 18, 5, 0, 0, time.Local)
+	bot.now = func() time.Time { return now }
+	check := func(primary, secondary float64) {
+		bot.recordUsage(ctx, usageLimits(primary, secondary))
+		bot.reportUsage(ctx)
+	}
+	check(20, 10)
+	if len(api.posts) != 1 {
+		t.Fatalf("posts on Friday = %d, want the hourly report", len(api.posts))
+	}
+
+	// Saturday: the day's change, a fall below 10% and new hours are all
+	// recorded but not posted.
+	for _, at := range []time.Time{
+		time.Date(2026, 10, 24, 0, 5, 0, 0, time.Local),
+		time.Date(2026, 10, 24, 1, 5, 0, 0, time.Local),
+		time.Date(2026, 10, 25, 23, 35, 0, 0, time.Local),
+	} {
+		now = at
+		check(95, 50)
+	}
+	if len(api.posts) != 1 {
+		t.Fatalf("posted %q on the weekend, want nothing", api.posts[1].text)
+	}
+	if got := store.usage; got.Day != "2026-10-25" || got.Windows["primary"].Checks != 1 {
+		t.Fatalf("usage after the weekend = %+v, want Sunday's check recorded", got)
+	}
+
+	// Monday's first check announces the window still below 10%.
+	now = time.Date(2026, 10, 26, 0, 5, 0, 0, time.Local)
+	check(96, 50)
+	var texts []string
+	for _, post := range api.posts[1:] {
+		texts = append(texts, post.text)
+	}
+	joined := strings.Join(texts, "\n")
+	for _, want := range []string{"📊 10/25 の Codex の利用枠", "（5時間）の残りが 10% を下回りました", "📈 Codex の利用枠"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("Monday posts %q do not contain %q", texts, want)
+		}
 	}
 }
 
