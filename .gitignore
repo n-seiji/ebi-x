@@ -14,3 +14,6 @@
 .codex/
 docs/
 .DS_Store
+
+# Plans and specs written by superpowers skills
+docs/superpowers/
