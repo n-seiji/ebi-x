@@ -245,13 +245,19 @@ func nextDoneWatchReminder(after time.Time, days int) time.Time {
 	}
 	left := max(days, 1)
 	for {
-		if weekday := at.Weekday(); weekday != time.Saturday && weekday != time.Sunday {
+		if !isWeekend(at) {
 			if left--; left == 0 {
 				return at
 			}
 		}
 		at = at.AddDate(0, 0, 1)
 	}
+}
+
+// isWeekend reports whether at is a Saturday or Sunday in local time.
+func isWeekend(at time.Time) bool {
+	weekday := at.In(time.Local).Weekday()
+	return weekday == time.Saturday || weekday == time.Sunday
 }
 
 // expandDoneWatchTargets adds the people that @channel and user group
