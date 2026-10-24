@@ -254,12 +254,6 @@ func nextDoneWatchReminder(after time.Time, days int) time.Time {
 	}
 }
 
-// isWeekend reports whether at is a Saturday or Sunday in local time.
-func isWeekend(at time.Time) bool {
-	weekday := at.In(time.Local).Weekday()
-	return weekday == time.Saturday || weekday == time.Sunday
-}
-
 // expandDoneWatchTargets adds the people that @channel and user group
 // mentions stand for. Only channel members count, since a mention does not
 // reach anyone else; outside is how many group members were left out for
