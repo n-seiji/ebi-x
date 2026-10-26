@@ -56,7 +56,7 @@ type Config struct {
 	GitHubAPIURL string
 	// GitHubApp, when set, is the GitHub App the bot mints each work turn's
 	// short-lived GitHub token with.
-	GitHubApp *GitHubApp
+	GitHubApp    *GitHubApp
 	CodexTimeout time.Duration
 	// MaxParallelWork is how many work turns for different Slack threads may
 	// run at once.
