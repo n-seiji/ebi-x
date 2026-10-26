@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -86,6 +87,15 @@ type Runner struct {
 	// model's chain of command. Codex stores it once per thread, so passing
 	// it again on resume does not duplicate it.
 	DeveloperInstructions string
+	// GitHub, when set, gives each turn its own short-lived GitHub
+	// credential instead of the host's git and gh configuration.
+	GitHub TurnCredentials
+}
+
+// TurnCredentials prepares a credential for one turn: the variables that
+// point its commands at it and a function that removes it.
+type TurnCredentials interface {
+	TurnEnv(ctx context.Context) ([]string, func(), error)
 }
 
 // TurnResult is the outcome reported by one Codex CLI turn.
@@ -126,6 +136,17 @@ func (r *Runner) Run(
 
 	cmd := exec.CommandContext(runCtx, r.Command, args...)
 	cmd.Env = FilterEnv(os.Environ(), r.PassEnv)
+	if r.GitHub != nil {
+		// Without the turn credential, git and gh fall back to the host's
+		// configuration, so a failure does not stop the turn.
+		env, cleanup, err := r.GitHub.TurnEnv(ctx)
+		if err != nil {
+			log.Printf("codex exec: prepare the turn's GitHub credential: %v", err)
+		} else {
+			defer cleanup()
+			cmd.Env = append(cmd.Env, env...)
+		}
+	}
 	cmd.Stdin = strings.NewReader(prompt)
 
 	stdout, err := cmd.StdoutPipe()

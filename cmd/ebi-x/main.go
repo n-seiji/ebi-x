@@ -95,6 +95,13 @@ func main() {
 		DeveloperInstructions: policy.Instructions(),
 	}
 	log.Printf("environment variables withheld from Codex: %v", codex.WithheldEnvNames(os.Environ(), cfg.CodexEnv))
+	if cfg.GitHubApp != nil {
+		appTokens, err := githubAppTokens(cfg.GitHubAPIURL, cfg.GitHubApp)
+		if err != nil {
+			log.Fatalf("configure GitHub App: %v", err)
+		}
+		runner.GitHub = appTokens
+	}
 	var githubAPI slackbot.GitHub
 	githubLogin := ""
 	var githubRepos []string
@@ -293,6 +300,28 @@ func collectIdleCheckouts(ctx context.Context, workspaces *workspace.Manager, id
 		case <-ticker.C:
 		}
 	}
+}
+
+// githubAppTokens loads the App's private key and checks that it mints a
+// token. A failed mint is only logged: each turn tries again, and until one
+// succeeds turns use the host's git and gh configuration.
+func githubAppTokens(apiURL string, app *config.GitHubApp) (*github.AppTokens, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	key, err := github.LoadPrivateKey(ctx, app.KeyLocation)
+	if err != nil {
+		return nil, err
+	}
+	tokens, err := github.NewAppTokens(apiURL, app.ID, app.InstallationID, key)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tokens.Token(ctx); err != nil {
+		log.Printf("GitHub App %s: %v", app.ID, err)
+	} else {
+		log.Printf("work turns use GitHub App %s installation tokens for %s", app.ID, tokens.WebHost())
+	}
+	return tokens, nil
 }
 
 // pushToken returns the token the work turns push to a GitHub origin with,

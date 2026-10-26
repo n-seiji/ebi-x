@@ -743,6 +743,62 @@ printf '{"type":"turn.completed"}\n'
 	}
 }
 
+type fakeTurnCredentials struct {
+	env     []string
+	err     error
+	cleaned bool
+}
+
+func (f *fakeTurnCredentials) TurnEnv(context.Context) ([]string, func(), error) {
+	if f.err != nil {
+		return nil, nil, f.err
+	}
+	return f.env, func() { f.cleaned = true }, nil
+}
+
+func TestRunAddsTurnGitHubCredential(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "codex")
+	envFile := filepath.Join(dir, "env")
+	content := `#!/bin/sh
+cat >/dev/null
+env > "` + envFile + `"
+printf '{"type":"turn.completed"}\n'
+`
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	t.Setenv("GH_CONFIG_DIR", "/host/gh")
+	credentials := &fakeTurnCredentials{env: []string{"GH_CONFIG_DIR=/turn/gh", "GIT_CONFIG_PARAMETERS='a=b'"}}
+	runner := &Runner{Command: script, GitHub: credentials}
+	if _, err := runner.Run(context.Background(), "", "read-only", dir, nil, nil, "prompt", nil, nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	env, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), "GH_CONFIG_DIR=/turn/gh\n") || strings.Contains(string(env), "/host/gh") || !strings.Contains(string(env), "GIT_CONFIG_PARAMETERS='a=b'") {
+		t.Fatalf("codex environment = %q, want the turn credential to replace the host's gh configuration", env)
+	}
+	if !credentials.cleaned {
+		t.Fatal("turn credential was not removed after the turn")
+	}
+}
+
+func TestRunWithoutTurnGitHubCredentialStillRuns(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "codex")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat >/dev/null\nprintf '{\"type\":\"turn.completed\"}\\n'\n"), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	runner := &Runner{Command: script, GitHub: &fakeTurnCredentials{err: errors.New("mint failed")}}
+	result, err := runner.Run(context.Background(), "", "read-only", dir, nil, nil, "prompt", nil, nil)
+	if err != nil || !result.Completed {
+		t.Fatalf("Run() = %+v, %v; want a completed turn", result, err)
+	}
+}
+
 func TestRunRejectsOversizedDenyList(t *testing.T) {
 	denied := make([]string, 0, 3000)
 	for i := range 3000 {

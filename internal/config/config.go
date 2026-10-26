@@ -29,7 +29,7 @@ const (
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // botSecretEnvNames are credentials only the bot itself uses.
-var botSecretEnvNames = []string{"SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "EBIX_GITHUB_TOKEN"}
+var botSecretEnvNames = []string{"SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "EBIX_GITHUB_TOKEN", "EBIX_GITHUB_APP_PRIVATE_KEY"}
 
 // Config contains ebi-x's runtime configuration and resolved data paths.
 type Config struct {
@@ -54,6 +54,9 @@ type Config struct {
 	// empty.
 	GitHubToken  string
 	GitHubAPIURL string
+	// GitHubApp, when set, is the GitHub App the bot mints each work turn's
+	// short-lived GitHub token with.
+	GitHubApp *GitHubApp
 	CodexTimeout time.Duration
 	// MaxParallelWork is how many work turns for different Slack threads may
 	// run at once.
@@ -261,6 +264,13 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	githubApp, err := loadGitHubApp()
+	if err != nil {
+		return nil, err
+	}
+	if githubApp != nil && githubApp.KeyPath != "" && !slices.Contains(protectedPaths, githubApp.KeyPath) {
+		protectedPaths = append(protectedPaths, githubApp.KeyPath)
+	}
 	// Credential stores stay out of the isolation checks below: Codex gives
 	// deny precedence over writable roots, and a root containing ~ must not
 	// fail startup.
@@ -302,6 +312,7 @@ func Load() (*Config, error) {
 		CodexModel:                 strings.TrimSpace(os.Getenv("CODEX_MODEL")),
 		GitHubToken:                strings.TrimSpace(os.Getenv("EBIX_GITHUB_TOKEN")),
 		GitHubAPIURL:               strings.TrimSpace(os.Getenv("EBIX_GITHUB_API_URL")),
+		GitHubApp:                  githubApp,
 		CodexTimeout:               codexTimeout,
 		MaxParallelWork:            maxParallelWork,
 		SharedWriteChannelIDs:      sharedWriteChannelIDs,
