@@ -9,7 +9,18 @@ import (
 )
 
 func TestTurnCredentialsReplaceHostGitHelper(t *testing.T) {
-	dir := t.TempDir()
+	for name, parent := range map[string]string{"plain path": "turn", "path with space": "turn dir"} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), parent)
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			testTurnCredentials(t, dir)
+		})
+	}
+}
+
+func testTurnCredentials(t *testing.T, dir string) {
 	env, err := writeTurnCredentials(dir, "github.com", "ghs_turn")
 	if err != nil {
 		t.Fatalf("writeTurnCredentials() error = %v", err)
@@ -24,7 +35,7 @@ func TestTurnCredentialsReplaceHostGitHelper(t *testing.T) {
 	cmd.Dir = t.TempDir()
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
 	cmd.Env = append(cmd.Env, env...)
-	cmd.Stdin = strings.NewReader("url=https://github.com/miive-project/miive-roadmap\n\n")
+	cmd.Stdin = strings.NewReader("url=https://github.com/example-org/example-repo\n\n")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git credential fill: %v: %s", err, output)

@@ -75,7 +75,10 @@ type Config struct {
 	MemoryDir                  string
 	PlaybooksDir               string
 	StateDir                   string
-	ActionRulesFile            string
+	// TurnCredentialsDir holds each work turn's GitHub App credentials. The
+	// sandbox cannot write it, so one turn cannot alter another's.
+	TurnCredentialsDir string
+	ActionRulesFile    string
 	// WritableRoots are absolute, symlink-resolved directories the work turn
 	// may write to in addition to the workspace.
 	WritableRoots []string
@@ -250,6 +253,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("resolve playbooks directory: %w", err)
 	}
 	stateDir := filepath.Join(home, "data", "state")
+	turnCredentialsDir := filepath.Join(home, "data", "turn-credentials")
 	// The operator's action rules; the agent may read them but not change them.
 	actionRulesFile := filepath.Join(home, "data", "rules.md")
 	codexHome, err := resolveCodexHome()
@@ -294,7 +298,7 @@ func Load() (*Config, error) {
 	if err := validateIsolation(botDirs, reserved); err != nil {
 		return nil, err
 	}
-	if err := validateIsolation(writableRoots, append(append(reserved, botDirs...), actionRulesFile)); err != nil {
+	if err := validateIsolation(writableRoots, append(append(reserved, botDirs...), actionRulesFile, turnCredentialsDir)); err != nil {
 		return nil, err
 	}
 
@@ -325,6 +329,7 @@ func Load() (*Config, error) {
 		MemoryDir:                  memoryDir,
 		PlaybooksDir:               playbooksDir,
 		StateDir:                   stateDir,
+		TurnCredentialsDir:         turnCredentialsDir,
 		ActionRulesFile:            actionRulesFile,
 		WritableRoots:              writableRoots,
 		ProtectedPaths:             protectedPaths,

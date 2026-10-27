@@ -97,7 +97,7 @@ func main() {
 	}
 	log.Printf("environment variables withheld from Codex: %v", codex.WithheldEnvNames(os.Environ(), cfg.CodexEnv))
 	if cfg.GitHubApp != nil {
-		appTokens, err := githubAppTokens(cfg.GitHubAPIURL, cfg.GitHubApp)
+		appTokens, err := githubAppTokens(cfg.GitHubAPIURL, cfg.GitHubApp, cfg.TurnCredentialsDir, cfg.CodexTimeout)
 		if err != nil {
 			log.Fatalf("configure GitHub App: %v", err)
 		}
@@ -303,10 +303,14 @@ func collectIdleCheckouts(ctx context.Context, workspaces *workspace.Manager, id
 	}
 }
 
+// maxGitHubTokenTurn is the longest turn an installation token (valid for
+// an hour) reliably outlasts.
+const maxGitHubTokenTurn = 55 * time.Minute
+
 // githubAppTokens loads the App's private key and checks that it mints a
 // token, which it revokes again. A failed mint is only logged: each turn tries again, and until one
 // succeeds turns use the host's git and gh configuration.
-func githubAppTokens(apiURL string, app *config.GitHubApp) (*github.AppTokens, error) {
+func githubAppTokens(apiURL string, app *config.GitHubApp, turnDir string, codexTimeout time.Duration) (*github.AppTokens, error) {
 	if strings.HasPrefix(app.KeyLocation, github.KeychainPrefix) {
 		// A rebuilt binary is a new application to the Keychain, so macOS
 		// may ask to allow it; startup waits for that answer.
@@ -316,16 +320,24 @@ func githubAppTokens(apiURL string, app *config.GitHubApp) (*github.AppTokens, e
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	tokens, err := github.NewAppTokens(apiURL, app.ID, app.InstallationID, key)
+	if err := github.PrepareTurnDir(turnDir); err != nil {
+		return nil, err
+	}
+	if codexTimeout > maxGitHubTokenTurn {
+		log.Printf("CODEX_TIMEOUT %s exceeds the one hour GitHub App installation tokens last; turns longer than that lose GitHub access", codexTimeout)
+	}
+	tokens, err := github.NewAppTokens(apiURL, app.ID, app.InstallationID, key, turnDir)
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	if token, err := tokens.Mint(ctx); err != nil {
 		log.Printf("GitHub App %s: %v", app.ID, err)
 	} else {
-		if err := tokens.Revoke(ctx, token); err != nil {
+		revokeCtx, revokeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer revokeCancel()
+		if err := tokens.Revoke(revokeCtx, token); err != nil {
 			log.Printf("GitHub App %s: %v", app.ID, err)
 		}
 		log.Printf("work turns use GitHub App %s installation tokens for %s", app.ID, tokens.WebHost())

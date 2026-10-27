@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+// revokeTimeout bounds the revocation that runs at the end of a turn, which
+// delays the Slack reply.
+const revokeTimeout = 10 * time.Second
+
 // credentialHelperScript answers git's credential get with the token stored
 // beside it, and ignores store and erase so git cannot overwrite it.
 const credentialHelperScript = `#!/bin/sh
@@ -32,19 +36,21 @@ func (a *AppTokens) TurnEnv(ctx context.Context) ([]string, func(), error) {
 	}
 	revoke := func() {
 		// The turn's context may already be cancelled.
-		revokeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		revokeCtx, cancel := context.WithTimeout(context.Background(), revokeTimeout)
 		defer cancel()
 		if err := a.Revoke(revokeCtx, token); err != nil {
 			log.Printf("%v; it expires within an hour", err)
 		}
 	}
-	dir, err := os.MkdirTemp("", "ebi-x-github-")
+	dir, err := os.MkdirTemp(a.dir, "turn-")
 	if err != nil {
 		revoke()
 		return nil, nil, fmt.Errorf("create turn GitHub credential directory: %w", err)
 	}
 	cleanup := func() {
-		_ = os.RemoveAll(dir)
+		if err := os.RemoveAll(dir); err != nil {
+			log.Printf("remove turn GitHub credential directory: %v", err)
+		}
 		revoke()
 	}
 	env, err := writeTurnCredentials(dir, a.webHost, token)
@@ -61,9 +67,9 @@ func writeTurnCredentials(dir, host, token string) ([]string, error) {
 		return nil, fmt.Errorf("create turn gh configuration: %w", err)
 	}
 	// gh rewrites a hosts.yml without users, or a config.yml without
-	// version, to its multi-account format, which needs the API and a
-	// writable directory; the sandbox gives the turn neither, so both are
-	// written in that format already.
+	// version, to its multi-account format, which needs the API and
+	// rewriting the files; the read-only turn directory prevents that, so
+	// both are written in that format already.
 	hosts := fmt.Sprintf("%s:\n    users:\n        x-access-token:\n            oauth_token: %s\n    git_protocol: https\n    oauth_token: %s\n    user: x-access-token\n", host, token, token)
 	if err := os.WriteFile(filepath.Join(ghDir, "config.yml"), []byte("version: \"1\"\n"), 0o600); err != nil {
 		return nil, fmt.Errorf("write turn gh configuration: %w", err)
@@ -83,7 +89,10 @@ func writeTurnCredentials(dir, host, token string) ([]string, error) {
 	// host. The single-quoted 'key=value' form is the one every git release
 	// that reads GIT_CONFIG_PARAMETERS accepts.
 	key := "credential.https://" + host + ".helper"
-	parameters := shellQuote(key+"=") + " " + shellQuote(key+"="+helper)
+	// git appends the operation to a "!" helper and runs it through the
+	// shell, so the path is quoted for it too; unprefixed, a quoted path
+	// would not read as absolute.
+	parameters := shellQuote(key+"=") + " " + shellQuote(key+"=!"+shellQuote(helper))
 	return []string{
 		"GH_CONFIG_DIR=" + ghDir,
 		"GH_HOST=" + host,
@@ -94,4 +103,27 @@ func writeTurnCredentials(dir, host, token string) ([]string, error) {
 // shellQuote quotes value the way git's sq_quote does.
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+// PrepareTurnDir creates dir for the turns' credentials, private to the bot,
+// and removes what a crashed run left in it. The leftover tokens are
+// short-lived, so a failed removal is only logged.
+func PrepareTurnDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create turn GitHub credentials directory: %w", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		log.Printf("list %s for stale turn credentials: %v", dir, err)
+		return nil
+	}
+	for _, entry := range entries {
+		stale := filepath.Join(dir, entry.Name())
+		if err := os.RemoveAll(stale); err != nil {
+			log.Printf("remove stale turn credentials %s: %v", stale, err)
+			continue
+		}
+		log.Printf("removed stale turn credentials %s", stale)
+	}
+	return nil
 }

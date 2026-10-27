@@ -30,6 +30,7 @@ const KeychainPrefix = "keychain:"
 type AppTokens struct {
 	apiURL  string
 	webHost string
+	dir     string
 	appID   string
 	key     *rsa.PrivateKey
 	http    *http.Client
@@ -41,8 +42,9 @@ type AppTokens struct {
 
 // NewAppTokens returns a token source for the App appID with the PEM private
 // key keyPEM, on apiURL or github.com when it is empty. installationID 0
-// means the App's only installation.
-func NewAppTokens(apiURL, appID string, installationID int64, keyPEM []byte) (*AppTokens, error) {
+// means the App's only installation. Each turn's credentials are written
+// under turnDir, which PrepareTurnDir sets up.
+func NewAppTokens(apiURL, appID string, installationID int64, keyPEM []byte, turnDir string) (*AppTokens, error) {
 	client, err := NewClient(apiURL, "")
 	if err != nil {
 		return nil, err
@@ -54,6 +56,7 @@ func NewAppTokens(apiURL, appID string, installationID int64, keyPEM []byte) (*A
 	return &AppTokens{
 		apiURL:         client.apiURL,
 		webHost:        client.webHost,
+		dir:            turnDir,
 		appID:          appID,
 		key:            key,
 		http:           &http.Client{Timeout: 30 * time.Second},
@@ -125,6 +128,9 @@ func (a *AppTokens) onlyInstallation(ctx context.Context, jwt string) (int64, er
 	if err := a.call(ctx, http.MethodGet, "/app/installations?per_page=100", jwt, &installations); err != nil {
 		return 0, fmt.Errorf("list GitHub App installations: %w", err)
 	}
+	if len(installations) == 0 {
+		return 0, errors.New("GitHub App has no installations; install it on an account")
+	}
 	if len(installations) != 1 {
 		var accounts []string
 		for _, installation := range installations {
@@ -146,7 +152,7 @@ func (a *AppTokens) jwt() (string, error) {
 		"iss": a.appID,
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("encode GitHub App JWT claims: %w", err)
 	}
 	signed := header + "." + base64.RawURLEncoding.EncodeToString(claims)
 	digest := sha256.Sum256([]byte(signed))
@@ -210,5 +216,9 @@ func LoadPrivateKey(location string) ([]byte, error) {
 	if service, keychain := strings.CutPrefix(location, KeychainPrefix); keychain {
 		return readKeychain(service)
 	}
-	return os.ReadFile(location)
+	key, err := os.ReadFile(location)
+	if err != nil {
+		return nil, fmt.Errorf("read GitHub App private key: %w", err)
+	}
+	return key, nil
 }
