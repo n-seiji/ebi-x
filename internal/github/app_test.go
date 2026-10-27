@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -66,6 +67,8 @@ type testApp struct {
 	mints   atomic.Int32
 	revoked sync.Map
 	dir     string
+	// mintFail returns the status to fail the nth mint request with, or 0.
+	mintFail func(n int) int
 }
 
 func newTestApp(t *testing.T, installations string, installationID int64) *testApp {
@@ -92,6 +95,12 @@ func newTestApp(t *testing.T, installations string, installationID int64) *testA
 			_, _ = w.Write([]byte(installations))
 		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/42/access_tokens":
 			n := app.mints.Add(1)
+			if app.mintFail != nil {
+				if code := app.mintFail(int(n)); code != 0 {
+					http.Error(w, "mint failed", code)
+					return
+				}
+			}
 			_, _ = w.Write([]byte(`{"token":"ghs_` + strconv.Itoa(int(n)) + `","expires_at":"` + time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `"}`))
 		default:
 			http.NotFound(w, r)
@@ -252,4 +261,65 @@ func envValue(env []string, name string) string {
 		}
 	}
 	return ""
+}
+
+func TestTurnEnvRetriesMint(t *testing.T) {
+	tests := []struct {
+		name         string
+		fail         func(n int) int
+		wantErr      bool
+		wantRequests int32
+	}{
+		{"server error then success", func(n int) int {
+			if n == 1 {
+				return http.StatusInternalServerError
+			}
+			return 0
+		}, false, 2},
+		{"rate limit then success", func(n int) int {
+			if n == 1 {
+				return http.StatusTooManyRequests
+			}
+			return 0
+		}, false, 2},
+		{"unauthorized is not retried", func(int) int { return http.StatusUnauthorized }, true, 1},
+		{"missing permission is not retried", func(int) int { return http.StatusForbidden }, true, 1},
+		{"persistent server error gives up after three attempts", func(int) int { return http.StatusInternalServerError }, true, 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := newTestApp(t, `[{"id":42,"account":{"login":"example-org"}}]`, 0)
+			app.mintFail = tt.fail
+			app.tokens.mintBackoff = [mintAttempts - 1]time.Duration{}
+			_, cleanup, err := app.tokens.TurnEnv(context.Background())
+			if err == nil {
+				defer cleanup()
+			}
+			if got := err != nil; got != tt.wantErr {
+				t.Fatalf("TurnEnv() error = %v; want error: %v", err, tt.wantErr)
+			}
+			if got := app.mints.Load(); got != tt.wantRequests {
+				t.Errorf("mint requests = %d; want %d", got, tt.wantRequests)
+			}
+		})
+	}
+}
+
+func TestTurnEnvStopsRetryingWhenContextCanceled(t *testing.T) {
+	app := newTestApp(t, `[{"id":42,"account":{"login":"example-org"}}]`, 0)
+	app.mintFail = func(int) int { return http.StatusInternalServerError }
+	app.tokens.mintBackoff = [mintAttempts - 1]time.Duration{time.Hour, time.Hour}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, _, err := app.tokens.TurnEnv(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("TurnEnv() error = %v; want context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("TurnEnv() took %s; want it to return when the context ends", elapsed)
+	}
+	if got := app.mints.Load(); got != 1 {
+		t.Errorf("mint requests = %d; want 1", got)
+	}
 }

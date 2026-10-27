@@ -169,7 +169,7 @@ Slack から playbook を書き換えられるのは `EBIX_SHARED_WRITE_CHANNEL_
 - `EBIX_GITHUB_APP_PRIVATE_KEY`：PEM の秘密鍵のファイルパス（`~/` 可）か、`keychain:<サービス名>`（macOS の Keychain）。ファイルは自動で Codex から読めなくなります。
 - `EBIX_GITHUB_APP_INSTALLATION_ID`：App のインストールが1つなら不要です。複数あるときは起動ログに一覧が出るので、使うものを書きます。トークンが効くのはそのインストール（Organization）のリポジトリだけです。
 - 作業の中では、`GH_CONFIG_DIR` を作業専用の gh 設定に、`GIT_CONFIG_PARAMETERS` で git の credential helper を作業専用のものに差し替えます。ホストの helper は使いません。これらのファイルは `data/turn-credentials/` の下に作業ごとに置き（Codex は読むだけで書けません。`EBIX_WRITABLE_ROOTS` に含めると起動を拒否します）、作業が終わると消します。
-- 発行に失敗したときはログに出し、その作業はホストの設定で続けます。
+- 発行に失敗したときは、ネットワークエラー・5xx・レート制限なら1秒、2秒待って最大3回まで試し直します。それでも失敗するか、鍵の誤りなど試し直しても直らない失敗のときはログに出し、その作業はホストの設定で続けます。
 - Keychain に入れるときは、読めるアプリを ebi-x だけにします：`security add-generic-password -s ebi-x-github-app -a ebi-x -T "$PWD/ebi-x" -w "$(cat app.pem)"`。ebi-x は `security` コマンドを使わず Security framework を直接呼ぶので、Codex の作業から `security find-generic-password` で読もうとしても拒否されます（手で `security` を叩いた場合も同じなので、確認はキーチェーンアクセス.app で行います）。
   - 作ったあとに `security find-generic-password -s ebi-x-github-app -w` が確認なしで鍵を出力しないことを確かめます。出力されたら、キーチェーンアクセス.app の「アクセス制御」から `security` を外します。
   - ビルドし直すと、Keychain からは別のアプリに見えます。そのため、reload 後の起動時に「ebi-x がキーチェーンの機密情報を使用しようとしています」と聞かれるので、「常に許可」を押します。鍵を読むのは起動時の1回だけで、それまで起動は待ちます（ログに出ます）。

@@ -137,8 +137,9 @@ func (r *Runner) Run(
 	cmd := exec.CommandContext(runCtx, r.Command, args...)
 	cmd.Env = FilterEnv(os.Environ(), r.PassEnv)
 	if r.GitHub != nil {
-		// Without the turn credential, git and gh fall back to the host's
-		// configuration, so a failure does not stop the turn.
+		// TurnEnv has already retried transient failures. Without the turn
+		// credential, git and gh fall back to the host's configuration,
+		// so a failure does not stop the turn.
 		env, cleanup, err := r.GitHub.TurnEnv(ctx)
 		if err != nil {
 			log.Printf("codex exec: prepare the turn's GitHub credential: %v", err)

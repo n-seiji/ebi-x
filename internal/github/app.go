@@ -35,6 +35,8 @@ type AppTokens struct {
 	key     *rsa.PrivateKey
 	http    *http.Client
 	now     func() time.Time
+	// mintBackoff holds the waits between TurnEnv's mint attempts.
+	mintBackoff [mintAttempts - 1]time.Duration
 
 	mu             sync.Mutex
 	installationID int64
@@ -61,6 +63,7 @@ func NewAppTokens(apiURL, appID string, installationID int64, keyPEM []byte, tur
 		key:            key,
 		http:           &http.Client{Timeout: 30 * time.Second},
 		now:            time.Now,
+		mintBackoff:    [mintAttempts - 1]time.Duration{mintFirstBackoff, mintSecondBackoff},
 		installationID: installationID,
 	}, nil
 }
@@ -175,20 +178,60 @@ func (a *AppTokens) call(ctx context.Context, method, path, bearer string, out a
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return err
+		return &transportError{err: err}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return err
+		return &transportError{err: err}
 	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(body)))
+		return &statusError{method: method, path: path, status: resp.Status, code: resp.StatusCode, body: strings.TrimSpace(string(body))}
 	}
 	if out == nil {
 		return nil
 	}
 	return json.Unmarshal(body, out)
+}
+
+// statusError is a non-2xx response from the GitHub API.
+type statusError struct {
+	method, path, status, body string
+	code                       int
+}
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("%s %s: %s: %s", e.method, e.path, e.status, e.body)
+}
+
+// transportError is a failure to send a request or read its response.
+type transportError struct {
+	err error
+}
+
+func (e *transportError) Error() string { return e.err.Error() }
+
+func (e *transportError) Unwrap() error { return e.err }
+
+// isTransient reports whether retrying the call that failed with err may
+// succeed: a network failure, a server error, or a rate limit. Other client
+// errors, such as a bad key or a wrong installation, and local errors will
+// fail the same way again.
+func isTransient(err error) bool {
+	var status *statusError
+	if errors.As(err, &status) {
+		switch {
+		case status.code >= 500, status.code == http.StatusTooManyRequests:
+			return true
+		case status.code == http.StatusForbidden:
+			// GitHub reports a secondary rate limit as 403, like a missing
+			// permission, which retrying does not fix.
+			return strings.Contains(strings.ToLower(status.body), "rate limit")
+		}
+		return false
+	}
+	var transport *transportError
+	return errors.As(err, &transport)
 }
 
 func parsePrivateKey(keyPEM []byte) (*rsa.PrivateKey, error) {

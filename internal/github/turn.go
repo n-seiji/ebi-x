@@ -14,6 +14,13 @@ import (
 // delays the Slack reply.
 const revokeTimeout = 10 * time.Second
 
+const (
+	// mintAttempts is how many times TurnEnv tries to mint a token.
+	mintAttempts      = 3
+	mintFirstBackoff  = time.Second
+	mintSecondBackoff = 2 * time.Second
+)
+
 // credentialHelperScript answers git's credential get with the token stored
 // beside it, and ignores store and erase so git cannot overwrite it.
 const credentialHelperScript = `#!/bin/sh
@@ -29,8 +36,9 @@ printf 'username=x-access-token\npassword=%s\n' "$(cat "$(dirname "$0")/token")"
 // holding the token, and GIT_CONFIG_PARAMETERS replaces git's credential
 // helpers for the host with one that prints it. The host's own helpers, and
 // the App private key they may need, are then never used inside the turn.
+// A transient failure to mint is retried first.
 func (a *AppTokens) TurnEnv(ctx context.Context) ([]string, func(), error) {
-	token, err := a.Mint(ctx)
+	token, err := a.mintWithRetry(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -59,6 +67,29 @@ func (a *AppTokens) TurnEnv(ctx context.Context) ([]string, func(), error) {
 		return nil, nil, err
 	}
 	return env, cleanup, nil
+}
+
+// mintWithRetry calls Mint up to mintAttempts times, waiting between
+// attempts, while it fails transiently. It returns promptly when ctx ends.
+func (a *AppTokens) mintWithRetry(ctx context.Context) (string, error) {
+	for attempt := 1; ; attempt++ {
+		token, err := a.Mint(ctx)
+		if err == nil {
+			return token, nil
+		}
+		if attempt == mintAttempts || !isTransient(err) {
+			return "", err
+		}
+		wait := a.mintBackoff[attempt-1]
+		log.Printf("mint GitHub App installation token: attempt %d of %d failed, retrying in %s: %v", attempt, mintAttempts, wait, err)
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", fmt.Errorf("mint GitHub App installation token: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 func writeTurnCredentials(dir, host, token string) ([]string, error) {
