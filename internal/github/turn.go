@@ -3,9 +3,11 @@ package github
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // credentialHelperScript answers git's credential get with the token stored
@@ -15,23 +17,36 @@ test "$1" = get || exit 0
 printf 'username=x-access-token\npassword=%s\n' "$(cat "$(dirname "$0")/token")"
 `
 
-// TurnEnv writes an installation token where git and gh run by a Codex turn
-// find it, and returns the variables that point them there and a function
-// that removes it. The variables avoid the names Codex keeps from commands
-// (KEY, SECRET, TOKEN): GH_CONFIG_DIR selects a gh configuration holding
-// the token, and GIT_CONFIG_PARAMETERS replaces git's credential helpers for
-// the host with one that prints it. The host's own helpers, and the App
-// private key they may need, are then never used inside the turn.
+// TurnEnv mints a token for one turn and writes it where git and gh run by
+// the turn find it. It returns the variables that point them there and a
+// function that revokes the token and removes it, so the token lives only
+// as long as the turn. The variables avoid the names Codex keeps from
+// commands (KEY, SECRET, TOKEN): GH_CONFIG_DIR selects a gh configuration
+// holding the token, and GIT_CONFIG_PARAMETERS replaces git's credential
+// helpers for the host with one that prints it. The host's own helpers, and
+// the App private key they may need, are then never used inside the turn.
 func (a *AppTokens) TurnEnv(ctx context.Context) ([]string, func(), error) {
-	token, err := a.Token(ctx)
+	token, err := a.Mint(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
+	revoke := func() {
+		// The turn's context may already be cancelled.
+		revokeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := a.Revoke(revokeCtx, token); err != nil {
+			log.Printf("%v; it expires within an hour", err)
+		}
+	}
 	dir, err := os.MkdirTemp("", "ebi-x-github-")
 	if err != nil {
+		revoke()
 		return nil, nil, fmt.Errorf("create turn GitHub credential directory: %w", err)
 	}
-	cleanup := func() { _ = os.RemoveAll(dir) }
+	cleanup := func() {
+		_ = os.RemoveAll(dir)
+		revoke()
+	}
 	env, err := writeTurnCredentials(dir, a.webHost, token)
 	if err != nil {
 		cleanup()

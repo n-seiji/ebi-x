@@ -137,7 +137,7 @@ Codex のプロセス環境は許可リストです。`.env` や運用者のシ�
 - 接頭辞 `LC_*` `XDG_*` `MISE_*`。ただし名前に `TOKEN` `SECRET` `PASSWORD` `KEY` を含むものは除きます
 - `SSH_AUTH_SOCK` は、`~/.ssh` を読めるようにしたときか `EBIX_CODEX_ENV` に書いたときだけ渡します。`~/.ssh` を読めないのにエージェントの鍵を使えてしまわないためです
 - `EBIX_CODEX_ENV` に書いた名前。bot の認証情報（`SLACK_BOT_TOKEN` `SLACK_APP_TOKEN` `EBIX_GITHUB_TOKEN` `EBIX_GITHUB_APP_PRIVATE_KEY`）は書けません
-- GitHub App を設定したときは、作業ごとに `GH_CONFIG_DIR` `GH_HOST` `GIT_CONFIG_PARAMETERS` を足します。指す先は作業専用の一時ディレクトリで、有効期限1時間のインストールトークンだけを置きます。App の秘密鍵は bot だけが読み、ファイルなら Codex から読めなくします
+- GitHub App を設定したときは、作業ごとに `GH_CONFIG_DIR` `GH_HOST` `GIT_CONFIG_PARAMETERS` を足します。指す先は作業専用の一時ディレクトリで、その作業のために発行したインストールトークンだけを置き、作業が終わったら失効させます。App の秘密鍵は bot だけが読み、ファイルなら Codex から読めなくします
 
 Codex がコマンドに渡す環境（shell environment policy）も固定し、ローカル設定の `[shell_environment_policy]` は無視します。名前に `KEY` `SECRET` `TOKEN` を含む変数と `OPENAI_API_KEY` `CODEX_API_KEY` は、Codex 本体には届いてもコマンドには渡りません。
 

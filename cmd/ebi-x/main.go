@@ -304,7 +304,7 @@ func collectIdleCheckouts(ctx context.Context, workspaces *workspace.Manager, id
 }
 
 // githubAppTokens loads the App's private key and checks that it mints a
-// token. A failed mint is only logged: each turn tries again, and until one
+// token, which it revokes again. A failed mint is only logged: each turn tries again, and until one
 // succeeds turns use the host's git and gh configuration.
 func githubAppTokens(apiURL string, app *config.GitHubApp) (*github.AppTokens, error) {
 	if strings.HasPrefix(app.KeyLocation, github.KeychainPrefix) {
@@ -322,9 +322,12 @@ func githubAppTokens(apiURL string, app *config.GitHubApp) (*github.AppTokens, e
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tokens.Token(ctx); err != nil {
+	if token, err := tokens.Mint(ctx); err != nil {
 		log.Printf("GitHub App %s: %v", app.ID, err)
 	} else {
+		if err := tokens.Revoke(ctx, token); err != nil {
+			log.Printf("GitHub App %s: %v", app.ID, err)
+		}
 		log.Printf("work turns use GitHub App %s installation tokens for %s", app.ID, tokens.WebHost())
 	}
 	return tokens, nil

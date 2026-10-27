@@ -164,11 +164,11 @@ Slack から playbook を書き換えられるのは `EBIX_SHARED_WRITE_CHANNEL_
 
 ### 作業の GitHub 認証（GitHub App）
 
-`EBIX_GITHUB_APP_ID` と `EBIX_GITHUB_APP_PRIVATE_KEY` を書くと、bot が App の秘密鍵で有効期限1時間のインストールトークンを発行し、作業ごとに Codex へ渡します。秘密鍵は bot だけが使い、Codex には見せません。書かなければ従来どおり、ホストの git の credential helper と gh の設定を使います。
+`EBIX_GITHUB_APP_ID` と `EBIX_GITHUB_APP_PRIVATE_KEY` を書くと、bot が作業ごとに App の秘密鍵でインストールトークンを発行して Codex へ渡し、作業が終わったら失効させます。トークンが使えるのは作業の間だけで、失効に失敗しても発行から1時間で切れます。CODEX_TIMEOUT を1時間より長くすると、長い作業の途中でトークンが切れます。秘密鍵は bot だけが使い、Codex には見せません。書かなければ従来どおり、ホストの git の credential helper と gh の設定を使います。
 
 - `EBIX_GITHUB_APP_PRIVATE_KEY`：PEM の秘密鍵のファイルパス（`~/` 可）か、`keychain:<サービス名>`（macOS の Keychain）。ファイルは自動で Codex から読めなくなります。
 - `EBIX_GITHUB_APP_INSTALLATION_ID`：App のインストールが1つなら不要です。複数あるときは起動ログに一覧が出るので、使うものを書きます。トークンが効くのはそのインストール（Organization）のリポジトリだけです。
-- 作業の中では、`GH_CONFIG_DIR` を作業専用の gh 設定に、`GIT_CONFIG_PARAMETERS` で git の credential helper を作業専用のものに差し替えます。ホストの helper は使いません。作業が終わるとトークンのファイルは消えます。
+- 作業の中では、`GH_CONFIG_DIR` を作業専用の gh 設定に、`GIT_CONFIG_PARAMETERS` で git の credential helper を作業専用のものに差し替えます。ホストの helper は使いません。作業が終わると、トークンのファイルも消します。
 - 発行に失敗したときはログに出し、その作業はホストの設定で続けます。
 - Keychain に入れるときは、読めるアプリを ebi-x だけにします：`security add-generic-password -s ebi-x-github-app -a ebi-x -T "$PWD/ebi-x" -w "$(cat app.pem)"`。ebi-x は `security` コマンドを使わず Security framework を直接呼ぶので、Codex の作業から `security find-generic-password` で読もうとしても拒否されます（手で `security` を叩いた場合も同じなので、確認はキーチェーンアクセス.app で行います）。
   - 作ったあとに `security find-generic-password -s ebi-x-github-app -w` が確認なしで鍵を出力しないことを確かめます。出力されたら、キーチェーンアクセス.app の「アクセス制御」から `security` を外します。

@@ -25,11 +25,6 @@ import (
 // rest is the item's service name.
 const KeychainPrefix = "keychain:"
 
-// tokenRefreshMargin is how long before expiry a cached installation token
-// is replaced, so a turn never starts with a token about to lapse. GitHub
-// issues tokens for an hour.
-const tokenRefreshMargin = 15 * time.Minute
-
 // AppTokens mints installation tokens of a GitHub App. Only the bot holds
 // the App's private key; work turns get the short-lived tokens.
 type AppTokens struct {
@@ -42,8 +37,6 @@ type AppTokens struct {
 
 	mu             sync.Mutex
 	installationID int64
-	token          string
-	expires        time.Time
 }
 
 // NewAppTokens returns a token source for the App appID with the PEM private
@@ -74,37 +67,51 @@ func (a *AppTokens) WebHost() string {
 	return a.webHost
 }
 
-// Token returns an installation token valid for at least tokenRefreshMargin.
-func (a *AppTokens) Token(ctx context.Context) (string, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.token != "" && a.now().Add(tokenRefreshMargin).Before(a.expires) {
-		return a.token, nil
-	}
+// Mint returns a new installation token. GitHub keeps it valid for an hour
+// unless Revoke ends it sooner.
+func (a *AppTokens) Mint(ctx context.Context) (string, error) {
 	jwt, err := a.jwt()
 	if err != nil {
 		return "", err
 	}
-	if a.installationID == 0 {
-		id, err := a.onlyInstallation(ctx, jwt)
-		if err != nil {
-			return "", err
-		}
-		a.installationID = id
+	installationID, err := a.installation(ctx, jwt)
+	if err != nil {
+		return "", err
 	}
 	var minted struct {
-		Token     string    `json:"token"`
-		ExpiresAt time.Time `json:"expires_at"`
+		Token string `json:"token"`
 	}
-	path := "/app/installations/" + strconv.FormatInt(a.installationID, 10) + "/access_tokens"
+	path := "/app/installations/" + strconv.FormatInt(installationID, 10) + "/access_tokens"
 	if err := a.call(ctx, http.MethodPost, path, jwt, &minted); err != nil {
 		return "", fmt.Errorf("mint GitHub App installation token: %w", err)
 	}
 	if minted.Token == "" {
 		return "", errors.New("mint GitHub App installation token: empty token")
 	}
-	a.token, a.expires = minted.Token, minted.ExpiresAt
-	return a.token, nil
+	return minted.Token, nil
+}
+
+// Revoke ends an installation token before it expires.
+func (a *AppTokens) Revoke(ctx context.Context, token string) error {
+	if err := a.call(ctx, http.MethodDelete, "/installation/token", token, nil); err != nil {
+		return fmt.Errorf("revoke GitHub App installation token: %w", err)
+	}
+	return nil
+}
+
+// installation returns the configured installation, or looks up the App's
+// only one the first time.
+func (a *AppTokens) installation(ctx context.Context, jwt string) (int64, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.installationID == 0 {
+		id, err := a.onlyInstallation(ctx, jwt)
+		if err != nil {
+			return 0, err
+		}
+		a.installationID = id
+	}
+	return a.installationID, nil
 }
 
 // onlyInstallation returns the App's installation when it has exactly one.
@@ -150,12 +157,14 @@ func (a *AppTokens) jwt() (string, error) {
 	return signed + "." + base64.RawURLEncoding.EncodeToString(signature), nil
 }
 
-func (a *AppTokens) call(ctx context.Context, method, path, jwt string, out any) error {
+// call sends a request authorized with bearer, the App JWT or an
+// installation token, and decodes the response into out unless it is nil.
+func (a *AppTokens) call(ctx context.Context, method, path, bearer string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, method, a.apiURL+path, nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := a.http.Do(req)
@@ -169,6 +178,9 @@ func (a *AppTokens) call(ctx context.Context, method, path, jwt string, out any)
 	}
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(body)))
+	}
+	if out == nil {
+		return nil
 	}
 	return json.Unmarshal(body, out)
 }
