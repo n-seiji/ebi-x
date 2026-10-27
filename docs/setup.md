@@ -170,7 +170,6 @@ Slack から playbook を書き換えられるのは `EBIX_SHARED_WRITE_CHANNEL_
 - `EBIX_GITHUB_APP_INSTALLATION_ID`：App のインストールが1つなら不要です。複数あるときは起動ログに一覧が出るので、使うものを書きます。トークンが効くのはそのインストール（Organization）のリポジトリだけです。
 - 作業の中では、`GH_CONFIG_DIR` を作業専用の gh 設定に、`GIT_CONFIG_PARAMETERS` で git の credential helper を作業専用のものに差し替えます。ホストの helper は使いません。作業が終わるとトークンのファイルは消えます。
 - 発行に失敗したときはログに出し、その作業はホストの設定で続けます。
-- 作業の中では `EBIX_GITHUB_CREDENTIAL=turn` も渡します。`~/.zprofile` の gh ラッパーや skill のように自分で App のトークンを発行する仕組みは、この変数があれば発行をやめて、そのまま `gh` や `git` を使うようにします（作業の中からは秘密鍵を読めないため）。
 - Keychain に入れるときは、読めるアプリを ebi-x だけにします：`security add-generic-password -s ebi-x-github-app -a ebi-x -T "$PWD/ebi-x" -w "$(cat app.pem)"`。ebi-x は `security` コマンドを使わず Security framework を直接呼ぶので、Codex の作業から `security find-generic-password` で読もうとしても拒否されます（手で `security` を叩いた場合も同じなので、確認はキーチェーンアクセス.app で行います）。
   - 作ったあとに `security find-generic-password -s ebi-x-github-app -w` が確認なしで鍵を出力しないことを確かめます。出力されたら、キーチェーンアクセス.app の「アクセス制御」から `security` を外します。
   - ビルドし直すと、Keychain からは別のアプリに見えます。そのため、reload 後の起動時に「ebi-x がキーチェーンの機密情報を使用しようとしています」と聞かれるので、「常に許可」を押します。鍵を読むのは起動時の1回だけで、それまで起動は待ちます（ログに出ます）。

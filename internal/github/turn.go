@@ -73,9 +73,6 @@ func writeTurnCredentials(dir, host, token string) ([]string, error) {
 		"GH_CONFIG_DIR=" + ghDir,
 		"GH_HOST=" + host,
 		"GIT_CONFIG_PARAMETERS=" + parameters,
-		// Lets shell wrappers that mint their own App token, such as a gh
-		// function in ~/.zprofile, step aside inside a turn.
-		"EBIX_GITHUB_CREDENTIAL=turn",
 	}, nil
 }
 
