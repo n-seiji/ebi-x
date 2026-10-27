@@ -1,7 +1,6 @@
 package github
 
 import (
-	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -9,7 +8,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -17,7 +15,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,7 +22,7 @@ import (
 )
 
 // KeychainPrefix marks a private key location as a macOS Keychain item: the
-// rest is the item's service name, read with security find-generic-password.
+// rest is the item's service name.
 const KeychainPrefix = "keychain:"
 
 // tokenRefreshMargin is how long before expiry a cached installation token
@@ -197,27 +194,9 @@ func parsePrivateKey(keyPEM []byte) (*rsa.PrivateKey, error) {
 
 // LoadPrivateKey reads the PEM private key at location: a file path, or
 // KeychainPrefix followed by a macOS Keychain service name.
-func LoadPrivateKey(ctx context.Context, location string) ([]byte, error) {
-	service, keychain := strings.CutPrefix(location, KeychainPrefix)
-	if !keychain {
-		return os.ReadFile(location)
+func LoadPrivateKey(location string) ([]byte, error) {
+	if service, keychain := strings.CutPrefix(location, KeychainPrefix); keychain {
+		return readKeychain(service)
 	}
-	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "security", "find-generic-password", "-s", service, "-w")
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("read Keychain item %q: %s: %w", service, strings.TrimSpace(stderr.String()), err)
-	}
-	return keychainSecret(stdout.Bytes()), nil
-}
-
-// keychainSecret undoes security's output encoding: it prints a secret that
-// contains a newline, as a PEM key does, as hex.
-func keychainSecret(output []byte) []byte {
-	trimmed := bytes.TrimSpace(output)
-	if decoded, err := hex.DecodeString(string(trimmed)); err == nil && bytes.HasPrefix(decoded, []byte("-----BEGIN")) {
-		return decoded
-	}
-	return trimmed
+	return os.ReadFile(location)
 }

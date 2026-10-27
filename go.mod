@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	github.com/BurntSushi/toml v1.5.0
+	github.com/ebitengine/purego v0.11.2
 	github.com/slack-go/slack v0.17.3
 )
 

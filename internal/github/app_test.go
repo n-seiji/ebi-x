@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"net/http"
@@ -133,15 +132,5 @@ func TestNewAppTokensAcceptsPKCS8(t *testing.T) {
 	}
 	if _, err := NewAppTokens("", "1", 0, []byte("not a key")); err == nil {
 		t.Fatal("NewAppTokens(garbage) error = nil, want an error")
-	}
-}
-
-func TestKeychainSecretDecodesHex(t *testing.T) {
-	pemKey := "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----\n"
-	if got := string(keychainSecret([]byte(hex.EncodeToString([]byte(pemKey)) + "\n"))); got != pemKey {
-		t.Fatalf("keychainSecret(hex) = %q, want the PEM key", got)
-	}
-	if got := string(keychainSecret([]byte("plain\n"))); got != "plain" {
-		t.Fatalf("keychainSecret(plain) = %q, want it unchanged", got)
 	}
 }

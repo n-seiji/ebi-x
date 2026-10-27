@@ -170,7 +170,10 @@ Slack から playbook を書き換えられるのは `EBIX_SHARED_WRITE_CHANNEL_
 - `EBIX_GITHUB_APP_INSTALLATION_ID`：App のインストールが1つなら不要です。複数あるときは起動ログに一覧が出るので、使うものを書きます。トークンが効くのはそのインストール（Organization）のリポジトリだけです。
 - 作業の中では、`GH_CONFIG_DIR` を作業専用の gh 設定に、`GIT_CONFIG_PARAMETERS` で git の credential helper を作業専用のものに差し替えます。ホストの helper は使いません。作業が終わるとトークンのファイルは消えます。
 - 発行に失敗したときはログに出し、その作業はホストの設定で続けます。
-- Keychain に入れるときは `security add-generic-password -s ebi-x-github-app -a ebi-x -w "$(cat app.pem)"` のようにします。この方法で作った項目は `security` コマンドから確認なしで読めるので、Codex の作業から `security find-generic-password -s ebi-x-github-app -w` が失敗する（sandbox が Keychain を止める）ことを確かめてから使います。
+- Keychain に入れるときは、読めるアプリを ebi-x だけにします：`security add-generic-password -s ebi-x-github-app -a ebi-x -T "$PWD/ebi-x" -w "$(cat app.pem)"`。ebi-x は `security` コマンドを使わず Security framework を直接呼ぶので、Codex の作業から `security find-generic-password` で読もうとしても拒否されます（手で `security` を叩いた場合も同じなので、確認はキーチェーンアクセス.app で行います）。
+  - 作ったあとに `security find-generic-password -s ebi-x-github-app -w` が確認なしで鍵を出力しないことを確かめます。出力されたら、キーチェーンアクセス.app の「アクセス制御」から `security` を外します。
+  - ビルドし直すと、Keychain からは別のアプリに見えます。そのため、reload 後の起動時に「ebi-x がキーチェーンの機密情報を使用しようとしています」と聞かれるので、「常に許可」を押します。鍵を読むのは起動時の1回だけで、それまで起動は待ちます（ログに出ます）。
+  - `mise run build` は macOS で hardened runtime（`codesign --sign - --options runtime`）を付けます。デバッガ、つまり Codex の作業から ebi-x にアタッチして、メモリ上の鍵を読まれないようにするためです。`go build` で直接ビルドしたときは、同じ `codesign` を実行します。
 
 ## 8. MCP（BigQuery など）
 
@@ -208,7 +211,7 @@ env = { EXAMPLE_REGION = "asia-northeast1" }
 ## 9. 運用
 
 - **1台1プロセス**：起動時に `data/state/ebi-x.lock` をロックし、同じ `data/` で2つ目を起動するとエラーにします。ロックはプロセスの終了で外れるので、ファイルが残っていても問題ありません。エラーが出たら、メッセージの pid のプロセスを止めてから起動します。ロックファイルは消さないでください。
-- **リロード**：`mise run reload`（ビルドしてから、動いている ebi-x に `SIGHUP` を送る）で、実行中の作業を止めずに新しいバイナリに入れ替えます。mise なしなら `go build -o ebi-x ./cmd/ebi-x && kill -HUP "$(cat data/state/ebi-x.lock)"` です。
+- **リロード**：`mise run reload`（ビルドしてから、動いている ebi-x に `SIGHUP` を送る）で、実行中の作業を止めずに新しいバイナリに入れ替えます。mise なしなら `go build -o ebi-x ./cmd/ebi-x && codesign --force --sign - --options runtime ebi-x && kill -HUP "$(cat data/state/ebi-x.lock)"` です（`codesign` は macOS のみ）。
   - 先に新しいバイナリを `-check-config` で起動してみて、失敗したら入れ替えずにそのまま動き続けます。`mise run reload` はビルドに失敗したら `SIGHUP` を送りません。
   - 動いている作業はそのまま続け、その間に届いた依頼と順番待ちの依頼は `data/state/deferred.json` に保存して「🔄 ebi-x を更新しています」と返し、再起動後に届いた順で自動で始めます。取り出してから実行するので、直後に落ちた依頼は実行されません（二重には実行しません）。
   - 作業がすべて終わると Slack から切断し、起動したときのバイナリを `exec` し直します（PID は同じ、`.env` も読み直す）。待ち時間は最長 `CODEX_TIMEOUT` で、1分ごとに残りの件数をログに出します。待っている間の2回目の `SIGHUP` は無視し、`SIGTERM` は通常の停止になります。

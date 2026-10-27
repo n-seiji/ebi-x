@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -306,12 +307,17 @@ func collectIdleCheckouts(ctx context.Context, workspaces *workspace.Manager, id
 // token. A failed mint is only logged: each turn tries again, and until one
 // succeeds turns use the host's git and gh configuration.
 func githubAppTokens(apiURL string, app *config.GitHubApp) (*github.AppTokens, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	key, err := github.LoadPrivateKey(ctx, app.KeyLocation)
+	if strings.HasPrefix(app.KeyLocation, github.KeychainPrefix) {
+		// A rebuilt binary is a new application to the Keychain, so macOS
+		// may ask to allow it; startup waits for that answer.
+		log.Printf("reading the GitHub App private key from the Keychain; allow ebi-x if macOS asks")
+	}
+	key, err := github.LoadPrivateKey(app.KeyLocation)
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	tokens, err := github.NewAppTokens(apiURL, app.ID, app.InstallationID, key)
 	if err != nil {
 		return nil, err
