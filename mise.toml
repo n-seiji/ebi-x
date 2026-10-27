@@ -7,7 +7,12 @@ CGO_ENABLED = "0"
 
 [tasks.build]
 description = "Build ebi-x binary"
-run = "go build -o ebi-x ./cmd/ebi-x"
+# On macOS, the hardened runtime keeps debuggers, and so the commands Codex
+# runs, from attaching to ebi-x and reading the keys it holds in memory.
+run = """
+go build -o ebi-x ./cmd/ebi-x
+if [ "$(uname)" = Darwin ]; then codesign --force --sign - --options runtime ebi-x; fi
+"""
 
 [tasks.run]
 description = "Build and run ebi-x"

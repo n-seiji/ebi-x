@@ -29,7 +29,7 @@ const (
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // botSecretEnvNames are credentials only the bot itself uses.
-var botSecretEnvNames = []string{"SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "EBIX_GITHUB_TOKEN"}
+var botSecretEnvNames = []string{"SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "EBIX_GITHUB_TOKEN", "EBIX_GITHUB_APP_PRIVATE_KEY"}
 
 // Config contains ebi-x's runtime configuration and resolved data paths.
 type Config struct {
@@ -54,6 +54,9 @@ type Config struct {
 	// empty.
 	GitHubToken  string
 	GitHubAPIURL string
+	// GitHubApp, when set, is the GitHub App the bot mints each work turn's
+	// short-lived GitHub token with.
+	GitHubApp    *GitHubApp
 	CodexTimeout time.Duration
 	// MaxParallelWork is how many work turns for different Slack threads may
 	// run at once.
@@ -72,7 +75,10 @@ type Config struct {
 	MemoryDir                  string
 	PlaybooksDir               string
 	StateDir                   string
-	ActionRulesFile            string
+	// TurnCredentialsDir holds each work turn's GitHub App credentials. The
+	// sandbox cannot write it, so one turn cannot alter another's.
+	TurnCredentialsDir string
+	ActionRulesFile    string
 	// WritableRoots are absolute, symlink-resolved directories the work turn
 	// may write to in addition to the workspace.
 	WritableRoots []string
@@ -247,6 +253,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("resolve playbooks directory: %w", err)
 	}
 	stateDir := filepath.Join(home, "data", "state")
+	turnCredentialsDir := filepath.Join(home, "data", "turn-credentials")
 	// The operator's action rules; the agent may read them but not change them.
 	actionRulesFile := filepath.Join(home, "data", "rules.md")
 	codexHome, err := resolveCodexHome()
@@ -260,6 +267,13 @@ func Load() (*Config, error) {
 	protectedPaths, err := resolveProtectedPaths(home, memoryDir, stateDir, os.Getenv("EBIX_DENIED_READ_PATHS"))
 	if err != nil {
 		return nil, err
+	}
+	githubApp, err := loadGitHubApp()
+	if err != nil {
+		return nil, err
+	}
+	if githubApp != nil && githubApp.KeyPath != "" && !slices.Contains(protectedPaths, githubApp.KeyPath) {
+		protectedPaths = append(protectedPaths, githubApp.KeyPath)
 	}
 	// Credential stores stay out of the isolation checks below: Codex gives
 	// deny precedence over writable roots, and a root containing ~ must not
@@ -284,7 +298,7 @@ func Load() (*Config, error) {
 	if err := validateIsolation(botDirs, reserved); err != nil {
 		return nil, err
 	}
-	if err := validateIsolation(writableRoots, append(append(reserved, botDirs...), actionRulesFile)); err != nil {
+	if err := validateIsolation(writableRoots, append(append(reserved, botDirs...), actionRulesFile, turnCredentialsDir)); err != nil {
 		return nil, err
 	}
 
@@ -302,6 +316,7 @@ func Load() (*Config, error) {
 		CodexModel:                 strings.TrimSpace(os.Getenv("CODEX_MODEL")),
 		GitHubToken:                strings.TrimSpace(os.Getenv("EBIX_GITHUB_TOKEN")),
 		GitHubAPIURL:               strings.TrimSpace(os.Getenv("EBIX_GITHUB_API_URL")),
+		GitHubApp:                  githubApp,
 		CodexTimeout:               codexTimeout,
 		MaxParallelWork:            maxParallelWork,
 		SharedWriteChannelIDs:      sharedWriteChannelIDs,
@@ -314,6 +329,7 @@ func Load() (*Config, error) {
 		MemoryDir:                  memoryDir,
 		PlaybooksDir:               playbooksDir,
 		StateDir:                   stateDir,
+		TurnCredentialsDir:         turnCredentialsDir,
 		ActionRulesFile:            actionRulesFile,
 		WritableRoots:              writableRoots,
 		ProtectedPaths:             protectedPaths,

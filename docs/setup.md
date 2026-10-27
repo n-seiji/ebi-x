@@ -46,6 +46,7 @@ Slack App の作成画面で「From a manifest」を選び、`examples/slack-app
 | `EBIX_SHARED_WRITE_CHANNEL_IDS` | なし | playbook と全体メモリを書き換えられるチャンネル。空ならどこからも書けない |
 | `EBIX_CHECKOUT_IDLE_TTL` | `120h` | 使われなくなったスレッド専用クローンを消すまでの時間 |
 | `EBIX_GITHUB_TOKEN` / `EBIX_GITHUB_API_URL` | なし | PR の見守りに使うトークンと API の URL（後述） |
+| `EBIX_GITHUB_APP_ID` / `EBIX_GITHUB_APP_PRIVATE_KEY` / `EBIX_GITHUB_APP_INSTALLATION_ID` | なし | 作業の GitHub 認証に使う GitHub App（後述） |
 
 時刻はプロセスのローカルタイムゾーンで扱うので、日本時間で運用するなら `TZ=Asia/Tokyo` で起動します。
 
@@ -161,6 +162,19 @@ Slack から playbook を書き換えられるのは `EBIX_SHARED_WRITE_CHANNEL_
 - 1つの PR につき1時間に約180回 API を呼びます。上限が1時間に5,000回のトークンなら、同時に見守る PR は20件程度までにします。
 - トークンの持ち主自身のコメントやレビューでは作業を再開しません。
 
+### 作業の GitHub 認証（GitHub App）
+
+`EBIX_GITHUB_APP_ID` と `EBIX_GITHUB_APP_PRIVATE_KEY` を書くと、bot が作業ごとに App の秘密鍵でインストールトークンを発行して Codex へ渡し、作業が終わったら失効させます。トークンが使えるのは作業の間だけで、失効に失敗しても発行から1時間で切れます。CODEX_TIMEOUT を1時間より長くすると、長い作業の途中でトークンが切れます。秘密鍵は bot だけが使い、Codex には見せません。書かなければ従来どおり、ホストの git の credential helper と gh の設定を使います。
+
+- `EBIX_GITHUB_APP_PRIVATE_KEY`：PEM の秘密鍵のファイルパス（`~/` 可）か、`keychain:<サービス名>`（macOS の Keychain）。ファイルは自動で Codex から読めなくなります。
+- `EBIX_GITHUB_APP_INSTALLATION_ID`：App のインストールが1つなら不要です。複数あるときは起動ログに一覧が出るので、使うものを書きます。トークンが効くのはそのインストール（Organization）のリポジトリだけです。
+- 作業の中では、`GH_CONFIG_DIR` を作業専用の gh 設定に、`GIT_CONFIG_PARAMETERS` で git の credential helper を作業専用のものに差し替えます。ホストの helper は使いません。これらのファイルは `data/turn-credentials/` の下に作業ごとに置き（Codex は読むだけで書けません。`EBIX_WRITABLE_ROOTS` に含めると起動を拒否します）、作業が終わると消します。
+- 発行に失敗したときは、ネットワークエラー・5xx・レート制限なら1秒、2秒待って最大3回まで試し直します。それでも失敗するか、鍵の誤りなど試し直しても直らない失敗のときはログに出し、その作業はホストの設定で続けます。
+- Keychain に入れるときは、読めるアプリを ebi-x だけにします：`security add-generic-password -s ebi-x-github-app -a ebi-x -T "$PWD/ebi-x" -w "$(cat app.pem)"`。ebi-x は `security` コマンドを使わず Security framework を直接呼ぶので、Codex の作業から `security find-generic-password` で読もうとしても拒否されます（手で `security` を叩いた場合も同じなので、確認はキーチェーンアクセス.app で行います）。
+  - 作ったあとに `security find-generic-password -s ebi-x-github-app -w` が確認なしで鍵を出力しないことを確かめます。出力されたら、キーチェーンアクセス.app の「アクセス制御」から `security` を外します。
+  - ビルドし直すと、Keychain からは別のアプリに見えます。そのため、reload 後の起動時に「ebi-x がキーチェーンの機密情報を使用しようとしています」と聞かれるので、「常に許可」を押します。鍵を読むのは起動時の1回だけで、それまで起動は待ちます（ログに出ます）。
+  - `mise run build` は macOS で hardened runtime（`codesign --sign - --options runtime`）を付けます。デバッガ、つまり Codex の作業から ebi-x にアタッチして、メモリ上の鍵を読まれないようにするためです。`go build` で直接ビルドしたときは、同じ `codesign` を実行します。
+
 ## 8. MCP（BigQuery など）
 
 Codex の MCP サーバーは `$EBIX_HOME/.codex/config.toml` に書きます。`~/.codex/config.toml` は読みません。
@@ -192,12 +206,12 @@ env_vars = ["EXAMPLE_API_TOKEN"]   # EBIX_CODEX_ENV=EXAMPLE_API_TOKEN も必要
 env = { EXAMPLE_REGION = "asia-northeast1" }
 ```
 
-`SLACK_BOT_TOKEN`・`SLACK_APP_TOKEN`・`EBIX_GITHUB_TOKEN` は書けません（起動エラー）。名前に `KEY`・`SECRET`・`TOKEN` を含む変数は Codex 本体には届きますが、Codex が実行するコマンドには渡りません。そのため `GH_TOKEN` などで `git push` や `gh` を認証する使い方はできないので、credential helper を使います。
+`SLACK_BOT_TOKEN`・`SLACK_APP_TOKEN`・`EBIX_GITHUB_TOKEN`・`EBIX_GITHUB_APP_PRIVATE_KEY` は書けません（起動エラー）。名前に `KEY`・`SECRET`・`TOKEN` を含む変数は Codex 本体には届きますが、Codex が実行するコマンドには渡りません。そのため `GH_TOKEN` などで `git push` や `gh` を認証する使い方はできないので、credential helper か GitHub App（[7. PR の見守り](#作業の-github-認証github-app)）を使います。
 
 ## 9. 運用
 
 - **1台1プロセス**：起動時に `data/state/ebi-x.lock` をロックし、同じ `data/` で2つ目を起動するとエラーにします。ロックはプロセスの終了で外れるので、ファイルが残っていても問題ありません。エラーが出たら、メッセージの pid のプロセスを止めてから起動します。ロックファイルは消さないでください。
-- **リロード**：`mise run reload`（ビルドしてから、動いている ebi-x に `SIGHUP` を送る）で、実行中の作業を止めずに新しいバイナリに入れ替えます。mise なしなら `go build -o ebi-x ./cmd/ebi-x && kill -HUP "$(cat data/state/ebi-x.lock)"` です。
+- **リロード**：`mise run reload`（ビルドしてから、動いている ebi-x に `SIGHUP` を送る）で、実行中の作業を止めずに新しいバイナリに入れ替えます。mise なしなら `go build -o ebi-x ./cmd/ebi-x && codesign --force --sign - --options runtime ebi-x && kill -HUP "$(cat data/state/ebi-x.lock)"` です（`codesign` は macOS のみ）。
   - 先に新しいバイナリを `-check-config` で起動してみて、失敗したら入れ替えずにそのまま動き続けます。`mise run reload` はビルドに失敗したら `SIGHUP` を送りません。
   - 動いている作業はそのまま続け、その間に届いた依頼と順番待ちの依頼は `data/state/deferred.json` に保存して「🔄 ebi-x を更新しています」と返し、再起動後に届いた順で自動で始めます。取り出してから実行するので、直後に落ちた依頼は実行されません（二重には実行しません）。
   - 作業がすべて終わると Slack から切断し、起動したときのバイナリを `exec` し直します（PID は同じ、`.env` も読み直す）。待ち時間は最長 `CODEX_TIMEOUT` で、1分ごとに残りの件数をログに出します。待っている間の2回目の `SIGHUP` は無視し、`SIGTERM` は通常の停止になります。
