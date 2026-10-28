@@ -603,13 +603,12 @@ func (r *fakeRunner) Run(_ context.Context, threadID, sandbox, cwd string, roots
 func newTestBot(t *testing.T, store *fakeStore, api *fakeSlack, runner *fakeRunner) *Bot {
 	t.Helper()
 	return New(api, store, runner, Config{
-		AllowedUserIDs:        []string{"U1"},
-		AllowedChannelIDs:     []string{"C1"},
-		SharedWriteChannelIDs: []string{"C1"},
-		WorkspaceDir:          "/repo/workspace",
-		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
-		CodexTimeout:          time.Minute,
-		BotUserID:             "UBOT",
+		AllowedUserIDs:    []string{"U1"},
+		AllowedChannelIDs: []string{"C1"},
+		WorkspaceDir:      "/repo/workspace",
+		MemoryDir:         filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:      time.Minute,
+		BotUserID:         "UBOT",
 	}, nil)
 }
 
@@ -1241,6 +1240,7 @@ func TestAllowedActiveMessageReplyRunsTurnInSharedThreadSession(t *testing.T) {
 	api := &fakeSlack{}
 	runner := successfulTurnRunner()
 	bot := newTestBot(t, store, api, runner)
+	bot.config.ApprovalChannelID = "C1"
 	configureActiveSubscription(bot, store, now)
 
 	bot.HandleMessage(context.Background(), messageReply("U2", "200.2", "please continue"))
@@ -1822,6 +1822,7 @@ func TestWorkMemoryAppendIsWrittenByBot(t *testing.T) {
 		}},
 	}}
 	bot := newTestBot(t, store, api, runner)
+	bot.config.ApprovalChannelID = "C1"
 	bot.HandleMention(context.Background(), mention())
 	if store.current != state.Done {
 		t.Fatalf("state = %q, want done", store.current)
@@ -2162,14 +2163,14 @@ func (r *parallelRunner) assertNotStarted(t *testing.T) {
 func newParallelBot(t *testing.T, api *fakeSlack, runner Runner, maxParallel int) *Bot {
 	t.Helper()
 	return New(api, &looseStore{threads: map[string]string{}}, runner, Config{
-		AllowedUserIDs:        []string{"U1"},
-		AllowedChannelIDs:     []string{"C1"},
-		SharedWriteChannelIDs: []string{"C1"},
-		WorkspaceDir:          "/repo/workspace",
-		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
-		CodexTimeout:          time.Minute,
-		BotUserID:             "UBOT",
-		MaxParallelWork:       maxParallel,
+		AllowedUserIDs:    []string{"U1"},
+		AllowedChannelIDs: []string{"C1"},
+		ApprovalChannelID: "C1",
+		WorkspaceDir:      "/repo/workspace",
+		MemoryDir:         filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:      time.Minute,
+		BotUserID:         "UBOT",
+		MaxParallelWork:   maxParallel,
 	}, nil)
 }
 
@@ -2255,14 +2256,14 @@ func TestCancelledWaitForWorkFailsWithoutRunningWork(t *testing.T) {
 	api := &fakeSlack{}
 	store := &fakeStore{claim: true}
 	bot := New(api, store, runner, Config{
-		AllowedUserIDs:        []string{"U1"},
-		AllowedChannelIDs:     []string{"C1"},
-		SharedWriteChannelIDs: []string{"C1"},
-		WorkspaceDir:          "/repo/workspace",
-		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
-		CodexTimeout:          time.Minute,
-		BotUserID:             "UBOT",
-		MaxParallelWork:       1,
+		AllowedUserIDs:    []string{"U1"},
+		AllowedChannelIDs: []string{"C1"},
+		ApprovalChannelID: "C1",
+		WorkspaceDir:      "/repo/workspace",
+		MemoryDir:         filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:      time.Minute,
+		BotUserID:         "UBOT",
+		MaxParallelWork:   1,
 	}, nil)
 	// Occupy the only work slot.
 	bot.workSlots <- struct{}{}
@@ -2344,16 +2345,16 @@ func TestWorkUsesThreadWorkspaceAndCheckouts(t *testing.T) {
 	workspaces := &fakeWorkspaces{}
 	playbooksDir := t.TempDir()
 	bot := New(&fakeSlack{}, &fakeStore{claim: true}, runner, Config{
-		AllowedUserIDs:        []string{"U1"},
-		AllowedChannelIDs:     []string{"C1"},
-		SharedWriteChannelIDs: []string{"C1"},
-		WorkspaceDir:          "/repo/workspace",
-		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
-		PlaybooksDir:          playbooksDir,
-		CodexTimeout:          time.Minute,
-		BotUserID:             "UBOT",
-		WritableRoots:         []string{"/src/app", "/shared/plain"},
-		Workspaces:            workspaces,
+		AllowedUserIDs:    []string{"U1"},
+		AllowedChannelIDs: []string{"C1"},
+		ApprovalChannelID: "C1",
+		WorkspaceDir:      "/repo/workspace",
+		MemoryDir:         filepath.Join(t.TempDir(), "memory"),
+		PlaybooksDir:      playbooksDir,
+		CodexTimeout:      time.Minute,
+		BotUserID:         "UBOT",
+		WritableRoots:     []string{"/src/app", "/shared/plain"},
+		Workspaces:        workspaces,
 	}, nil)
 
 	bot.HandleMention(context.Background(), mention())
@@ -2378,14 +2379,14 @@ func TestWorkspacePreparationFailureDoesNotStartWork(t *testing.T) {
 	api := &fakeSlack{}
 	store := &fakeStore{claim: true}
 	bot := New(api, store, runner, Config{
-		AllowedUserIDs:        []string{"U1"},
-		AllowedChannelIDs:     []string{"C1"},
-		SharedWriteChannelIDs: []string{"C1"},
-		WorkspaceDir:          "/repo/workspace",
-		MemoryDir:             filepath.Join(t.TempDir(), "memory"),
-		CodexTimeout:          time.Minute,
-		BotUserID:             "UBOT",
-		Workspaces:            &fakeWorkspaces{err: errors.New("git clone failed")},
+		AllowedUserIDs:    []string{"U1"},
+		AllowedChannelIDs: []string{"C1"},
+		ApprovalChannelID: "C1",
+		WorkspaceDir:      "/repo/workspace",
+		MemoryDir:         filepath.Join(t.TempDir(), "memory"),
+		CodexTimeout:      time.Minute,
+		BotUserID:         "UBOT",
+		Workspaces:        &fakeWorkspaces{err: errors.New("git clone failed")},
 	}, nil)
 
 	bot.HandleMention(context.Background(), mention())

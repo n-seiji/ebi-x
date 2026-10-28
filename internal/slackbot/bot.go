@@ -172,9 +172,6 @@ type Config struct {
 	// MaxParallelWork is how many work turns for different Slack threads may
 	// run at once. Values below 1 mean 1.
 	MaxParallelWork int
-	// SharedWriteChannelIDs are the channels whose work turns may write
-	// playbooks and global memory, which every channel reads.
-	SharedWriteChannelIDs []string
 	// GitHub reads the pull requests turns ask the bot to watch. Watching is
 	// off when it is nil.
 	GitHub GitHub
@@ -203,16 +200,15 @@ type Bot struct {
 	config    Config
 	playbooks []playbook.Playbook
 
-	allowedUsers        map[string]struct{}
-	allowedChannels     map[string]struct{}
-	allowedWorkflows    map[string]struct{}
-	approvers           map[string]struct{}
-	sharedWriteChannels map[string]struct{}
-	workSlots           chan struct{}
-	memoryMu            sync.RWMutex
-	threadMu            sync.Mutex
-	threadLocks         map[string]*sync.Mutex
-	workLocks           map[string]*sync.Mutex
+	allowedUsers     map[string]struct{}
+	allowedChannels  map[string]struct{}
+	allowedWorkflows map[string]struct{}
+	approvers        map[string]struct{}
+	workSlots        chan struct{}
+	memoryMu         sync.RWMutex
+	threadMu         sync.Mutex
+	threadLocks      map[string]*sync.Mutex
+	workLocks        map[string]*sync.Mutex
 	// running holds the cancel functions of the requests each thread is
 	// processing or waiting to process, keyed by thread and then event.
 	runningMu sync.Mutex
@@ -262,23 +258,22 @@ func New(api SlackAPI, store Store, runner Runner, config Config, playbooks []pl
 		config.Workspaces = sharedWorkspaces{dir: config.WorkspaceDir, roots: config.WritableRoots}
 	}
 	b := &Bot{
-		api:                 api,
-		store:               store,
-		runner:              runner,
-		config:              config,
-		playbooks:           append([]playbook.Playbook(nil), playbooks...),
-		allowedUsers:        makeSet(config.AllowedUserIDs),
-		allowedChannels:     makeSet(config.AllowedChannelIDs),
-		allowedWorkflows:    makeSet(config.AllowedWorkflowIDs),
-		approvers:           makeSet(config.ApproverUserIDs),
-		sharedWriteChannels: makeSet(config.SharedWriteChannelIDs),
-		workSlots:           make(chan struct{}, max(config.MaxParallelWork, 1)),
-		drain:               newDrainer(),
-		threadLocks:         make(map[string]*sync.Mutex),
-		workLocks:           make(map[string]*sync.Mutex),
-		running:             make(map[string]map[string]runningRequest),
-		now:                 time.Now,
-		sleep:               sleepContext,
+		api:              api,
+		store:            store,
+		runner:           runner,
+		config:           config,
+		playbooks:        append([]playbook.Playbook(nil), playbooks...),
+		allowedUsers:     makeSet(config.AllowedUserIDs),
+		allowedChannels:  makeSet(config.AllowedChannelIDs),
+		allowedWorkflows: makeSet(config.AllowedWorkflowIDs),
+		approvers:        makeSet(config.ApproverUserIDs),
+		workSlots:        make(chan struct{}, max(config.MaxParallelWork, 1)),
+		drain:            newDrainer(),
+		threadLocks:      make(map[string]*sync.Mutex),
+		workLocks:        make(map[string]*sync.Mutex),
+		running:          make(map[string]map[string]runningRequest),
+		now:              time.Now,
+		sleep:            sleepContext,
 	}
 	return b
 }
@@ -296,12 +291,17 @@ func (b *Bot) handleMention(ctx context.Context, event *slackevents.AppMentionEv
 		b.answerAliveQuestion(ctx, event.Channel, mentionThreadTS(event))
 		return
 	}
-	// The approval channel is only for deciding requests.
+	// In the approval channel, request threads and the approval words decide
+	// requests; everything else is ordinary work that may also change
+	// playbooks and global memory.
 	if b.approvalsEnabled() && event.Channel == b.config.ApprovalChannelID {
-		if event.BotID == "" {
-			b.handleApprovalCommand(ctx, event)
+		if event.BotID != "" {
+			return
 		}
-		return
+		if b.isApprovalCommand(event) {
+			b.handleApprovalCommand(ctx, event)
+			return
+		}
 	}
 	var missing []approvalSubject
 	if event.BotID == "" {
@@ -656,9 +656,9 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	if err != nil {
 		return workOutput{}, false, fmt.Errorf("list other thread workspaces: %w", err)
 	}
-	// Playbooks and global memory reach every channel, so only trusted
-	// channels may change them.
-	_, sharedWritable := b.sharedWriteChannels[channel]
+	// Playbooks and global memory reach every channel, so only the approval
+	// channel may change them.
+	sharedWritable := b.sharedWritable(channel)
 
 	// A new session receives the memory, playbook catalog, and rules once;
 	// a resumed session already holds them, so only the request is sent.

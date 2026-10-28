@@ -22,6 +22,8 @@ func newPlaybookNoteBot(t *testing.T, responses ...string) (*Bot, *fakeSlack, *f
 	}
 	bot := newTestBot(t, &fakeStore{claim: true}, api, runner)
 	bot.config.PlaybooksDir = t.TempDir()
+	// Playbook notes are only taken from the approval channel.
+	bot.config.ApprovalChannelID = "C1"
 	path := filepath.Join(bot.config.PlaybooksDir, "slides.md")
 	if err := os.WriteFile(path, []byte("---\nname: slides\ndescription: スライドを作る\n---\n初回の納品は3週後"), 0o600); err != nil {
 		t.Fatal(err)
@@ -65,7 +67,7 @@ func TestPlaybookNoteForUnknownPlaybook(t *testing.T) {
 
 func TestPlaybookNoteNeedsSharedWrites(t *testing.T) {
 	bot, api, _ := newPlaybookNoteBot(t, "作りました。\n## playbook メモ追記\n- 対象: slides\n- 内容: x")
-	bot.sharedWriteChannels = map[string]struct{}{}
+	bot.config.ApprovalChannelID = ""
 	bot.HandleMention(context.Background(), mentionAt("100.1", ""))
 	posts := strings.Join(api.postTexts, "|")
 	if strings.Contains(posts, "メモを更新しました") || strings.Contains(posts, "## playbook メモ追記") {
@@ -99,7 +101,6 @@ func lastThreadPost(api *fakeSlack, threadTS string) string {
 
 func TestPlaybookNotesFoldOnceTheyGather(t *testing.T) {
 	bot, api, runner := newPlaybookNoteBot(t, playbookNote("一つ目"), playbookNote("二つ目"), playbookNote("三つ目"), "納品の目安を2週後に更新しました。", "次の作業です。")
-	bot.config.ApprovalChannelID = "CADMIN"
 	path := filepath.Join(bot.config.PlaybooksDir, "slides.md")
 	runner.onRun = func(call int) {
 		if call != 4 {
@@ -127,7 +128,7 @@ func TestPlaybookNotesFoldOnceTheyGather(t *testing.T) {
 	}
 	var admin []string
 	for _, post := range api.posts {
-		if post.channel == "CADMIN" {
+		if post.channel == "C1" && post.threadTS == "" {
 			admin = append(admin, post.text)
 		}
 	}
@@ -143,7 +144,6 @@ func TestPlaybookNotesFoldOnceTheyGather(t *testing.T) {
 
 func TestPlaybookFoldThatChangesNothingIsNotRecorded(t *testing.T) {
 	bot, api, _ := newPlaybookNoteBot(t, playbookNote("一つ目"), playbookNote("二つ目"), playbookNote("三つ目"), "一時的な事情だけなので本文は変えませんでした。")
-	bot.config.ApprovalChannelID = "CADMIN"
 	for _, ts := range []string{"100.1", "200.1", "300.1"} {
 		bot.HandleMention(context.Background(), mentionAt(ts, ""))
 	}
@@ -151,7 +151,7 @@ func TestPlaybookFoldThatChangesNothingIsNotRecorded(t *testing.T) {
 		t.Fatalf("last post = %q, want the skipped notice", last)
 	}
 	for _, post := range api.posts {
-		if post.channel == "CADMIN" {
+		if post.channel == "C1" && post.threadTS == "" {
 			t.Fatalf("admin post %q for a fold that changed nothing", post.text)
 		}
 	}

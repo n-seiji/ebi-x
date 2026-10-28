@@ -143,7 +143,7 @@ func BuildTurnPrompt(memories memory.Context, playbooks []playbook.Playbook, act
 		builder.WriteString(pullWatchRules)
 	}
 	if !sharedWritable {
-		builder.WriteString("このチャンネルからは playbook とメモリを変更できません。playbook は読み取り専用です。\n")
+		builder.WriteString("このチャンネルからは playbook とメモリを変更できません。playbook は読み取り専用です。変更を頼まれたら、ebi-x の承認チャンネルで依頼するよう伝えてください。\n")
 		return builder.String()
 	}
 	builder.WriteString(playbookNoteRules)

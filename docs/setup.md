@@ -43,7 +43,6 @@ Slack App の作成画面で「From a manifest」を選び、`examples/slack-app
 | `EBIX_DENIED_READ_PATHS` | なし | 既定の認証情報の置き場に加えて、Codex に読ませないパス |
 | `EBIX_ALLOWED_READ_PATHS` | なし | 既定で読ませない認証情報の置き場のうち、作業に要るもの（`~/.config/gcloud` など、後述） |
 | `EBIX_CODEX_ENV` | なし | 許可リストに加えて Codex に渡す環境変数の名前（後述） |
-| `EBIX_SHARED_WRITE_CHANNEL_IDS` | なし | playbook と全体メモリを書き換えられるチャンネル。空ならどこからも書けない |
 | `EBIX_CHECKOUT_IDLE_TTL` | `120h` | 使われなくなったスレッド専用クローンを消すまでの時間 |
 | `EBIX_GITHUB_TOKEN` / `EBIX_GITHUB_API_URL` | なし | PR の見守りに使うトークンと API の URL（後述） |
 | `EBIX_GITHUB_APP_ID` / `EBIX_GITHUB_APP_PRIVATE_KEY` / `EBIX_GITHUB_APP_INSTALLATION_ID` | なし | 作業の GitHub 認証に使う GitHub App（後述） |
@@ -59,6 +58,7 @@ Slack App の作成画面で「From a manifest」を選び、`examples/slack-app
 | `SLACK_ALLOW_ALL_PUBLIC_CHANNELS` | `true` だと起動しません。チャンネルは `SLACK_ALLOWED_CHANNEL_IDS` か承認チャンネルで1つずつ許可します |
 | `CODEX_MAX_PARALLEL_PLAN` | 使いません。同時実行数は `CODEX_MAX_PARALLEL_WORK` です |
 | `CODEX_WORK_MODEL` | 使いません。モデルは `CODEX_MODEL` です |
+| `EBIX_SHARED_WRITE_CHANNEL_IDS` | 使いません。playbook と全体メモリは承認チャンネルから書き換えます |
 
 ## 3. 使える人とチャンネル
 
@@ -92,7 +92,8 @@ ebi-x を使えるかは、`.env` の固定の許可と、承認チャンネル�
 - 依頼は相手ごとに決まるまで1件だけ出します。人とチャンネルの両方が未許可なら2件です。元のスレッドには依頼へのリンクを返します（承認チャンネルがプライベートだと、メンバー以外は開けません）。
 - 承認者は依頼のスレッドで `@ebi-x 許可` か `@ebi-x 拒否` と mention します。操作できるのは `SLACK_APPROVER_USER_IDS` の人だけで、最初の決定が優先されます。拒否した相手は次から確認せずに断ります。
 - 必要な許可が揃うと、待っていた依頼を自動で始めます。同じ相手の依頼が複数待っていれば最後の1件だけです。24時間より古い依頼、本文のない依頼、Workflow からの依頼は自動では始めず、もう一度 mention するよう伝えます。
-- 承認チャンネルでは許可・拒否と利用枠の確認だけを受け付け、作業の依頼は受けません。
+- 承認チャンネルでは、依頼のスレッドでの mention と、スレッドの外での `@ebi-x 許可`・`@ebi-x 拒否`・`@ebi-x 残り` は承認の操作として扱います。それ以外の mention は、ebi-x の利用を許可された人からの作業の依頼として受けます。
+- playbook と全体メモリを書き換えられるのは承認チャンネルの依頼だけです。全チャンネルの依頼がこれらを読むので、承認者の目に入る場所に限っています。
 - 決定は誰がいつ決めたかと一緒に `data/state/approvals.json` に残ります。取り消すときは ebi-x を止めて、このファイルから該当する項目を消します。Codex はこのファイルを読み書きできません。
 
 ### Workflow からの mention
@@ -151,7 +152,7 @@ description: どんな依頼のときに使うかを具体的に書く
 
 `slides.md` を使うには、slides を clone して `EBIX_WRITABLE_ROOTS` に加え、ビルドに必要な Node・pnpm・Python・Chrome・LibreOffice・日本語フォントを用意して `pnpm install` を済ませておきます。
 
-Slack から playbook を書き換えられるのは `EBIX_SHARED_WRITE_CHANNEL_IDS` のチャンネルだけです。全チャンネルの依頼が playbook を読むためです。`data/` は Git の管理外なので、playbook は運用環境で保管します。
+Slack から playbook を書き換えられるのは承認チャンネル（`SLACK_APPROVAL_CHANNEL_ID`）だけです。全チャンネルの依頼が playbook を読むためです。`data/` は Git の管理外なので、playbook は運用環境で保管します。
 
 ## 7. PR の見守り
 

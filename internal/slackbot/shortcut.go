@@ -53,8 +53,7 @@ func (b *Bot) HandleRequestShortcut(ctx context.Context, callback *slack.Interac
 	if target.Channel == "" || target.MessageTS == "" {
 		return
 	}
-	if !b.userAllowed(callback.User.ID) || !b.channelAllowed(target.Channel) ||
-		(b.approvalsEnabled() && target.Channel == b.config.ApprovalChannelID) {
+	if !b.userAllowed(callback.User.ID) || !b.channelAllowed(target.Channel) {
 		if err := b.api.PostEphemeral(ctx, target.Channel, callback.User.ID, shortcutForbidden); err != nil {
 			log.Printf("slackbot: post shortcut refusal: %v", err)
 		}
@@ -81,8 +80,7 @@ func (b *Bot) HandleRequestSubmission(ctx context.Context, callback *slack.Inter
 		return
 	}
 	user := callback.User.ID
-	if !b.userAllowed(user) || !b.channelAllowed(target.Channel) ||
-		(b.approvalsEnabled() && target.Channel == b.config.ApprovalChannelID) {
+	if !b.userAllowed(user) || !b.channelAllowed(target.Channel) {
 		return
 	}
 	text := strings.TrimSpace(callback.View.State.Values[requestBlockID][requestActionID].Value)
