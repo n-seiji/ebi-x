@@ -333,17 +333,20 @@ func TestReportUsagePostsHourlyWithChart(t *testing.T) {
 		t.Fatalf("posts = %d, want no report within the hour", len(api.posts))
 	}
 
-	// The next hour reports the change and the pace; the chart shows each
-	// hour's last check.
+	// The next hour reports the change; the chart shows each hour's last
+	// check. An hour of whole percents is too short to estimate the pace.
 	now = time.Date(2026, 10, 20, 2, 5, 0, 0, time.Local)
 	check(60, 12.5)
 	if len(api.posts) != 2 {
 		t.Fatalf("posts = %d, want the next hour's report", len(api.posts))
 	}
-	for _, want := range []string{"5時間: 残り 40.0%（前回から -40.0pt・このペースだと", "1週間: 残り 87.5%（前回から -2.5pt・", "01:00   70.0% ███████      89.0% █████████", "02:00   40.0% ████         87.5% █████████```"} {
+	for _, want := range []string{"5時間: 残り 40.0%（前回から -40.0pt・", "1週間: 残り 87.5%（前回から -2.5pt・", "01:00   70.0% ███████      89.0% █████████", "02:00   40.0% ████         87.5% █████████```"} {
 		if !strings.Contains(api.posts[1].text, want) {
 			t.Fatalf("report %q does not contain %q", api.posts[1].text, want)
 		}
+	}
+	if strings.Contains(api.posts[1].text, "このペースだと") {
+		t.Fatalf("report %q estimates the pace from one hour", api.posts[1].text)
 	}
 	if got := len(store.usage.History); got != 3 {
 		t.Fatalf("history = %d checks, want 3", got)
@@ -354,6 +357,42 @@ func TestReportUsagePostsHourlyWithChart(t *testing.T) {
 	check(60, 12.5)
 	if len(api.posts) != 2 {
 		t.Fatalf("posts = %d, want the unchanged hour skipped", len(api.posts))
+	}
+
+	// The change counts from the last report, across the quiet hour, and the
+	// pace from the period's oldest check: 50pt in 3 hours leaves 1h48m.
+	now = now.Add(time.Hour)
+	check(70, 12.5)
+	if len(api.posts) != 3 {
+		t.Fatalf("posts = %d, want a report after the quiet hour", len(api.posts))
+	}
+	want := "5時間: 残り 30.0%（前回から -10.0pt・このペースだと" + formatFollowUpTime(now.Add(108*time.Minute)) + "に使い切り・"
+	if !strings.Contains(api.posts[2].text, want) {
+		t.Fatalf("report %q does not contain %q", api.posts[2].text, want)
+	}
+	if strings.Contains(api.posts[2].text, "1週間: 残り 87.5%（前回から 0.0pt・このペースだと") {
+		t.Fatalf("report %q estimates a pace for an unchanged window", api.posts[2].text)
+	}
+}
+
+func TestReportUsageLabelsWindowsByLength(t *testing.T) {
+	api := &fakeSlack{}
+	store := &fakeStore{}
+	bot := newUsageBot(t, store, api, &fakeUsage{})
+	bot.now = func() time.Time { return time.Date(2026, 10, 20, 1, 5, 0, 0, time.Local) }
+	// A plan whose only window, in the primary slot, is weekly.
+	weekly := &codex.RateLimits{Primary: &codex.RateLimitWindow{UsedPercent: 18, WindowMinutes: 7 * 24 * 60}}
+	bot.recordUsage(context.Background(), weekly)
+	bot.reportUsage(context.Background())
+	if len(api.posts) != 1 {
+		t.Fatalf("posts = %d, want 1", len(api.posts))
+	}
+	text := api.posts[0].text
+	if !strings.Contains(text, "1週間: 残り 82.0%") || strings.Contains(text, "5時間") {
+		t.Fatalf("report %q does not label the weekly window", text)
+	}
+	if !strings.Contains(text, "01:00   82.0% ████████```") {
+		t.Fatalf("report %q charts a window the plan does not have", text)
 	}
 }
 
@@ -374,7 +413,7 @@ func TestUsageHourlyReportNamesReset(t *testing.T) {
 	at := time.Date(2026, 10, 20, 1, 0, 0, 0, time.UTC)
 	previous := state.UsageSample{At: at, Remaining: map[string]float64{"primary": 5}, ResetsAt: map[string]int64{"primary": 100}}
 	latest := state.UsageSample{At: at.Add(time.Hour), Remaining: map[string]float64{"primary": 100}, ResetsAt: map[string]int64{"primary": 200}}
-	text := usageHourlyReport(&previous, latest)
+	text := usageHourlyReport(&previous, []state.UsageSample{previous, latest})
 	if !strings.Contains(text, "5時間: 残り 100.0%（"+usageHourlyWasReset) {
 		t.Fatalf("report %q does not name the reset", text)
 	}

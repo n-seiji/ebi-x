@@ -26,12 +26,13 @@ type Usage struct {
 	Reported *UsageSample `json:"reported,omitempty"`
 }
 
-// UsageSample is one check: each window's remaining percent and reset time
-// (Unix seconds, 0 when unknown).
+// UsageSample is one check: each window's remaining percent, reset time
+// (Unix seconds, 0 when unknown) and length in minutes (0 when unknown).
 type UsageSample struct {
 	At        time.Time          `json:"at"`
 	Remaining map[string]float64 `json:"remaining"`
 	ResetsAt  map[string]int64   `json:"resetsAt,omitempty"`
+	Minutes   map[string]int64   `json:"minutes,omitempty"`
 }
 
 // UsageDay summarizes one usage window's checks during a day, in remaining
@@ -81,5 +82,6 @@ func cloneUsage(usage Usage) Usage {
 func cloneUsageSample(sample UsageSample) UsageSample {
 	sample.Remaining = maps.Clone(sample.Remaining)
 	sample.ResetsAt = maps.Clone(sample.ResetsAt)
+	sample.Minutes = maps.Clone(sample.Minutes)
 	return sample
 }
