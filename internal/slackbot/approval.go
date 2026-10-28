@@ -24,7 +24,7 @@ const (
 	// it is no longer started on its own.
 	approvalResumeWindow    = 24 * time.Hour
 	notApproverMessage      = "承認者（SLACK_APPROVER_USER_IDS）だけが操作できます。"
-	approvalUsageMessage    = "承認チャンネルでは、依頼のスレッドで「" + approveCommand + "」か「" + denyCommand + "」と mention することと、「残り」と mention して Codex の利用枠を確かめることだけができます。"
+	approvalUsageMessage    = "許可や拒否は、依頼のスレッドで「" + approveCommand + "」か「" + denyCommand + "」とだけ mention してください。"
 	approvalSaveFailMessage = "記録の保存に失敗したため、操作していません。もう一度お試しください。"
 )
 
@@ -131,10 +131,20 @@ func (b *Bot) userAllowed(id string) bool {
 	return ok || b.approved(state.ApprovalUser, id)
 }
 
-// channelAllowed reports whether the bot works in channel.
+// channelAllowed reports whether the bot works in channel. The approval
+// channel is always allowed: its members request changes to playbooks and
+// global memory there.
 func (b *Bot) channelAllowed(id string) bool {
 	_, ok := b.allowedChannels[id]
-	return ok || b.approved(state.ApprovalChannel, id)
+	return ok || b.approved(state.ApprovalChannel, id) ||
+		(b.approvalsEnabled() && id == b.config.ApprovalChannelID)
+}
+
+// sharedWritable reports whether work turns in channel may change state every
+// channel reads: playbooks and global memory. Only the approval channel may,
+// so such changes happen where the people who approve use of the bot see them.
+func (b *Bot) sharedWritable(channel string) bool {
+	return b.config.ApprovalChannelID != "" && channel == b.config.ApprovalChannelID
 }
 
 // workflowAllowed reports whether a bot-authored mention comes from an
@@ -276,9 +286,23 @@ func (b *Bot) postApprovalRequest(ctx context.Context, subject approvalSubject, 
 	return nil
 }
 
-// handleApprovalCommand answers every human mention in the approval channel.
-// Approvers decide a request by mentioning 許可 or 拒否 in its thread;
-// nothing else is done there.
+// isApprovalCommand reports whether a mention in the approval channel is
+// about approvals rather than work: any mention in an approval request's
+// thread, the approval words anywhere, and the usage question.
+func (b *Bot) isApprovalCommand(event *slackevents.AppMentionEvent) bool {
+	command := stripBotMention(event.Text, b.config.BotUserID)
+	if command == approveCommand || command == denyCommand || isUsageQuestion(command) {
+		return true
+	}
+	if event.ThreadTimeStamp == "" {
+		return false
+	}
+	_, inRequest := b.config.Approvals.FindApprovalByRequestMessage(event.ThreadTimeStamp)
+	return inRequest
+}
+
+// handleApprovalCommand answers the approval channel's approval mentions.
+// Approvers decide a request by mentioning 許可 or 拒否 in its thread.
 func (b *Bot) handleApprovalCommand(ctx context.Context, event *slackevents.AppMentionEvent) {
 	command := stripBotMention(event.Text, b.config.BotUserID)
 	request, inRequest := b.config.Approvals.FindApprovalByRequestMessage(event.ThreadTimeStamp)

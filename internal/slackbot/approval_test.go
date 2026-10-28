@@ -3,6 +3,9 @@ package slackbot
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -367,6 +370,64 @@ func TestApprovalChannelAcceptsOnlyDecisionsInRequestThreads(t *testing.T) {
 				t.Fatalf("claims = %d, runner calls = %d, requests = %d; want only the original request", store.claimCalls, runner.calls, len(approvalRequests(api)))
 			}
 		})
+	}
+}
+
+func TestAllowedUserWorksInApprovalChannelWithSharedWrites(t *testing.T) {
+	runner := &fakeRunner{responses: []runnerResponse{{result: &codex.TurnResult{
+		Completed: true,
+		Messages:  []string{"直しました。\n## 全体メモリ追記\nplaybook はこのチャンネルで直す"},
+	}}}}
+	bot, api, store, _ := newApprovalBot(t, runner)
+	bot.config.PlaybooksDir = t.TempDir()
+
+	// U1 is allowed to use the bot but approves nothing.
+	reply := approvalCommand(bot, api, "U1", "", "playbook を直して")
+
+	if runner.calls != 1 || store.claimCalls != 1 {
+		t.Fatalf("runner calls = %d, claims = %d; want one turn", runner.calls, store.claimCalls)
+	}
+	if !strings.Contains(runner.prompts[0], "## 全体メモリ追記") {
+		t.Errorf("work prompt does not offer shared writes in the approval channel")
+	}
+	if !slices.Contains(runner.roots[0], bot.config.PlaybooksDir) {
+		t.Errorf("work roots = %v, want playbooks writable", runner.roots[0])
+	}
+	if !strings.Contains(reply, "直しました。") || strings.Contains(reply, approvalUsageMessage) {
+		t.Errorf("reply = %q, want the work result", reply)
+	}
+	data, err := os.ReadFile(filepath.Join(bot.config.MemoryDir, "MEMORY.md"))
+	if err != nil || !strings.Contains(string(data), "playbook はこのチャンネルで直す") {
+		t.Errorf("global memory = %q, %v", data, err)
+	}
+}
+
+func TestUnapprovedUserInApprovalChannelNeedsApproval(t *testing.T) {
+	runner := &fakeRunner{}
+	bot, api, store, approvals := newApprovalBot(t, runner)
+
+	approvalCommand(bot, api, "U2", "", "playbook を直して")
+
+	if runner.calls != 0 || store.claimCalls != 0 {
+		t.Fatalf("runner calls = %d, claims = %d; want none", runner.calls, store.claimCalls)
+	}
+	if got := approvals.ApprovalStatus(state.ApprovalUser, "U2"); got != state.Pending {
+		t.Fatalf("status = %q, want pending", got)
+	}
+}
+
+func TestOtherChannelsCannotChangePlaybooksOrGlobalMemory(t *testing.T) {
+	runner := successfulTurnRunner()
+	bot, _, _, _ := newApprovalBot(t, runner)
+	bot.config.PlaybooksDir = t.TempDir()
+
+	bot.HandleMention(context.Background(), mention())
+
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want 1", runner.calls)
+	}
+	if strings.Contains(runner.prompts[0], "## 全体メモリ追記") || slices.Contains(runner.roots[0], bot.config.PlaybooksDir) {
+		t.Errorf("channel C1 got shared writes: roots %v", runner.roots[0])
 	}
 }
 

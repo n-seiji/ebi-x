@@ -27,7 +27,7 @@ func TestLoad(t *testing.T) {
 				"SLACK_ALLOW_WORKFLOWS":              "true",
 				"SLACK_ALLOWED_WORKFLOW_IDS":         "Wf0BSM19MCDT",
 				"CODEX_MAX_PARALLEL_PLAN":            "2",
-				"EBIX_SHARED_WRITE_CHANNEL_IDS":      "C123",
+				"EBIX_SHARED_WRITE_CHANNEL_IDS":      "D123", // removed; ignored even when invalid
 				"SLACK_ADMIN_USER_ID":                "UADMIN",
 				"CODEX_COMMAND":                      "/usr/local/bin/codex",
 				"CODEX_MODEL":                        "gpt-test",
@@ -61,9 +61,6 @@ func TestLoad(t *testing.T) {
 				}
 				if !reflect.DeepEqual(cfg.AllowedWorkflowIDs, []string{"Wf0BSM19MCDT"}) {
 					t.Errorf("AllowedWorkflowIDs = %v, want [Wf0BSM19MCDT]", cfg.AllowedWorkflowIDs)
-				}
-				if !reflect.DeepEqual(cfg.SharedWriteChannelIDs, []string{"C123"}) {
-					t.Errorf("SharedWriteChannelIDs = %v, want [C123]", cfg.SharedWriteChannelIDs)
 				}
 				if cfg.MaxParallelWork != 5 {
 					t.Errorf("MaxParallelWork = %d, want 5", cfg.MaxParallelWork)
@@ -181,9 +178,6 @@ func TestLoad(t *testing.T) {
 				}
 				if cfg.ThreadSubscriptionTTL != 336*time.Hour {
 					t.Errorf("ThreadSubscriptionTTL = %v, want %v", cfg.ThreadSubscriptionTTL, 336*time.Hour)
-				}
-				if len(cfg.SharedWriteChannelIDs) != 0 {
-					t.Errorf("SharedWriteChannelIDs = %v, want none", cfg.SharedWriteChannelIDs)
 				}
 				for _, want := range []string{
 					filepath.Join(workingDir, ".env"),
@@ -339,16 +333,6 @@ func TestLoad(t *testing.T) {
 					t.Errorf("CodexModel = %q, want gpt-test", cfg.CodexModel)
 				}
 			},
-		},
-		{
-			name: "invalid shared write channel",
-			env: map[string]string{
-				"SLACK_BOT_TOKEN":               "xoxb-test",
-				"SLACK_APP_TOKEN":               "xapp-test",
-				"SLACK_ALLOWED_USER_IDS":        "U123",
-				"EBIX_SHARED_WRITE_CHANNEL_IDS": "D123",
-			},
-			wantErr: "EBIX_SHARED_WRITE_CHANNEL_IDS",
 		},
 		{
 			name: "invalid allow all public channels",

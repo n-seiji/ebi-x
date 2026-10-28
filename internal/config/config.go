@@ -61,9 +61,6 @@ type Config struct {
 	// MaxParallelWork is how many work turns for different Slack threads may
 	// run at once.
 	MaxParallelWork int
-	// SharedWriteChannelIDs are the channels whose work turns may change state
-	// shared by every channel: playbooks and global memory.
-	SharedWriteChannelIDs []string
 	// CheckoutIdleTTL is how long a thread's git checkouts are kept after its
 	// last work turn.
 	CheckoutIdleTTL            time.Duration
@@ -200,11 +197,11 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	sharedWriteChannelIDs := splitList(os.Getenv("EBIX_SHARED_WRITE_CHANNEL_IDS"))
-	for _, channelID := range sharedWriteChannelIDs {
-		if !strings.HasPrefix(channelID, "C") {
-			return nil, fmt.Errorf("EBIX_SHARED_WRITE_CHANNEL_IDS: invalid channel ID %q: %w", channelID, errors.New("must start with C"))
-		}
+	// Playbooks and global memory used to be writable from listed channels.
+	// Only the approval channel may write them now; the old list is ignored
+	// so a leftover .env entry does not stop the bot.
+	if strings.TrimSpace(os.Getenv("EBIX_SHARED_WRITE_CHANNEL_IDS")) != "" {
+		log.Printf("EBIX_SHARED_WRITE_CHANNEL_IDS was removed and is ignored; playbooks and global memory are changed from SLACK_APPROVAL_CHANNEL_ID")
 	}
 	checkoutIdleTTL := defaultCheckoutIdleTTL
 	if value := strings.TrimSpace(os.Getenv("EBIX_CHECKOUT_IDLE_TTL")); value != "" {
@@ -319,7 +316,6 @@ func Load() (*Config, error) {
 		GitHubApp:                  githubApp,
 		CodexTimeout:               codexTimeout,
 		MaxParallelWork:            maxParallelWork,
-		SharedWriteChannelIDs:      sharedWriteChannelIDs,
 		CheckoutIdleTTL:            checkoutIdleTTL,
 		ThreadSubscriptionReaction: threadSubscriptionReaction,
 		ThreadSubscriptionTTL:      threadSubscriptionTTL,

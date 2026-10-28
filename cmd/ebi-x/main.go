@@ -153,7 +153,6 @@ func main() {
 		ThreadSubscriptionTTL:      cfg.ThreadSubscriptionTTL,
 		WritableRoots:              cfg.WritableRoots,
 		MaxParallelWork:            cfg.MaxParallelWork,
-		SharedWriteChannelIDs:      cfg.SharedWriteChannelIDs,
 		Workspaces:                 workspaces,
 		GitHub:                     githubAPI,
 		GitHubLogin:                githubLogin,
