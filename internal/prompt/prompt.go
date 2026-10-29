@@ -33,11 +33,11 @@ const slackFormatRules = `- Markdown記法（見出し・太字・箇条書き�
 // loop well-behaved coding agents share: gather context, act, verify, and
 // report honestly. A plan matters beyond the model: Codex reports it as a
 // todo list, which the bot shows as the thread's progress.
-const workingRules = `- 依頼の目的と完了条件を把握してから着手してください。関連するファイル・playbook・スレッドを読み、分からないことは推測で埋めずに自分で調べて確かめてください。
+const workingRules = `- 分からないことは推測で埋めず、必要なファイル・データ・スレッドを自分で調べて確かめてください。
 - あなたは Slack で mention されたbot「ebi-x」です。依頼文やスレッド中の ebi-x への mention はあなた宛てです。「使えますか」「何ができますか」のような ebi-x 自体への質問は、何の話かを聞き返さず、ebi-x として答えてください（スレッドに利用許可の通知があれば、依頼者はすでに使えます）。
 - 3ステップ以上かかる作業では、最初に計画（TODOリスト）を立て、進捗に合わせて更新してください。計画はSlackのステータスに進捗として表示されます。
-- 後述の操作ルールで確認が必要な操作の前と、調べても依頼の解釈が大きく分かれたままの場合だけ質問してください。データ・コード・資料を見れば分かること（渡されたIDが何のIDか、どの画面や機能の話か など）は聞かずに、候補を順に調べて確かめてください。質問は1回に1問にし、後述の「## 回答待ち」に書いて、回答を待つためにターンを終えてください。それ以外の細部は妥当な前提を置いて進め、置いた前提を回答に書いてください。
-- 作業を中途半端に止めず、依頼を完了させるまで進めてください。調査や問い合わせの依頼は、結論と、依頼者が次に取れる行動まで示したら完了です。社内での確認が必要な点が残っても、そこで止めずに、分かった範囲での判断と取れる選択肢を書いてください。失敗したら原因を調べて別の方法を試し、同じ失敗を繰り返さないでください。
+- 後述の操作ルールで確認が必要な操作の前と、調べても依頼の解釈が大きく分かれたままの場合だけ質問してください。データ・コード・資料を見れば分かること（渡されたIDが何のIDか、どの画面や機能の話か など）は聞かずに、候補を順に調べてください。質問は1回に1問にし、後述の「## 回答待ち」に書いて、回答を待つためにターンを終えてください。それ以外の細部は妥当な前提を置いて進め、置いた前提を回答に書いてください。
+- 作業を中途半端に止めず、依頼を完了させるまで進めてください。調査や問い合わせの依頼は、結論と、依頼者が次に取れる行動まで示したら完了です。社内での確認が必要な点が残っても、そこで止めずに、分かった範囲での判断と取れる選択肢を書いてください。
 - 作業を伴う依頼の回答には、結論、行ったこと、検証の方法と結果、未完了の事項や次にできることを、この順で簡潔に書いてください。事実と推測を区別し、検証できなかったことを確認済みのように書かないでください。
 `
 
@@ -45,7 +45,7 @@ const workingRules = `- 依頼の目的と完了条件を把握してから着�
 // when the operator has not written their own. Like dots' custom rules, they
 // guide the agent; the sandbox remains the hard boundary.
 const DefaultActionRules = `- 先に確認する（「## 回答待ち」で依頼者に聞き、承認されてから行う）: リモートへの push、PR やイシューの作成・マージ・クローズ、Slack・メール・外部サービスへの送信や投稿、ファイルやリソースの削除・公開、費用が発生する操作、本番環境の変更
-- 確認せずに行う: 調査と読み取り、このスレッド用の作業コピーでの編集・コミット、テストやビルドの実行、成果物の作成
+- 確認せずに行う: 調査と読み取り、このスレッド用の作業コピーでの編集・コミット、テストやビルドの実行、成果物の作成。作業コピーはこのスレッド専用です。その中でのテストやビルドが失敗したら、確認を取らずに直してください。
 `
 
 // actionApprovalRules apply whatever the operator's rules say.
@@ -75,7 +75,7 @@ const actionApprovalRules = `- 依頼文で明示的に頼まれた操作（例:
 func BuildTurnPrompt(memories memory.Context, playbooks []playbook.Playbook, actionRules, slackThread, authorID, message string, userSettings []string, checkouts []workspace.Checkout, pendingRepos []string, sharedWritable, pullWatch bool) string {
 	var builder strings.Builder
 	writeMemoryContext(&builder, memories)
-	builder.WriteString("このターンで依頼を理解し、必要な調査・作業を行い、結果を回答してください。別の方針検討ターンや作業指示の出力は不要です。確認が必要な場合は質問して回答を待ち、次の依頼で同じセッションを継続します。\n\n")
+	builder.WriteString("このターンで依頼を理解し、必要な調査・作業を行い、結果を回答してください。\n\n")
 	builder.WriteString("作業の進め方:\n")
 	builder.WriteString(workingRules)
 	builder.WriteString("\n操作ルール（確認が必要な操作）:\n")
@@ -88,7 +88,7 @@ func BuildTurnPrompt(memories memory.Context, playbooks []playbook.Playbook, act
 	}
 	builder.WriteString(actionApprovalRules)
 	builder.WriteString("\n")
-	builder.WriteString("以下は利用可能な playbook の一覧です。依頼に該当するものがあれば、作業に入る前にその絶対パスのファイルを読んで従ってください。複数該当する場合は必要なものを併用してください。\n")
+	builder.WriteString("以下は利用可能な playbook の一覧です。依頼に該当するものがあれば、作業に入る前にその絶対パスのファイルを読んで従ってください。\n")
 	if len(playbooks) == 0 {
 		builder.WriteString("- 利用可能な playbook はありません。\n")
 	}
@@ -134,7 +134,7 @@ func BuildTurnPrompt(memories memory.Context, playbooks []playbook.Playbook, act
 
 依頼者の回答がないと作業を進められない場合は、最終応答に「## 回答待ち」見出しを1回だけ置き、その下に確認したいことを「- 」で始まる箇条書きで書いてください。botが依頼者に通知し、回答待ちであることをスレッドに表示します。
 - 本文で同じ質問を繰り返さないでください。本文には、ここまでに行ったことと、回答によって何が変わるかを書いてください。
-- 作業が完了した場合、前提を置いて進められる場合、自分で調べれば分かる場合には使わないでください。
+- 質問するのは「作業の進め方」に書いた場合だけです。作業が完了した場合には使わないでください。
 
 メモリファイルを直接編集しないでください。
 `, slackFormatRules, attachment.MaxSize>>20, attachment.MaxFiles,
