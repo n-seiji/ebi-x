@@ -134,7 +134,6 @@ func BuildTurnPrompt(memories memory.Context, playbooks []playbook.Playbook, act
 
 依頼者の回答がないと作業を進められない場合は、最終応答に「## 回答待ち」見出しを1回だけ置き、その下に確認したいことを「- 」で始まる箇条書きで書いてください。botが依頼者に通知し、回答待ちであることをスレッドに表示します。
 - 本文で同じ質問を繰り返さないでください。本文には、ここまでに行ったことと、回答によって何が変わるかを書いてください。
-- 質問するのは「作業の進め方」に書いた場合だけです。作業が完了した場合には使わないでください。
 
 メモリファイルを直接編集しないでください。
 `, slackFormatRules, attachment.MaxSize>>20, attachment.MaxFiles,
