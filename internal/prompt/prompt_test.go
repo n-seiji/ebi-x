@@ -167,7 +167,7 @@ func TestStripClosingTags(t *testing.T) {
 
 func TestBuildTurnPromptIncludesWorkingRules(t *testing.T) {
 	got := BuildTurnPrompt(memory.Context{}, nil, "", "", "U1", "do it", nil, nil, nil, false, false)
-	for _, want := range []string{"作業の進め方:", "計画（TODOリスト）", "検証してから報告"} {
+	for _, want := range []string{"作業の進め方:", "計画（TODOリスト）", "次に取れる行動まで示したら完了"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("turn prompt does not contain %q", want)
 		}
