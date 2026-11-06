@@ -55,6 +55,11 @@ var errStoppedByUser = errors.New("stopped by user")
 type SlackAPI interface {
 	PostMessage(ctx context.Context, channel, threadTS, text string) (string, error)
 	GetThreadMessages(ctx context.Context, channel, threadTS, latest string) ([]ThreadMessage, error)
+	// GetMessage reads one message of a thread (the root when timestamp is
+	// threadTS), with its files.
+	GetMessage(ctx context.Context, channel, threadTS, timestamp string) (ThreadMessage, error)
+	// DownloadFile writes a file shared in Slack, given its private URL.
+	DownloadFile(ctx context.Context, url string, w io.Writer) error
 	SetStatus(ctx context.Context, channel, threadTS, status string) error
 	HasReaction(ctx context.Context, channel, timestamp, reaction string) (bool, error)
 	// ReactionUsers lists the users who reacted to the message with reaction.
@@ -83,6 +88,17 @@ type ThreadMessage struct {
 	AuthorID  string
 	Timestamp string
 	Text      string
+	// Files are the files shared with the message.
+	Files []SlackFile
+}
+
+// SlackFile is a file someone shared in a Slack message.
+type SlackFile struct {
+	Name     string
+	Mimetype string
+	Size     int
+	// URL is the private download URL; reading it needs files:read.
+	URL string
 }
 
 // Store is the persistent state used by Bot.
@@ -484,8 +500,10 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	defer b.clearStatus(ctx, channel, threadTS)
 	threadID, hasThread := b.store.GetThread(threadKey)
 	var slackThread string
+	var threadMessages []ThreadMessage
 	if !hasThread && trigger.threadReply {
-		threadMessages, err := b.api.GetThreadMessages(ctx, channel, threadTS, timestamp)
+		var err error
+		threadMessages, err = b.api.GetThreadMessages(ctx, channel, threadTS, timestamp)
 		if err != nil {
 			log.Printf("slackbot: read thread context %q: %v", eventKey, err)
 			b.fail(ctx, eventKey, state.Received, state.Failed, channel, threadTS, timestamp, threadFailureMessage)
@@ -493,7 +511,8 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		}
 		slackThread = formatThreadContext(threadMessages, timestamp)
 	}
-	output, started, workErr := b.work(ctx, stopCtx, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread, trigger)
+	files := b.sharedFiles(ctx, trigger, threadMessages)
+	output, started, workErr := b.work(ctx, stopCtx, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread, files, trigger)
 	if !started && errors.Is(workErr, errDraining) && stopCtx.Err() == nil {
 		b.deferRequest(ctx, trigger)
 		return
@@ -626,7 +645,7 @@ func (o workOutput) attachmentNotice() string {
 // work runs one complete request in the Slack thread's Codex session. started reports whether the event
 // reached the working state; when it did not, nothing was run and the event
 // may be retried. stopCtx bounds the waiting and the turn; ctx the rest.
-func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread string, trigger processingTrigger) (output workOutput, started bool, err error) {
+func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread string, files []ThreadMessage, trigger processingTrigger) (output workOutput, started bool, err error) {
 	// Work still waiting for its turn when a restart begins is deferred
 	// rather than started, so the restart only waits for running turns.
 	if b.draining() {
@@ -659,6 +678,9 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	// Playbooks and global memory reach every channel, so only the approval
 	// channel may change them.
 	sharedWritable := b.sharedWritable(channel)
+	// Files people shared are saved in the thread's workspace so the turn
+	// can open them; the list follows the request.
+	trigger.message += b.saveSharedFiles(ctx, lease, files)
 
 	// A new session receives the memory, playbook catalog, and rules once;
 	// a resumed session already holds them, so only the request is sent.
@@ -1071,10 +1093,14 @@ func (b *Bot) keyedLock(locks map[string]*sync.Mutex, key string) *sync.Mutex {
 func formatThreadContext(messages []ThreadMessage, currentTimestamp string) string {
 	parts := make([]string, 0, len(messages))
 	for _, message := range messages {
-		if message.Timestamp == currentTimestamp || strings.TrimSpace(message.Text) == "" {
+		if message.Timestamp == currentTimestamp || (strings.TrimSpace(message.Text) == "" && len(message.Files) == 0) {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("[%s / %s]\n%s", message.Timestamp, message.AuthorID, message.Text))
+		text := message.Text
+		for _, file := range message.Files {
+			text += "\n（添付: " + safeFileName(file.Name) + "）"
+		}
+		parts = append(parts, fmt.Sprintf("[%s / %s]\n%s", message.Timestamp, message.AuthorID, strings.TrimLeft(text, "\n")))
 	}
 	return truncateThreadContext(strings.Join(parts, "\n\n"), maxThreadContextRunes)
 }
@@ -1186,17 +1212,50 @@ func (w *webAPI) GetThreadMessages(ctx context.Context, channel, threadTS, lates
 			return nil, fmt.Errorf("get Slack thread replies: %w", err)
 		}
 		for _, message := range messages {
-			result = append(result, ThreadMessage{
-				AuthorID:  message.User,
-				Timestamp: message.Timestamp,
-				Text:      message.Text,
-			})
+			result = append(result, threadMessage(message))
 		}
 		if nextCursor == "" || nextCursor == cursor {
 			return result, nil
 		}
 		cursor = nextCursor
 	}
+}
+
+func (w *webAPI) GetMessage(ctx context.Context, channel, threadTS, timestamp string) (ThreadMessage, error) {
+	messages, _, _, err := w.client.GetConversationRepliesContext(ctx, &slack.GetConversationRepliesParameters{
+		ChannelID: channel,
+		Timestamp: threadTS,
+		Oldest:    timestamp,
+		Latest:    timestamp,
+		Inclusive: true,
+		Limit:     2,
+	})
+	if err != nil {
+		return ThreadMessage{}, fmt.Errorf("get Slack message: %w", err)
+	}
+	// Replies always start with the root, so pick the message by timestamp.
+	for _, message := range messages {
+		if message.Timestamp == timestamp {
+			return threadMessage(message), nil
+		}
+	}
+	return ThreadMessage{}, fmt.Errorf("get Slack message: %s not found", timestamp)
+}
+
+func (w *webAPI) DownloadFile(ctx context.Context, url string, out io.Writer) error {
+	return w.client.GetFileContext(ctx, url, out)
+}
+
+func threadMessage(message slack.Message) ThreadMessage {
+	result := ThreadMessage{AuthorID: message.User, Timestamp: message.Timestamp, Text: message.Text}
+	for _, file := range message.Files {
+		url := file.URLPrivateDownload
+		if url == "" {
+			url = file.URLPrivate
+		}
+		result.Files = append(result.Files, SlackFile{Name: file.Name, Mimetype: file.Mimetype, Size: file.Size, URL: url})
+	}
+	return result
 }
 
 func (w *webAPI) SetStatus(ctx context.Context, channel, threadTS, status string) error {

@@ -363,12 +363,17 @@ func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error)
 }
 
 type fakeSlack struct {
-	mu                sync.Mutex
-	calls             []slackCall
-	postErrs          []error
-	postTexts         []string
-	threadMessages    []ThreadMessage
-	threadErr         error
+	mu             sync.Mutex
+	calls          []slackCall
+	postErrs       []error
+	postTexts      []string
+	threadMessages []ThreadMessage
+	threadErr      error
+	// message is what GetMessage returns; downloads maps file URLs to
+	// their content.
+	message           ThreadMessage
+	messageCalls      int
+	downloads         map[string]string
 	threadCalls       int
 	threadLatest      string
 	hasReaction       bool
@@ -460,6 +465,26 @@ func (s *fakeSlack) GetThreadMessages(_ context.Context, _, _, latest string) ([
 	s.threadCalls++
 	s.threadLatest = latest
 	return append([]ThreadMessage(nil), s.threadMessages...), s.threadErr
+}
+
+func (s *fakeSlack) GetMessage(_ context.Context, _, _, timestamp string) (ThreadMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messageCalls++
+	message := s.message
+	message.Timestamp = timestamp
+	return message, nil
+}
+
+func (s *fakeSlack) DownloadFile(_ context.Context, url string, w io.Writer) error {
+	s.mu.Lock()
+	content, ok := s.downloads[url]
+	s.mu.Unlock()
+	if !ok {
+		return errors.New("download failed")
+	}
+	_, err := io.WriteString(w, content)
+	return err
 }
 
 func (s *fakeSlack) SetStatus(_ context.Context, _, _, status string) error {
