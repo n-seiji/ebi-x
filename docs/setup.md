@@ -9,7 +9,7 @@ Slack App の作成画面で「From a manifest」を選び、`examples/slack-app
 | 項目 | 設定 | 用途 |
 | --- | --- | --- |
 | Socket Mode | 有効 | 公開 URL なしでイベントを受ける |
-| Bot Token Scopes | `app_mentions:read` `chat:write` `reactions:read` `reactions:write` `channels:history` `files:write` `im:history` `assistant:write` `commands` | mention・投稿・リアクション、成果物の添付、DM とエージェント表示、ショートカット |
+| Bot Token Scopes | `app_mentions:read` `chat:write` `reactions:read` `reactions:write` `channels:history` `files:read` `files:write` `im:history` `assistant:write` `commands` | mention・投稿・リアクション、依頼に添付された画像などの取得、成果物の添付、DM とエージェント表示、ショートカット |
 | Event Subscriptions | `app_mention` `message.channels` `message.im` `app_home_opened` | mention、購読スレッドの返信、DM、Home タブ |
 | App Home | Home Tab と Messages Tab を有効、「Allow users to send Slash commands and messages from the messages tab」をオン | Home タブと DM |
 | Interactivity & Shortcuts | Interactivity をオン、Message Shortcut「ebi-x に頼む」（Callback ID `ebix_request`） | メッセージから依頼する |
