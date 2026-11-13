@@ -129,9 +129,9 @@ func noteCount(item playbook.Playbook) int {
 // foldPlaybookNotes continues the turn's session to fold the notes of item
 // into its body without asking, as the operator chose, and reports what
 // happened. Editing the body retires the notes it folds in.
-func (b *Bot) foldPlaybookNotes(ctx context.Context, sessionID string, lease *workspace.Lease, otherThreads []string, item playbook.Playbook, onActivity func(codex.Activity)) *playbookFold {
+func (b *Bot) foldPlaybookNotes(ctx context.Context, sessionID string, lease *workspace.Lease, item playbook.Playbook, onActivity func(codex.Activity)) *playbookFold {
 	fold := &playbookFold{name: item.Name, notes: noteCount(item)}
-	text, err := b.runWorkTurn(ctx, sessionID, lease, true, otherThreads, prompt.BuildPlaybookFoldPrompt(item), func(string) error { return nil }, onActivity)
+	text, err := b.runWorkTurn(ctx, sessionID, lease, true, prompt.BuildPlaybookFoldPrompt(item), func(string) error { return nil }, onActivity)
 	if err != nil {
 		log.Printf("slackbot: fold notes of playbook %q: %v", item.Name, err)
 		return fold

@@ -21,8 +21,6 @@ func (w threadWorkspaces) Acquire(context.Context, string, bool) (*workspace.Lea
 	return workspace.NewLease(w.dir, nil, nil, func() {}), nil
 }
 
-func (w threadWorkspaces) OtherThreadPaths(string) ([]string, error) { return nil, nil }
-
 func newFilesTestBot(t *testing.T, api *fakeSlack, runner *fakeRunner) (*Bot, string) {
 	t.Helper()
 	dir := t.TempDir()

@@ -148,9 +148,6 @@ type Workspaces interface {
 	// only when createCheckouts is set; otherwise they are reported in
 	// Lease.PendingRepos.
 	Acquire(ctx context.Context, threadID string, createCheckouts bool) (*workspace.Lease, error)
-	// OtherThreadPaths lists every workspace and checkout entry except
-	// threadID's own, so one thread's turn cannot read another's.
-	OtherThreadPaths(threadID string) ([]string, error)
 }
 
 // Config contains paths, allowlists, and timeout settings needed by Bot.
@@ -671,10 +668,6 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		return workOutput{}, false, fmt.Errorf("prepare workspace: %w", err)
 	}
 	defer func() { lease.Release() }()
-	otherThreads, err := b.config.Workspaces.OtherThreadPaths(workspaceID)
-	if err != nil {
-		return workOutput{}, false, fmt.Errorf("list other thread workspaces: %w", err)
-	}
 	// Playbooks and global memory reach every channel, so only the approval
 	// channel may change them.
 	sharedWritable := b.sharedWritable(channel)
@@ -731,7 +724,7 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		}
 		return nil
 	}
-	finalText, err := b.runWorkTurn(stopCtx, threadID, lease, sharedWritable, otherThreads, turnPrompt, persistThread, onActivity)
+	finalText, err := b.runWorkTurn(stopCtx, threadID, lease, sharedWritable, turnPrompt, persistThread, onActivity)
 	if err != nil {
 		return workOutput{}, true, err
 	}
@@ -748,7 +741,7 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 			return workOutput{}, true, fmt.Errorf("prepare requested checkouts: %w", err)
 		}
 		lease = next
-		finalText, err = b.runWorkTurn(stopCtx, sessionID, lease, sharedWritable, otherThreads, prompt.BuildCheckoutsReadyPrompt(lease.Checkouts), persistThread, onActivity)
+		finalText, err = b.runWorkTurn(stopCtx, sessionID, lease, sharedWritable, prompt.BuildCheckoutsReadyPrompt(lease.Checkouts), persistThread, onActivity)
 		if err != nil {
 			return workOutput{}, true, err
 		}
@@ -802,7 +795,7 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	var foldTarget *playbook.Playbook
 	output.playbookNoteNotice, foldTarget = b.savePlaybookNote(eventKey, playbookNote, playbookNoteInvalid, sharedWritable)
 	if foldTarget != nil && sessionID != "" {
-		output.playbookFold = b.foldPlaybookNotes(stopCtx, sessionID, lease, otherThreads, *foldTarget, onActivity)
+		output.playbookFold = b.foldPlaybookNotes(stopCtx, sessionID, lease, *foldTarget, onActivity)
 	}
 	// Upload while the thread's work lock and lease are held, so a later
 	// turn in the same thread cannot replace the files mid-upload.
@@ -814,12 +807,12 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 
 // runWorkTurn runs one workspace-write turn in lease and returns its final
 // message.
-func (b *Bot) runWorkTurn(ctx context.Context, threadID string, lease *workspace.Lease, sharedWritable bool, otherThreads []string, text string, onThreadStarted func(string) error, onActivity func(codex.Activity)) (string, error) {
+func (b *Bot) runWorkTurn(ctx context.Context, threadID string, lease *workspace.Lease, sharedWritable bool, text string, onThreadStarted func(string) error, onActivity func(codex.Activity)) (string, error) {
 	roots := append([]string(nil), lease.WritableRoots...)
 	if b.config.PlaybooksDir != "" && sharedWritable {
 		roots = append(roots, b.config.PlaybooksDir)
 	}
-	result, err := b.runTurn(ctx, threadID, "workspace-write", lease.Dir, roots, otherThreads, text, onThreadStarted, onActivity)
+	result, err := b.runTurn(ctx, threadID, "workspace-write", lease.Dir, roots, nil, text, onThreadStarted, onActivity)
 	if err != nil {
 		return "", err
 	}
@@ -935,8 +928,6 @@ func (w sharedWorkspaces) Acquire(context.Context, string, bool) (*workspace.Lea
 	lease.Shared = true
 	return lease, nil
 }
-
-func (w sharedWorkspaces) OtherThreadPaths(string) ([]string, error) { return nil, nil }
 
 // forbidden tells the author that the mention is refused, naming who lacks
 // access so they know to ask the admin rather than retry.

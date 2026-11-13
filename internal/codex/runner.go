@@ -128,7 +128,7 @@ func (r *Runner) Run(
 	for _, arg := range args {
 		if len(arg) > maxArgBytes {
 			// Running with a truncated deny list would expose protected paths.
-			return nil, fmt.Errorf("codex exec: argument of %d bytes exceeds %d; remove unused thread directories under data/workspace", len(arg), maxArgBytes)
+			return nil, fmt.Errorf("codex exec: argument of %d bytes exceeds %d; reduce the Codex configuration or protected path list", len(arg), maxArgBytes)
 		}
 	}
 	runCtx, cancel := context.WithCancel(ctx)

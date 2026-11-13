@@ -121,9 +121,10 @@ Codex のコマンドは、禁止しなければファイルシステム全体�
 - `data/memory`、`data/state`
 - `.env`（起動ディレクトリと `EBIX_HOME`）、`EBIX_HOME/.codex`
 - `CODEX_HOME` の中身（認証情報・設定・全スレッドの履歴を含むため）。コマンドの実行に要る `skills` `plugins` `packages` `tmp` `.tmp` `shell_snapshots` だけを除き、実行ごとに列挙して禁止します
-- 自分以外のスレッドの `data/workspace` と `data/checkouts`（実行の直前に列挙します）
 - `EBIX_DENIED_READ_PATHS`
 - 既知の認証情報の置き場（既定）：`~/.ssh` `~/.aws` `~/.azure` `~/.config/gcloud` `~/.config/gh` `~/.docker/config.json` `~/.kube` `~/.gnupg` `~/.netrc` `~/.git-credentials` `~/.config/git/credentials` `~/.npmrc` `~/.pypirc` `~/.config/op` `~/.vault-token` `~/.terraform.d/credentials.tfrc.json` `~/.cargo/credentials.toml` `~/.gem/credentials` `~/.pgpass` `~/.my.cnf` `~/.s3cfg` `~/.boto` `~/.oci` `~/.config/rclone` `~/.claude` `~/.config/github-copilot`。push と署名に要るものと `EBIX_ALLOWED_READ_PATHS` のものは外します（[setup.md](setup.md#4-作業対象のリポジトリ)）。検出は `data/checkouts` に作る使い捨てのリポジトリで、スレッドのクローンと同じ git 設定と、Codex と同じ環境変数で行います
+
+`data/workspace` と `data/checkouts` は、他スレッドのパスを列挙して禁止しません。スレッドが増えても禁止ルールは増えません。他スレッドの成果物も読み取り可能ですが、添付は依頼されたスレッドのファイルに限定します。
 
 Codex は `--ignore-user-config` と専用の permission profile で起動し、MCP の設定は `EBIX_HOME/.codex/config.toml` から渡します。
 

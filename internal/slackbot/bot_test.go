@@ -2328,10 +2328,6 @@ func (w *fakeWorkspaces) ThreadDir(threadID string) (string, error) {
 	return "/home/workspace/" + threadID, nil
 }
 
-func (w *fakeWorkspaces) OtherThreadPaths(threadID string) ([]string, error) {
-	return []string{"/home/workspace/OTHER-" + threadID}, nil
-}
-
 func (w *fakeWorkspaces) Acquire(_ context.Context, threadID string, createCheckouts bool) (*workspace.Lease, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -2503,19 +2499,25 @@ func TestChannelWithoutSharedWritesCannotChangePlaybooksOrMemory(t *testing.T) {
 	}
 }
 
-func TestTurnsDenyOtherThreadPaths(t *testing.T) {
-	store := &fakeStore{claim: true}
-	runner := &fakeRunner{responses: []runnerResponse{
-		{result: &codex.TurnResult{Completed: true, Messages: []string{"Work completed."}}},
-	}}
-	bot := newTestBot(t, store, &fakeSlack{}, runner)
-	bot.config.Workspaces = &fakeWorkspaces{}
+func TestTurnsDoNotAddOtherThreadDenyPaths(t *testing.T) {
+	for _, threadID := range []string{"", "existing-thread"} {
+		t.Run("session="+threadID, func(t *testing.T) {
+			store := &fakeStore{claim: true, threadIDs: map[string]string{"v5:C1:100.1": threadID}}
+			runner := &fakeRunner{responses: []runnerResponse{
+				{result: &codex.TurnResult{Completed: true, Messages: []string{"Work completed."}}},
+			}}
+			bot := newTestBot(t, store, &fakeSlack{}, runner)
+			bot.config.Workspaces = &fakeWorkspaces{}
 
-	bot.HandleMention(context.Background(), mention())
+			bot.HandleMention(context.Background(), mention())
 
-	want := []string{"/home/workspace/OTHER-C1-100.1"}
-	if len(runner.denied) != 1 || !reflect.DeepEqual(runner.denied[0], want) {
-		t.Fatalf("denied paths = %v, want %v for the single turn", runner.denied, want)
+			if len(runner.denied) != 1 || len(runner.denied[0]) != 0 {
+				t.Fatalf("denied paths = %v, want no per-thread deny paths", runner.denied)
+			}
+			if !reflect.DeepEqual(runner.threadIDs, []string{threadID}) {
+				t.Fatalf("thread IDs = %v, want %q", runner.threadIDs, threadID)
+			}
+		})
 	}
 }
 
@@ -2558,8 +2560,6 @@ func (w dirWorkspaces) ThreadDir(threadID string) (string, error) {
 	dir := filepath.Join(w.base, "workspace", threadID)
 	return dir, os.MkdirAll(dir, 0o700)
 }
-
-func (w dirWorkspaces) OtherThreadPaths(string) ([]string, error) { return nil, nil }
 
 func (w dirWorkspaces) Acquire(_ context.Context, threadID string, _ bool) (*workspace.Lease, error) {
 	dir, err := w.ThreadDir(threadID)
