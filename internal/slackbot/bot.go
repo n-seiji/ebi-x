@@ -232,6 +232,10 @@ type Bot struct {
 	// adminAlerts is when each kind of alert was last posted in the
 	// approval channel.
 	adminAlerts map[string]time.Time
+	// failureMu guards recentFailures, the times of the requests that failed
+	// within repeatedFailureWindow.
+	failureMu      sync.Mutex
+	recentFailures []time.Time
 	// drain defers new requests while the running ones finish before a
 	// restart.
 	drain *drainer
@@ -516,6 +520,7 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	}
 	if !started {
 		log.Printf("slackbot: start work %q: %v", eventKey, workErr)
+		b.noteWorkFailure(ctx, workErr)
 		b.fail(ctx, eventKey, state.Received, state.Failed, channel, threadTS, timestamp, failure(workStartFailureMessage))
 		return
 	}
@@ -527,6 +532,9 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 			message = b.usageLimitFailure(ctx)
 		case errors.Is(workErr, codex.ErrNotSignedIn):
 			message = b.authFailure(ctx)
+		default:
+			// The usage limit and sign-in have their own alerts.
+			b.noteWorkFailure(ctx, workErr)
 		}
 		b.fail(ctx, eventKey, state.Working, state.Interrupted, channel, threadTS, timestamp, failure(message))
 		return
