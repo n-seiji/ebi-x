@@ -18,8 +18,10 @@ import (
 
 // loadConfigOverrides converts a local Codex TOML file into deterministic
 // command-line overrides. The caller keeps --ignore-user-config enabled and
-// appends ebi-x's mandatory security overrides after these values.
-func loadConfigOverrides(path string) ([]string, error) {
+// appends ebi-x's mandatory security overrides after these values. With
+// withoutSlack, every MCP server that reaches Slack is turned off, so a turn
+// for a private or externally shared channel cannot search other channels.
+func loadConfigOverrides(path string, withoutSlack bool) ([]string, error) {
 	if path == "" {
 		return nil, nil
 	}
@@ -37,8 +39,75 @@ func loadConfigOverrides(path string) ([]string, error) {
 	}
 	servers, _ := config["mcp_servers"].(map[string]any)
 	overrides = append(overrides, bigQueryReadOnlyOverrides(servers)...)
+	if withoutSlack {
+		overrides = disableServers(overrides, SlackServers(servers))
+	}
 	sort.Strings(overrides)
 	return overrides, nil
+}
+
+// LocalSlackServers names the MCP servers of the local Codex config at path
+// that reach Slack, for the startup log.
+func LocalSlackServers(path string) ([]string, error) {
+	var config map[string]any
+	if _, err := toml.DecodeFile(path, &config); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("parse local Codex config %q: %w", path, err)
+	}
+	servers, _ := config["mcp_servers"].(map[string]any)
+	return SlackServers(servers), nil
+}
+
+// SlackServers names the MCP servers that reach Slack: those whose name,
+// URL, command, or arguments mention Slack. Matching is deliberately broad,
+// since a missed server would let a closed channel's turn search the whole
+// workspace, while a wrongly matched one only goes unused there.
+func SlackServers(servers map[string]any) []string {
+	var names []string
+	for _, name := range slices.Sorted(maps.Keys(servers)) {
+		server, _ := servers[name].(map[string]any)
+		fields := []string{name}
+		if url, ok := server["url"].(string); ok {
+			fields = append(fields, url)
+		}
+		if command, ok := server["command"].(string); ok {
+			fields = append(fields, command)
+		}
+		fields = append(fields, stringList(server["args"])...)
+		for _, field := range fields {
+			if strings.Contains(strings.ToLower(field), "slack") {
+				names = append(names, name)
+				break
+			}
+		}
+	}
+	return names
+}
+
+// disableServers replaces any enabled setting of the named servers with
+// enabled=false, keeping the rest of their configuration valid.
+func disableServers(overrides, names []string) []string {
+	if len(names) == 0 {
+		return overrides
+	}
+	enabledKeys := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		enabledKeys[encodeDottedKey([]string{"mcp_servers", name, "enabled"})] = struct{}{}
+	}
+	kept := overrides[:0:0]
+	for _, override := range overrides {
+		key, _, _ := strings.Cut(override, "=")
+		if _, ok := enabledKeys[key]; ok {
+			continue
+		}
+		kept = append(kept, override)
+	}
+	for _, name := range names {
+		kept = append(kept, encodeDottedKey([]string{"mcp_servers", name, "enabled"})+"=false")
+	}
+	return kept
 }
 
 // bigQueryReadOnlyOverrides keeps the SQL tool of MCP Toolbox's prebuilt

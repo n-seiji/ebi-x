@@ -111,11 +111,12 @@ func (r *Runner) Run(
 	ctx context.Context,
 	threadID, sandbox, cwd string,
 	writableRoots, deniedPaths []string,
+	withoutSlack bool,
 	prompt string,
 	onThreadStarted func(id string) error,
 	onActivity func(Activity),
 ) (*TurnResult, error) {
-	configOverrides, err := loadConfigOverrides(r.ConfigPath)
+	configOverrides, err := loadConfigOverrides(r.ConfigPath, withoutSlack)
 	if err != nil {
 		return nil, err
 	}

@@ -78,7 +78,7 @@ func main() {
 		playbooks = nil
 	}
 
-	workspaces, err := workspace.New(context.Background(), cfg.WorkspaceDir, cfg.CheckoutsDir, cfg.WritableRoots)
+	workspaces, err := workspace.New(context.Background(), cfg.WorkspaceDir, cfg.CheckoutsDir, cfg.ClosedDir, cfg.WritableRoots)
 	if err != nil {
 		log.Fatalf("prepare workspaces: %v", err)
 	}
@@ -86,10 +86,16 @@ func main() {
 		log.Printf("work turns use per-thread checkouts of %s", repo)
 	}
 
+	codexConfig := filepath.Join(cfg.EBIXHome, ".codex", "config.toml")
+	if servers, err := codex.LocalSlackServers(codexConfig); err != nil {
+		log.Printf("find Slack MCP servers: %v", err)
+	} else {
+		log.Printf("MCP servers turned off for private and Slack Connect channels: %v", servers)
+	}
 	runner := &codex.Runner{
 		Command:               cfg.CodexCommand,
 		Model:                 cfg.CodexModel,
-		ConfigPath:            filepath.Join(cfg.EBIXHome, ".codex", "config.toml"),
+		ConfigPath:            codexConfig,
 		DeniedReadPaths:       append(slices.Clone(cfg.ProtectedPaths), cfg.CredentialPaths...),
 		PassEnv:               cfg.CodexEnv,
 		CodexHome:             cfg.CodexHome,

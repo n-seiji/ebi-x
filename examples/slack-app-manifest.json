@@ -35,6 +35,7 @@
         "chat:write",
         "commands",
         "files:write",
+        "groups:history",
         "groups:read",
         "im:history",
         "reactions:read",
@@ -50,6 +51,7 @@
         "app_home_opened",
         "app_mention",
         "message.channels",
+        "message.groups",
         "message.im"
       ]
     },

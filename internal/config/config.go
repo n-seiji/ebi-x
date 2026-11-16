@@ -69,9 +69,12 @@ type Config struct {
 	EBIXHome                   string
 	WorkspaceDir               string
 	CheckoutsDir               string
-	MemoryDir                  string
-	PlaybooksDir               string
-	StateDir                   string
+	// ClosedDir holds the workspaces and checkouts of private and Slack
+	// Connect channels, apart from every other channel's.
+	ClosedDir    string
+	MemoryDir    string
+	PlaybooksDir string
+	StateDir     string
 	// TurnCredentialsDir holds each work turn's GitHub App credentials. The
 	// sandbox cannot write it, so one turn cannot alter another's.
 	TurnCredentialsDir string
@@ -244,6 +247,7 @@ func Load() (*Config, error) {
 	}
 	workspaceDir := filepath.Join(home, "data", "workspace")
 	checkoutsDir := filepath.Join(home, "data", "checkouts")
+	closedDir := filepath.Join(home, "data", "closed")
 	memoryDir := filepath.Join(home, "data", "memory")
 	playbooksDir, err := canonicalPath(filepath.Join(home, "data", "playbooks"))
 	if err != nil {
@@ -290,7 +294,7 @@ func Load() (*Config, error) {
 	// home. The bot-managed directories are reserved as well: the bot grants
 	// playbooks only to shared-write channels and each thread only its own
 	// workspace and checkouts, which an operator-supplied root would bypass.
-	botDirs := []string{workspaceDir, playbooksDir, checkoutsDir}
+	botDirs := []string{workspaceDir, playbooksDir, checkoutsDir, closedDir}
 	reserved := append(append([]string(nil), protectedPaths...), codexHome)
 	if err := validateIsolation(botDirs, reserved); err != nil {
 		return nil, err
@@ -322,6 +326,7 @@ func Load() (*Config, error) {
 		EBIXHome:                   home,
 		WorkspaceDir:               workspaceDir,
 		CheckoutsDir:               checkoutsDir,
+		ClosedDir:                  closedDir,
 		MemoryDir:                  memoryDir,
 		PlaybooksDir:               playbooksDir,
 		StateDir:                   stateDir,

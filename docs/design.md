@@ -124,7 +124,28 @@ Codex のコマンドは、禁止しなければファイルシステム全体�
 - `EBIX_DENIED_READ_PATHS`
 - 既知の認証情報の置き場（既定）：`~/.ssh` `~/.aws` `~/.azure` `~/.config/gcloud` `~/.config/gh` `~/.docker/config.json` `~/.kube` `~/.gnupg` `~/.netrc` `~/.git-credentials` `~/.config/git/credentials` `~/.npmrc` `~/.pypirc` `~/.config/op` `~/.vault-token` `~/.terraform.d/credentials.tfrc.json` `~/.cargo/credentials.toml` `~/.gem/credentials` `~/.pgpass` `~/.my.cnf` `~/.s3cfg` `~/.boto` `~/.oci` `~/.config/rclone` `~/.claude` `~/.config/github-copilot`。push と署名に要るものと `EBIX_ALLOWED_READ_PATHS` のものは外します（[setup.md](setup.md#4-作業対象のリポジトリ)）。検出は `data/checkouts` に作る使い捨てのリポジトリで、スレッドのクローンと同じ git 設定と、Codex と同じ環境変数で行います
 
-`data/workspace` と `data/checkouts` は、他スレッドのパスを列挙して禁止しません。スレッドが増えても禁止ルールは増えません。他スレッドの成果物も読み取り可能ですが、添付は依頼されたスレッドのファイルに限定します。
+`data/workspace` と `data/checkouts` は、他スレッドのパスを列挙して禁止しません。スレッドが増えても禁止ルールは増えません。他スレッドの成果物も読み取り可能ですが、添付は依頼されたスレッドのファイルに限定します。閉じたチャンネルのスレッドだけは、次の節のとおり置き場所ごと分けます。
+
+### 閉じたチャンネル
+
+プライベートチャンネル（グループ DM を含む）と Slack Connect チャンネルを「閉じたチャンネル」として扱い、次の2つを守ります。
+
+1. 閉じたチャンネルの内容は、ほかのチャンネルの作業から読めない
+2. 閉じたチャンネルの作業は、Slack をそのチャンネルの中しか調べられない
+
+種類は依頼ごとに `conversations.info`（`is_private` `is_mpim` `is_ext_shared` `is_pending_ext_shared`）で確かめ、10分だけ覚えます。確かめられなかったときは閉じたチャンネルとして扱います（開いていると誤るほうが危ないため）。承認チャンネルは運用者のチャンネルなので、プライベートでも開いたチャンネルとして扱います。DM は本人しか読まないので Slack の検索はそのまま使えますが、ファイルは閉じたチャンネルと同じく分けます。
+
+```text
+data/closed/{channel}/workspace/{channel}-{thread ts}/     閉じたチャンネルのスレッドの cwd
+data/closed/{channel}/checkouts/{channel}-{thread ts}/     そのスレッド専用クローン
+```
+
+- 開いたチャンネルの作業では `data/closed` を丸ごと読み書き禁止にします。
+- 閉じたチャンネルの作業では `data/workspace`・`data/checkouts`・Git リポジトリでない共有の writable root・ほかの閉じたチャンネルの `data/closed/{channel}` を禁止し、共有の writable root には書き込めません。禁止ルールはスレッドではなく閉じたチャンネルの数だけ増えます。
+- 閉じたチャンネルの作業では、Slack に届く MCP サーバー（名前・`url`・`command`・`args` に `slack` を含むもの）を `enabled=false` で止めます。代わりに bot がそのチャンネルの直近90日の投稿（最大500件と、新しい20件のスレッドの返信）を `slack-channel/history.md` に保存し、場所を依頼に添えます。10分以内に保存したものは使い回します。
+- チャンネルが閉じる前に始まったスレッド（`data/workspace` に作業ディレクトリがあるもの）は、セッションとクローンが元のパスを指しているので、そのまま開いた置き場所を使います。Slack の MCP は止めますが、履歴ファイルは保存しません。
+- playbook・全体メモリ・個人設定の扱いは変わりません。playbook と全体メモリは承認チャンネルからしか書けないので、閉じたチャンネルの内容は入りません。個人設定は本人の依頼にしか添えません。
+- 残るリスク：`/tmp` など Codex の既定の書き込み先はスレッドで分けていません。また、Slack 以外の MCP（BigQuery、Salesforce など）は閉じたチャンネルでも使えます。
 
 Codex は `--ignore-user-config` と専用の permission profile で起動し、MCP の設定は `EBIX_HOME/.codex/config.toml` から渡します。
 

@@ -10,13 +10,13 @@ Slack App の作成画面で「From a manifest」を選び、`examples/slack-app
 | --- | --- | --- |
 | Socket Mode | 有効 | 公開 URL なしでイベントを受ける |
 | Bot Token Scopes | `app_mentions:read` `chat:write` `reactions:read` `reactions:write` `channels:history` `files:read` `files:write` `im:history` `assistant:write` `commands` | mention・投稿・リアクション、依頼に添付された画像などの取得、成果物の添付、DM とエージェント表示、ショートカット |
-| Event Subscriptions | `app_mention` `message.channels` `message.im` `app_home_opened` | mention、購読スレッドの返信、DM、Home タブ |
+| Event Subscriptions | `app_mention` `message.channels` `message.groups` `message.im` `app_home_opened` | mention、購読スレッドの返信（プライベートチャンネルを含む）、DM、Home タブ |
 | App Home | Home Tab と Messages Tab を有効、「Allow users to send Slash commands and messages from the messages tab」をオン | Home タブと DM |
 | Interactivity & Shortcuts | Interactivity をオン、Message Shortcut「ebi-x に頼む」（Callback ID `ebix_request`） | メッセージから依頼する |
 | Agents & AI Apps | Agent App に切り替え（manifest では `features.agent_view`） | サイドバーと Messages タブでのエージェント表示 |
 
 - `:done:` の監視（[usage.md](usage.md#done-の監視)）で `@channel` を使うときは `channels:read` と `users:read`（プライベートチャンネルでは `groups:read` も）を、`@dev_team` のようなユーザーグループを使うときはさらに `usergroups:read` を追加します。manifest には入っています。
-- プライベートチャンネルで使う場合は `groups:history` も追加します（スレッドを読むため）。`message.groups` は購読しません。mention なしの返信を処理する購読スレッドは、パブリックチャンネルだけが対象です。
+- プライベートチャンネルと Slack Connect（外部の組織と共有）チャンネルでは、`channels:read`・`groups:read` でチャンネルの種類を確かめ、`groups:history`（パブリックなら `channels:history`）でスレッドとチャンネルの最近の投稿を読みます。manifest には `groups:history` と `message.groups` も入っています。分け方は [design.md](design.md#閉じたチャンネル) にあります。
 - Agent App への切り替えは元に戻せません。Slack の有料プランが必要です。
 - scope を変えたらワークスペースへ再インストールします。Bot Token が変わった場合は `.env` も更新します。
 
@@ -93,6 +93,7 @@ ebi-x を使えるかは、`.env` の固定の許可と、承認チャンネル�
 - 承認者は依頼のスレッドで `@ebi-x 許可` か `@ebi-x 拒否` と mention します。操作できるのは `SLACK_APPROVER_USER_IDS` の人だけで、最初の決定が優先されます。拒否した相手は次から確認せずに断ります。
 - 必要な許可が揃うと、待っていた依頼を自動で始めます。同じ相手の依頼が複数待っていれば最後の1件だけです。24時間より古い依頼、本文のない依頼、Workflow からの依頼は自動では始めず、もう一度 mention するよう伝えます。
 - 承認チャンネルでは、依頼のスレッドでの mention と、スレッドの外での `@ebi-x 許可`・`@ebi-x 拒否`・`@ebi-x 残り` は承認の操作として扱います。それ以外の mention は、ebi-x の利用を許可された人からの作業の依頼として受けます。
+- 外部の組織の人も、ほかの人と同じく承認チャンネルで1人ずつ許可します。Slack Connect チャンネルでは本番の情報に触れる依頼もできるため、許可する前に、その組織に見せてよいか確かめます。
 - playbook と全体メモリを書き換えられるのは承認チャンネルの依頼だけです。全チャンネルの依頼がこれらを読むので、承認者の目に入る場所に限っています。
 - 決定は誰がいつ決めたかと一緒に `data/state/approvals.json` に残ります。取り消すときは ebi-x を止めて、このファイルから該当する項目を消します。Codex はこのファイルを読み書きできません。
 
@@ -192,6 +193,10 @@ Toolbox の `execute_sql` はどんな文でも実行できるため、ebi-x は
 Google Cloud のリモート BigQuery MCP（`https://bigquery.googleapis.com/mcp`）では、`disabled_tools = ["execute_sql"]` で更新できるツールを外し、`execute_sql_readonly` を使います。
 
 必要なツールが公開されていないとき、Codex は「接続できない」ではなく「公開されていない」と依頼者に伝えます。
+
+### Slack の MCP
+
+プライベートチャンネルと Slack Connect チャンネルの依頼では、Slack に届く MCP サーバーを止めます（[design.md](design.md#閉じたチャンネル)）。サーバー名・`url`・`command`・`args` のどれかに `slack` を含むものが対象で、起動ログに `MCP servers turned off for private and Slack Connect channels: [...]` と出ます。Slack を検索する MCP がこの一覧にないときは、サーバー名に `slack` を含めます。
 
 ### 環境変数
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -213,7 +214,7 @@ enabled_tools = ["list_dataset_ids", "get_table_info"]
 		t.Fatal(err)
 	}
 
-	got, err := loadConfigOverrides(path)
+	got, err := loadConfigOverrides(path, false)
 	if err != nil {
 		t.Fatalf("loadConfigOverrides() error = %v", err)
 	}
@@ -296,7 +297,7 @@ enabled_tools = ["execute_sql"]
 			if err := os.WriteFile(path, []byte(tt.content), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			got, err := loadConfigOverrides(path)
+			got, err := loadConfigOverrides(path, false)
 			if err != nil {
 				t.Fatalf("loadConfigOverrides() error = %v", err)
 			}
@@ -314,7 +315,7 @@ enabled_tools = ["execute_sql"]
 }
 
 func TestLoadConfigOverridesMissingFile(t *testing.T) {
-	got, err := loadConfigOverrides(filepath.Join(t.TempDir(), "missing.toml"))
+	got, err := loadConfigOverrides(filepath.Join(t.TempDir(), "missing.toml"), false)
 	if err != nil {
 		t.Fatalf("loadConfigOverrides() error = %v", err)
 	}
@@ -329,7 +330,7 @@ func TestLoadConfigOverridesRejectsInvalidTOML(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := loadConfigOverrides(path)
+	_, err := loadConfigOverrides(path, false)
 	if err == nil || !strings.Contains(err.Error(), "parse local Codex config") {
 		t.Fatalf("loadConfigOverrides() error = %v, want parse error", err)
 	}
@@ -350,7 +351,7 @@ local_time = 07:32:00
 		t.Fatal(err)
 	}
 
-	got, err := loadConfigOverrides(path)
+	got, err := loadConfigOverrides(path, false)
 	if err != nil {
 		t.Fatalf("loadConfigOverrides() error = %v", err)
 	}
@@ -397,7 +398,7 @@ enabled = true
 		t.Fatal(err)
 	}
 
-	got, err := loadConfigOverrides(path)
+	got, err := loadConfigOverrides(path, false)
 	if err != nil {
 		t.Fatalf("loadConfigOverrides() error = %v", err)
 	}
@@ -418,7 +419,7 @@ exponent = 1e20
 		t.Fatal(err)
 	}
 
-	got, err := loadConfigOverrides(path)
+	got, err := loadConfigOverrides(path, false)
 	if err != nil {
 		t.Fatalf("loadConfigOverrides() error = %v", err)
 	}
@@ -599,7 +600,7 @@ printf '{"type":"turn.completed"}\n'
 	var callbackIDs []string
 	runner := &Runner{Command: script}
 	result, err := runner.Run(
-		context.Background(), "", "read-only", dir, nil, nil, "hello from stdin",
+		context.Background(), "", "read-only", dir, nil, nil, false, "hello from stdin",
 		func(id string) error {
 			callbackIDs = append(callbackIDs, id)
 			return nil
@@ -637,7 +638,7 @@ while :; do :; done
 	runner := &Runner{Command: script}
 	start := time.Now()
 	_, err := runner.Run(
-		context.Background(), "", "read-only", dir, nil, nil, "prompt",
+		context.Background(), "", "read-only", dir, nil, nil, false, "prompt",
 		func(string) error { return errors.New("persist failed") },
 		nil,
 	)
@@ -663,7 +664,7 @@ exit 1
 	}
 
 	runner := &Runner{Command: script}
-	result, err := runner.Run(context.Background(), "", "read-only", dir, nil, nil, "prompt", nil, nil)
+	result, err := runner.Run(context.Background(), "", "read-only", dir, nil, nil, false, "prompt", nil, nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v, want semantic failure in TurnResult", err)
 	}
@@ -686,7 +687,7 @@ while :; do :; done
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	runner := &Runner{Command: script}
-	_, err := runner.Run(ctx, "", "read-only", dir, nil, nil, "prompt", nil, nil)
+	_, err := runner.Run(ctx, "", "read-only", dir, nil, nil, false, "prompt", nil, nil)
 	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Run() error = %v, want deadline exceeded", err)
 	}
@@ -724,7 +725,7 @@ printf '{"type":"turn.completed"}\n'
 	t.Setenv("EBIX_TEST_HIDDEN", "hidden")
 
 	runner := &Runner{Command: script, DeniedReadPaths: []string{"/protected"}, PassEnv: []string{"EBIX_TEST_VISIBLE"}}
-	if _, err := runner.Run(context.Background(), "", "read-only", dir, nil, []string{"/other-thread"}, "prompt", nil, nil); err != nil {
+	if _, err := runner.Run(context.Background(), "", "read-only", dir, nil, []string{"/other-thread"}, false, "prompt", nil, nil); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	env, err := os.ReadFile(envFile)
@@ -771,7 +772,7 @@ printf '{"type":"turn.completed"}\n'
 	t.Setenv("GH_CONFIG_DIR", "/host/gh")
 	credentials := &fakeTurnCredentials{env: []string{"GH_CONFIG_DIR=/turn/gh", "GIT_CONFIG_PARAMETERS='a=b'"}}
 	runner := &Runner{Command: script, GitHub: credentials}
-	if _, err := runner.Run(context.Background(), "", "read-only", dir, nil, nil, "prompt", nil, nil); err != nil {
+	if _, err := runner.Run(context.Background(), "", "read-only", dir, nil, nil, false, "prompt", nil, nil); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	env, err := os.ReadFile(envFile)
@@ -793,7 +794,7 @@ func TestRunWithoutTurnGitHubCredentialStillRuns(t *testing.T) {
 		t.Fatalf("write fake codex: %v", err)
 	}
 	runner := &Runner{Command: script, GitHub: &fakeTurnCredentials{err: errors.New("mint failed")}}
-	result, err := runner.Run(context.Background(), "", "read-only", dir, nil, nil, "prompt", nil, nil)
+	result, err := runner.Run(context.Background(), "", "read-only", dir, nil, nil, false, "prompt", nil, nil)
 	if err != nil || !result.Completed {
 		t.Fatalf("Run() = %+v, %v; want a completed turn", result, err)
 	}
@@ -805,7 +806,7 @@ func TestRunRejectsOversizedDenyList(t *testing.T) {
 		denied = append(denied, fmt.Sprintf("/data/workspace/C0123456789-%d.000000", i))
 	}
 	runner := &Runner{Command: "/nonexistent/codex"}
-	_, err := runner.Run(context.Background(), "", "read-only", t.TempDir(), nil, denied, "prompt", nil, nil)
+	_, err := runner.Run(context.Background(), "", "read-only", t.TempDir(), nil, denied, false, "prompt", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("Run() error = %v, want oversized argument error", err)
 	}
@@ -942,5 +943,55 @@ func TestShellEnvPolicyOverrides(t *testing.T) {
 		if i < lastIndex("shell_environment_policy.ignore_default_excludes=true") || i < lastIndex("shell_environment_policy.exclude=[]") {
 			t.Errorf("%q comes before a local override; want it last", want)
 		}
+	}
+}
+
+func TestLoadConfigOverridesWithoutSlack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	content := `[mcp_servers.bigquery]
+command = "npx"
+args = ["-y", "@toolbox-sdk/server"]
+enabled_tools = ["list_dataset_ids"]
+
+[mcp_servers.slack]
+url = "https://mcp.slack.com/mcp"
+enabled = true
+
+[mcp_servers.chat]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-slack"]
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadConfigOverrides(path, true)
+	if err != nil {
+		t.Fatalf("loadConfigOverrides() error = %v", err)
+	}
+	want := []string{
+		`mcp_servers.bigquery.args=["-y","@toolbox-sdk/server"]`,
+		`mcp_servers.bigquery.command="npx"`,
+		`mcp_servers.bigquery.enabled_tools=["list_dataset_ids"]`,
+		`mcp_servers.chat.args=["-y","@modelcontextprotocol/server-slack"]`,
+		`mcp_servers.chat.command="npx"`,
+		`mcp_servers.chat.enabled=false`,
+		`mcp_servers.slack.enabled=false`,
+		`mcp_servers.slack.url="https://mcp.slack.com/mcp"`,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("loadConfigOverrides() = %#v, want %#v", got, want)
+	}
+
+	open, err := loadConfigOverrides(path, false)
+	if err != nil {
+		t.Fatalf("loadConfigOverrides() error = %v", err)
+	}
+	if !slices.Contains(open, `mcp_servers.slack.enabled=true`) || slices.Contains(open, `mcp_servers.chat.enabled=false`) {
+		t.Fatalf("loadConfigOverrides() without the limit = %#v, want Slack servers left as configured", open)
+	}
+	names, err := LocalSlackServers(path)
+	if err != nil || !reflect.DeepEqual(names, []string{"chat", "slack"}) {
+		t.Fatalf("LocalSlackServers() = %v, %v, want [chat slack]", names, err)
 	}
 }
