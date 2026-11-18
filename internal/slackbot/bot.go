@@ -341,7 +341,7 @@ func (b *Bot) handleMention(ctx context.Context, event *slackevents.AppMentionEv
 		threadTS = event.TimeStamp
 	}
 
-	message := stripBotMention(event.Text, b.config.BotUserID)
+	message := mentionRequest(event, b.config.BotUserID)
 	if message == "" {
 		return
 	}
@@ -1118,6 +1118,22 @@ func retryable(err error) bool {
 	}
 	var status interface{ HTTPStatusCode() int }
 	return errors.As(err, &status) && (status.HTTPStatusCode() == 429 || status.HTTPStatusCode() >= 500)
+}
+
+// bareThreadMentionRequest stands in for the text of a mention that is only
+// "@ebi-x", posted as a reply under a question. People often write the
+// question first and then call the bot under it, so the thread is the request.
+const bareThreadMentionRequest = "（本文なしの mention です。このスレッドのこれまでの内容を依頼として扱い、答えてください。）"
+
+// mentionRequest is the request a mention makes: its text without the bot's
+// mention, or, for a bare mention by a person in a thread reply, a request to
+// answer that thread. A bare mention outside a thread asks nothing.
+func mentionRequest(event *slackevents.AppMentionEvent, botUserID string) string {
+	text := stripBotMention(event.Text, botUserID)
+	if text == "" && event.BotID == "" && event.ThreadTimeStamp != "" && event.ThreadTimeStamp != event.TimeStamp {
+		return bareThreadMentionRequest
+	}
+	return text
 }
 
 func stripBotMention(text, botUserID string) string {

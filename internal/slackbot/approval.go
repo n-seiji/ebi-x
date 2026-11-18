@@ -242,9 +242,9 @@ func (b *Bot) approvalRequestLinks(ctx context.Context, missing []approvalSubjec
 }
 
 // waitingMention returns the mention to start once it is approved. Workflow
-// mentions, empty mentions and stop commands are not kept.
+// mentions, empty mentions outside a thread and stop commands are not kept.
 func waitingMention(event *slackevents.AppMentionEvent, botUserID string) (state.ApprovalMention, bool) {
-	text := stripBotMention(event.Text, botUserID)
+	text := mentionRequest(event, botUserID)
 	if event.BotID != "" || text == "" || isStopCommand(text) {
 		return state.ApprovalMention{}, false
 	}
