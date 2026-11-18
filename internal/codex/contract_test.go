@@ -484,3 +484,55 @@ func TestSplitPullWatches(t *testing.T) {
 		})
 	}
 }
+
+func TestReminderDueAt(t *testing.T) {
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		when    string
+		want    time.Time
+		wantErr bool
+	}{
+		{when: "1m", want: now.Add(time.Minute)},
+		{when: "30d", want: now.Add(30 * 24 * time.Hour)},
+		{when: "2026-11-19T10:00:00+09:00", want: time.Date(2026, 11, 19, 1, 0, 0, 0, time.UTC)},
+		{when: "2027-06-01T09:00:00+09:00", want: time.Date(2027, 6, 1, 0, 0, 0, 0, time.UTC)},
+		{when: "30s", wantErr: true},
+		{when: "400d", wantErr: true},
+		{when: "2026-11-18T20:00:00+09:00", wantErr: true},
+		{when: "明日", wantErr: true},
+	}
+	for _, test := range tests {
+		got, err := ReminderDueAt(test.when, now)
+		if test.wantErr {
+			if err == nil {
+				t.Errorf("ReminderDueAt(%q) = %v, want error", test.when, got)
+			}
+			continue
+		}
+		if err != nil || !got.Equal(test.want) {
+			t.Errorf("ReminderDueAt(%q) = %v, %v; want %v", test.when, got, err, test.want)
+		}
+	}
+	if got := ReminderRange(); got != "1分後から366日後まで" {
+		t.Errorf("ReminderRange() = %q", got)
+	}
+}
+
+func TestSplitReminder(t *testing.T) {
+	rest, request, invalid := SplitReminder("リマインドします。\n\n## リマインダー\n- いつ: 2026-11-19T10:00:00+09:00\n- 内容: 見積もりを送る\n\n以上")
+	if invalid || request == nil || request.When != "2026-11-19T10:00:00+09:00" || request.Text != "見積もりを送る" || request.Stop {
+		t.Fatalf("SplitReminder() = %#v, %v", request, invalid)
+	}
+	if rest != "リマインドします。\n\n以上" {
+		t.Fatalf("rest = %q", rest)
+	}
+	if _, request, invalid := SplitReminder("取り消します。\n## リマインダー\n- いつ: 停止"); invalid || request == nil || !request.Stop {
+		t.Fatalf("stop = %#v, %v", request, invalid)
+	}
+	if _, request, invalid := SplitReminder("## リマインダー\n- いつ: 1h"); !invalid || request != nil {
+		t.Fatalf("missing text = %#v, %v", request, invalid)
+	}
+	if rest, request, invalid := SplitReminder("本文だけ"); invalid || request != nil || rest != "本文だけ" {
+		t.Fatalf("no section = %q, %#v, %v", rest, request, invalid)
+	}
+}
