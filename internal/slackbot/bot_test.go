@@ -42,6 +42,7 @@ type fakeStore struct {
 	followUps           map[string]state.FollowUp
 	pullWatches         map[string]state.PullWatch
 	schedules           map[string]state.Schedule
+	reminders           map[string]state.Reminder
 	doneWatches         map[string]state.DoneWatch
 	usage               state.Usage
 	deferred            []state.Deferred
@@ -132,6 +133,43 @@ func (s *fakeStore) Schedules() []state.Schedule {
 		schedules = append(schedules, schedule)
 	}
 	return schedules
+}
+
+func (s *fakeStore) AddReminder(reminder state.Reminder) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reminders == nil {
+		s.reminders = make(map[string]state.Reminder)
+	}
+	s.reminders[reminder.ID] = reminder
+	return nil
+}
+
+func (s *fakeStore) DeleteReminders(match func(state.Reminder) bool) ([]state.Reminder, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var removed []state.Reminder
+	for id, reminder := range s.reminders {
+		if match(reminder) {
+			removed = append(removed, reminder)
+			delete(s.reminders, id)
+		}
+	}
+	return removed, nil
+}
+
+func (s *fakeStore) TakeDueReminders(now time.Time) ([]state.Reminder, error) {
+	return s.DeleteReminders(func(reminder state.Reminder) bool { return !reminder.DueAt.After(now) })
+}
+
+func (s *fakeStore) Reminders() []state.Reminder {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var reminders []state.Reminder
+	for _, reminder := range s.reminders {
+		reminders = append(reminders, reminder)
+	}
+	return reminders
 }
 
 func (s *fakeStore) PullWatches() []state.PullWatch {
@@ -1916,10 +1954,16 @@ type looseStore struct {
 	threads map[string]string
 }
 
-func (s *looseStore) Usage() state.Usage                      { return state.Usage{} }
-func (s *looseStore) SetUsage(state.Usage) error              { return nil }
-func (s *looseStore) AddDeferred(state.Deferred) error        { return nil }
-func (s *looseStore) TakeDeferred() ([]state.Deferred, error) { return nil, nil }
+func (s *looseStore) AddReminder(state.Reminder) error { return nil }
+func (s *looseStore) DeleteReminders(func(state.Reminder) bool) ([]state.Reminder, error) {
+	return nil, nil
+}
+func (s *looseStore) TakeDueReminders(time.Time) ([]state.Reminder, error) { return nil, nil }
+func (s *looseStore) Reminders() []state.Reminder                          { return nil }
+func (s *looseStore) Usage() state.Usage                                   { return state.Usage{} }
+func (s *looseStore) SetUsage(state.Usage) error                           { return nil }
+func (s *looseStore) AddDeferred(state.Deferred) error                     { return nil }
+func (s *looseStore) TakeDeferred() ([]state.Deferred, error)              { return nil, nil }
 func (s *looseStore) DeleteDeferred(func(state.Deferred) bool) (int, error) {
 	return 0, nil
 }

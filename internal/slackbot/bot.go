@@ -119,6 +119,10 @@ type Store interface {
 	DeleteSchedule(threadKey string) (state.Schedule, bool, error)
 	TakeDueSchedules(now time.Time, next func(state.Schedule) time.Time) ([]state.Schedule, error)
 	Schedules() []state.Schedule
+	AddReminder(reminder state.Reminder) error
+	DeleteReminders(match func(state.Reminder) bool) ([]state.Reminder, error)
+	TakeDueReminders(now time.Time) ([]state.Reminder, error)
+	Reminders() []state.Reminder
 	PullWatches() []state.PullWatch
 	GetPullWatch(key string) (state.PullWatch, bool)
 	SetPullWatch(watch state.PullWatch) error
@@ -550,6 +554,9 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	if notice := b.applySchedule(trigger, output); notice != "" {
 		resultText += "\n\n" + notice
 	}
+	if notice := b.applyReminder(trigger, output); notice != "" {
+		resultText += "\n\n" + notice
+	}
 	if notice := b.watchPulls(ctx, trigger, output.pullURLs); notice != "" {
 		resultText += "\n\n" + notice
 	}
@@ -609,6 +616,10 @@ type workOutput struct {
 	// scheduleInvalid reports a schedule section the bot could not read.
 	schedule        *codex.ScheduleRequest
 	scheduleInvalid bool
+	// reminder is the reminder the turn asked to set or cancel, and
+	// reminderInvalid reports a reminder section the bot could not read.
+	reminder        *codex.ReminderRequest
+	reminderInvalid bool
 	// waiting reports that the turn stopped to ask the requester questions.
 	waiting   bool
 	questions []string
@@ -763,6 +774,10 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	resultText, output.schedule, output.scheduleInvalid = codex.SplitSchedule(resultText)
 	if output.scheduleInvalid {
 		log.Printf("slackbot: ignore malformed schedule output %q", eventKey)
+	}
+	resultText, output.reminder, output.reminderInvalid = codex.SplitReminder(resultText)
+	if output.reminderInvalid {
+		log.Printf("slackbot: ignore malformed reminder output %q", eventKey)
 	}
 	resultText, output.questions, output.waiting = codex.SplitQuestions(resultText)
 	resultText, output.pullURLs = codex.SplitPullWatches(resultText)
@@ -1378,6 +1393,7 @@ func RunSocketMode(acceptCtx, turnCtx context.Context, botToken, appToken string
 	wg.Go(func() { bot.runFollowUps(loopCtx, turnCtx, wg) })
 	wg.Go(func() { bot.runPullWatches(loopCtx, turnCtx, wg) })
 	wg.Go(func() { bot.runSchedules(loopCtx, turnCtx, wg) })
+	wg.Go(func() { bot.runReminders(loopCtx) })
 	wg.Go(func() { bot.runDeferred(turnCtx, wg) })
 	wg.Go(func() { bot.runUsageWatch(acceptCtx) })
 	wg.Go(func() { bot.runDoneWatches(acceptCtx) })

@@ -84,6 +84,13 @@ func (b *Bot) publishHome(ctx context.Context, userID string) {
 		}
 	}
 
+	var reminders []homeThread
+	for _, reminder := range b.store.Reminders() {
+		if reminder.AuthorID == userID {
+			reminders = append(reminders, homeThread{channel: reminder.Channel, threadTS: reminder.ThreadTS, detail: reminder.Text, at: reminder.DueAt})
+		}
+	}
+
 	var doneWatches []homeThread
 	for _, watch := range b.store.DoneWatches() {
 		if watch.AuthorID == userID {
@@ -104,6 +111,9 @@ func (b *Bot) publishHome(ctx context.Context, userID string) {
 	}))
 	sections = append(sections, b.homeSection(ctx, links, "🔁 定期実行", schedules, func(item homeThread) string {
 		return item.detail
+	}))
+	sections = append(sections, b.homeSection(ctx, links, "🔔 リマインダー", reminders, func(item homeThread) string {
+		return formatFollowUpTime(item.at) + ": " + clipText(item.detail, 100)
 	}))
 	sections = append(sections, b.homeSection(ctx, links, "✅ :done: の監視", doneWatches, func(item homeThread) string {
 		return item.detail

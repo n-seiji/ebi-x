@@ -28,6 +28,30 @@ func FollowUpRange() string {
 // FollowUpDueAt reads a follow-up's "いつ": a delay such as "30m", "2h", or
 // "1d", or an RFC 3339 time. It fails outside FollowUpRange.
 func FollowUpDueAt(when string, now time.Time) (time.Time, error) {
+	return dueAt(when, now, FollowUpMinDelay, FollowUpMaxDelay)
+}
+
+// Reminder limits. The prompt states them and the bot enforces them. A
+// reminder only posts a message, so it may be set much further ahead than a
+// follow-up.
+const (
+	ReminderMinDelay = time.Minute
+	ReminderMaxDelay = 366 * 24 * time.Hour
+)
+
+// ReminderRange describes the accepted reminder times, for the prompt and
+// for the notice that rejects a time.
+func ReminderRange() string {
+	return fmt.Sprintf("%d分後から%d日後まで", int(ReminderMinDelay/time.Minute), int(ReminderMaxDelay/(24*time.Hour)))
+}
+
+// ReminderDueAt reads a reminder's "いつ" like FollowUpDueAt. It fails
+// outside ReminderRange.
+func ReminderDueAt(when string, now time.Time) (time.Time, error) {
+	return dueAt(when, now, ReminderMinDelay, ReminderMaxDelay)
+}
+
+func dueAt(when string, now time.Time, minDelay, maxDelay time.Duration) (time.Time, error) {
 	when = strings.TrimSpace(when)
 	var dueAt time.Time
 	if days, ok := strings.CutSuffix(when, "d"); ok {
@@ -43,7 +67,7 @@ func FollowUpDueAt(when string, now time.Time) (time.Time, error) {
 	} else {
 		return time.Time{}, errors.New("not a delay or RFC 3339 time")
 	}
-	if delay := dueAt.Sub(now); delay < FollowUpMinDelay || delay > FollowUpMaxDelay {
+	if delay := dueAt.Sub(now); delay < minDelay || delay > maxDelay {
 		return time.Time{}, fmt.Errorf("delay %v is out of range", delay)
 	}
 	return dueAt, nil
@@ -60,8 +84,12 @@ const (
 	followUpHeading             = "## フォローアップ"
 	followUpWhenKey             = "いつ"
 	followUpTaskKey             = "やること"
-	questionsHeading            = "## 回答待ち"
-	pullWatchHeading            = "## PR の見守り"
+	reminderHeading             = "## リマインダー"
+	reminderTextKey             = "内容"
+	// ReminderStopWord in "いつ" cancels the thread's reminders.
+	ReminderStopWord = "停止"
+	questionsHeading = "## 回答待ち"
+	pullWatchHeading = "## PR の見守り"
 	// UserSettingsHeading replaces the requester's own settings.
 	UserSettingsHeading = "## 個人設定"
 	// userSettingsClear is the only bullet of a section that removes every
@@ -304,6 +332,34 @@ func SplitFollowUp(text string) (rest string, request *FollowUpRequest, invalid 
 		return rest, nil, true
 	}
 	return rest, &FollowUpRequest{When: fields[followUpWhenKey], Task: fields[followUpTaskKey]}, false
+}
+
+// ReminderRequest is the reminder a turn asks for. Stop cancels the
+// thread's pending reminders; otherwise When is as the model wrote it.
+type ReminderRequest struct {
+	When string
+	Text string
+	Stop bool
+}
+
+// SplitReminder removes the reminder section: its heading followed by
+// "- いつ: ..." and "- 内容: ...", or "- いつ: 停止" alone. It returns nil
+// when there is no section; invalid reports one the bot cannot read.
+func SplitReminder(text string) (rest string, request *ReminderRequest, invalid bool) {
+	rest, fields, present, invalid := splitFieldSection(text, reminderHeading, followUpWhenKey, reminderTextKey)
+	if !present {
+		return text, nil, false
+	}
+	if invalid {
+		return rest, nil, true
+	}
+	if fields[followUpWhenKey] == ReminderStopWord {
+		return rest, &ReminderRequest{Stop: true}, false
+	}
+	if fields[followUpWhenKey] == "" || fields[reminderTextKey] == "" {
+		return rest, nil, true
+	}
+	return rest, &ReminderRequest{When: fields[followUpWhenKey], Text: fields[reminderTextKey]}, false
 }
 
 // splitFieldSection removes the section under heading whose lines are

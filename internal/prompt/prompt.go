@@ -132,12 +132,18 @@ func BuildTurnPrompt(memories memory.Context, playbooks []playbook.Playbook, act
 - 設定できるのはスレッドごとに1件で、指定し直すと置き換わります。依頼者が止めるよう頼んだ場合は「- いつ: 停止」の1行だけを書いてください。
 - 1回だけの後の作業には「## フォローアップ」を使ってください。設定の結果はbotが本文の後に伝えます。
 
+依頼者が指定の時刻に知らせてほしい（リマインドしてほしい）と頼んだ場合は、最終応答に「## リマインダー」見出しを1回だけ置き、その下に次の2行を書いてください。botが指定の時刻に、このスレッドで依頼者を mention して内容を1回だけ投稿します。作業は行いません。
+- いつ: 2026-10-10T09:00:00+09:00 のような日時、または 30m、2h、1d のような待ち時間（%s）。「明日10時」のような指定は、`+"`date`"+` で現在時刻を確認してから日時に直してください。タイムゾーンの指定がなければbotのタイムゾーンです。
+- 内容: 依頼者に知らせる文を、それだけで分かる1文で
+- 予定できるのは1回の回答につき1件です。依頼者が取り消しを頼んだ場合は「- いつ: 停止」の1行だけを書くと、このスレッドのリマインダーがすべて取り消されます。
+- 時刻になったら作業してほしい場合は「## フォローアップ」、繰り返しには「## 定期実行」を使ってください。設定の結果はbotが本文の後に伝えます。
+
 依頼者の回答がないと作業を進められない場合は、最終応答に「## 回答待ち」見出しを1回だけ置き、その下に確認したいことを「- 」で始まる箇条書きで書いてください。botが依頼者に通知し、回答待ちであることをスレッドに表示します。
 - 質問はbotが本文の後に並べて表示します。本文には質問を書かず、ここまでに行ったことと、回答によって何が変わるかを書いてください。
 
 メモリファイルを直接編集しないでください。
 `, slackFormatRules, attachment.MaxSize>>20, attachment.MaxFiles,
-		codex.FollowUpRange(), codex.MaxFollowUpChain)
+		codex.FollowUpRange(), codex.MaxFollowUpChain, codex.ReminderRange())
 	if pullWatch {
 		builder.WriteString(pullWatchRules)
 	}
@@ -210,7 +216,7 @@ func BuildPullWatchPrompt(event string, checkouts []workspace.Checkout, pendingR
 // this request's answer replaces or cancels.
 func BuildResumePrompt(authorID, message string, userSettings []string, checkouts []workspace.Checkout, pendingRepos []string, pendingFollowUp string) string {
 	var builder strings.Builder
-	builder.WriteString("同じSlackスレッドで新しい依頼が届きました。このセッションの最初の指示（作業の進め方・playbook・書式・添付ファイル・フォローアップ・定期実行・メモリ追記の規約）に従って、調査・作業・回答してください。\n\n")
+	builder.WriteString("同じSlackスレッドで新しい依頼が届きました。このセッションの最初の指示（作業の進め方・playbook・書式・添付ファイル・フォローアップ・定期実行・リマインダー・メモリ追記の規約）に従って、調査・作業・回答してください。\n\n")
 	writePendingFollowUp(&builder, pendingFollowUp)
 	writeRepositories(&builder, checkouts, pendingRepos)
 	writeUserSettings(&builder, userSettings)
