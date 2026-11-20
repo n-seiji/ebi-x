@@ -1,4 +1,3 @@
-// Package config loads ebi-x's runtime configuration.
 package config
 
 import (
@@ -28,41 +27,25 @@ const (
 
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// botSecretEnvNames are credentials only the bot itself uses.
 var botSecretEnvNames = []string{"SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "EBIX_GITHUB_TOKEN", "EBIX_GITHUB_APP_PRIVATE_KEY"}
 
-// Config contains ebi-x's runtime configuration and resolved data paths.
 type Config struct {
-	SlackBotToken     string
-	SlackAppToken     string
-	AllowedUserIDs    []string
-	AllowedChannelIDs []string
-	// ApprovalChannelID is the channel where users, channels, and workflows
-	// outside the allowlists are approved. Empty disables approvals.
-	ApprovalChannelID string
-	// ApproverUserIDs are the only users who may decide approvals.
-	ApproverUserIDs []string
-	AllowWorkflows  bool
-	// AllowedWorkflowIDs are the Slack workflows that may mention ebi-x when
-	// AllowWorkflows is set.
-	AllowedWorkflowIDs []string
-	AdminUserID        string
-	CodexCommand       string
-	CodexModel         string
-	// GitHubToken lets the bot read pull requests it watches; watching is
-	// off without it. GitHubAPIURL is the API to use, github.com's when
-	// empty.
-	GitHubToken  string
-	GitHubAPIURL string
-	// GitHubApp, when set, is the GitHub App the bot mints each work turn's
-	// short-lived GitHub token with.
-	GitHubApp    *GitHubApp
-	CodexTimeout time.Duration
-	// MaxParallelWork is how many work turns for different Slack threads may
-	// run at once.
-	MaxParallelWork int
-	// CheckoutIdleTTL is how long a thread's git checkouts are kept after its
-	// last work turn.
+	SlackBotToken              string
+	SlackAppToken              string
+	AllowedUserIDs             []string
+	AllowedChannelIDs          []string
+	ApprovalChannelID          string
+	ApproverUserIDs            []string
+	AllowWorkflows             bool
+	AllowedWorkflowIDs         []string
+	AdminUserID                string
+	CodexCommand               string
+	CodexModel                 string
+	GitHubToken                string
+	GitHubAPIURL               string
+	GitHubApp                  *GitHubApp
+	CodexTimeout               time.Duration
+	MaxParallelWork            int
 	CheckoutIdleTTL            time.Duration
 	ThreadSubscriptionReaction string
 	ThreadSubscriptionTTL      time.Duration
@@ -73,35 +56,18 @@ type Config struct {
 	MemoryDir                  string
 	PlaybooksDir               string
 	StateDir                   string
-	// TurnCredentialsDir holds each work turn's GitHub App credentials. The
-	// sandbox cannot write it, so one turn cannot alter another's.
+	// The sandbox cannot write it, so one turn cannot alter another's.
 	TurnCredentialsDir string
 	ActionRulesFile    string
 	ChannelRulesFile   string
-	// WritableRoots are absolute, symlink-resolved directories the work turn
-	// may write to in addition to the workspace.
-	WritableRoots []string
-	// ProtectedPaths are files and directories that model-generated commands
-	// must neither read nor write: memory, bot state, secrets, and Codex
-	// credentials and session history.
-	ProtectedPaths []string
-	// CredentialPaths are well-known credential stores (~/.ssh, ~/.aws, ...)
-	// hidden from model-generated commands, minus those that pushing to a
-	// writable root's origin needs or EBIX_ALLOWED_READ_PATHS lists.
-	CredentialPaths []string
-	// CodexEnv are extra environment variable names Codex inherits beyond
-	// its built-in allowlist: EBIX_CODEX_ENV, plus SSH_AUTH_SOCK when a push
-	// or signature needs ~/.ssh.
-	CodexEnv []string
-	// CodexHome is the canonical Codex home. Its credentials, state, and
-	// session history are hidden from model-generated commands.
-	CodexHome string
+	WritableRoots      []string
+	ProtectedPaths     []string
+	CredentialPaths    []string
+	CodexEnv           []string
+	CodexHome          string
 }
 
-// Load reads configuration from the environment and a local .env file.
-//
-// Values already present in the process environment take precedence over
-// values in .env.
+// Values already in the process environment win over .env.
 func Load() (*Config, error) {
 	if err := loadDotEnv(".env"); err != nil {
 		return nil, fmt.Errorf("load .env: %w", err)
@@ -291,10 +257,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Nothing the agent can write may reach a protected path or the Codex
-	// home. The bot-managed directories are reserved as well: the bot grants
-	// playbooks only to shared-write channels and each thread only its own
-	// workspace and checkouts, which an operator-supplied root would bypass.
+	// Nothing the agent can write may reach a protected path or the Codex home.
+	// The bot-managed directories are reserved too: the bot grants playbooks
+	// only to the approval channel and each thread only its own workspace and
+	// checkouts, which an operator-supplied root would bypass.
 	botDirs := []string{workspaceDir, playbooksDir, checkoutsDir, closedDir, channelRulesDir}
 	reserved := append(append([]string(nil), protectedPaths...), codexHome)
 	if err := validateIsolation(botDirs, reserved); err != nil {
@@ -342,8 +308,6 @@ func Load() (*Config, error) {
 	}, nil
 }
 
-// resolveCodexHome returns the canonical Codex home: CODEX_HOME, or
-// ~/.codex when it is unset.
 func resolveCodexHome() (string, error) {
 	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
 	if codexHome == "" {
@@ -360,8 +324,8 @@ func resolveCodexHome() (string, error) {
 	return codexHome, nil
 }
 
-// parseCodexEnv parses EBIX_CODEX_ENV. The bot's own credentials may never
-// reach Codex, so naming one is a startup error.
+// The bot's own credentials may never reach Codex, so naming one is a startup
+// error.
 func parseCodexEnv(value string) ([]string, error) {
 	var names []string
 	for _, name := range splitList(value) {
@@ -385,10 +349,8 @@ func parseCodexEnv(value string) ([]string, error) {
 	return names, nil
 }
 
-// resolveProtectedPaths returns the paths ebi-x always hides from the agent:
-// memory and bot state, the .env file holding the Slack tokens, the local
-// Codex config, and the operator's extra denied paths. The Codex home is
-// handled by the runner, which lists it on every turn.
+// The Codex home is not listed here: the runner lists its entries on every
+// turn.
 func resolveProtectedPaths(home, memoryDir, stateDir, extraDenied string) ([]string, error) {
 	candidates := []string{
 		memoryDir,
@@ -420,10 +382,8 @@ func resolveProtectedPaths(home, memoryDir, stateDir, extraDenied string) ([]str
 	return paths, nil
 }
 
-// validateIsolation keeps the agent's workspace and every writable root
-// disjoint from protected paths. Codex receives only the current scoped
-// memory through its prompt, and a writable .codex/config.toml, for example,
-// would let the agent register commands that Codex runs outside the sandbox.
+// A writable .codex/config.toml, for example, would let the agent register
+// commands that Codex runs outside the sandbox.
 func validateIsolation(writableRoots, protectedPaths []string) error {
 	for _, root := range writableRoots {
 		root, err := canonicalPath(root)
@@ -439,8 +399,6 @@ func validateIsolation(writableRoots, protectedPaths []string) error {
 	return nil
 }
 
-// positiveIntEnv reads an integer of at least 1 from the environment
-// variable name, returning fallback when it is unset or blank.
 func positiveIntEnv(name string, fallback int) (int, error) {
 	value := strings.TrimSpace(os.Getenv(name))
 	if value == "" {
@@ -456,7 +414,6 @@ func positiveIntEnv(name string, fallback int) (int, error) {
 	return n, nil
 }
 
-// validWorkflowID reports whether id looks like a Slack workflow ID.
 func validWorkflowID(id string) bool {
 	if len(id) <= 2 || !strings.HasPrefix(id, "Wf") {
 		return false
@@ -469,8 +426,6 @@ func validWorkflowID(id string) bool {
 	return true
 }
 
-// canonicalPath resolves symlinks in the existing prefix while still
-// supporting paths whose final components have not been created yet.
 func canonicalPath(path string) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
@@ -510,12 +465,7 @@ func pathContains(parent, child string) bool {
 	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
-// resolveWritableRoots parses a comma-separated list of directories into
-// absolute, symlink-resolved paths with duplicates removed.
-//
-// Every entry must already exist and be a directory. A writable root widens
-// the agent's sandbox, so a typo is rejected at startup rather than silently
-// granting nothing.
+// A typo is rejected at startup rather than silently granting nothing.
 func resolveWritableRoots(value string) ([]string, error) {
 	var roots []string
 	seen := make(map[string]struct{})
@@ -548,8 +498,6 @@ func resolveWritableRoots(value string) ([]string, error) {
 	return roots, nil
 }
 
-// expandHome replaces a leading ~ or ~/ with the current user's home
-// directory. The ~user form is not supported.
 func expandHome(path string) (string, error) {
 	if path != "~" && !strings.HasPrefix(path, "~"+string(filepath.Separator)) {
 		if strings.HasPrefix(path, "~") {

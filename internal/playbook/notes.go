@@ -11,20 +11,11 @@ import (
 	"unicode/utf8"
 )
 
-// Notes keep a playbook current between edits, like memory per use: a work
-// turn that learns something the playbook does not say yet, or says
-// differently now, adds a dated line, and later sessions see the lines
-// written since the playbook file last changed. Editing the playbook to fold
-// the notes in retires them. The bot writes the notes; the agent never does.
 const (
-	// MaxNoteBytes caps one note.
-	MaxNoteBytes = 1 << 10
-	// maxPromptNoteBytes caps how much of one playbook's notes is shown,
-	// keeping the newest.
+	MaxNoteBytes       = 1 << 10
 	maxPromptNoteBytes = 2 << 10
 )
 
-// Find returns the playbook with name.
 func Find(playbooks []Playbook, name string) (Playbook, bool) {
 	name = strings.TrimSpace(name)
 	for _, item := range playbooks {
@@ -35,14 +26,12 @@ func Find(playbooks []Playbook, name string) (Playbook, bool) {
 	return Playbook{}, false
 }
 
-// notesPath names a playbook's notes file after its playbook file, never
-// after anything the model wrote.
+// Named after the playbook file, never after anything the model wrote.
 func notesPath(dir string, item Playbook) string {
 	return filepath.Join(dir, strings.TrimSuffix(filepath.Base(item.Path), ".md")+".md")
 }
 
-// AppendNote adds one dated note to item's notes in dir and returns the note
-// as written. Callers serialize concurrent writes.
+// Callers serialize concurrent writes.
 func AppendNote(dir string, item Playbook, note string, now time.Time) (written string, err error) {
 	note = strings.Join(strings.Fields(note), " ")
 	if note == "" {
@@ -69,10 +58,6 @@ func AppendNote(dir string, item Playbook, note string, now time.Time) (written 
 	return note, nil
 }
 
-// AttachNotes fills in each playbook's Notes from dir: the dated lines
-// written after the playbook file last changed, shown with their date, plus
-// any line an operator wrote without a date. A missing notes file means no
-// notes. Notes that cannot be read are reported and left empty.
 func AttachNotes(dir string, playbooks []Playbook) error {
 	var errs []error
 	for i := range playbooks {
@@ -119,7 +104,6 @@ func readNotes(path string, since time.Time) (string, error) {
 	if err := scanner.Err(); err != nil {
 		return "", err
 	}
-	// Keep the newest lines that fit.
 	start, size := len(lines), 0
 	for start > 0 && size+len(lines[start-1])+1 <= maxPromptNoteBytes {
 		start--

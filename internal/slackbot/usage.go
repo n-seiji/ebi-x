@@ -13,68 +13,48 @@ import (
 )
 
 const (
-	// usageCheckInterval is how often the Codex usage is checked and
-	// recorded. It also sees usage from outside ebi-x on the same account.
 	usageCheckInterval = 30 * time.Minute
-	// usageChartHours is how many hours the hourly report's bar chart shows,
-	// and usageHistoryKeep how long checks are kept for it.
-	usageChartHours = 12
-	// usagePaceMinSpan is the shortest span of checks the run-out estimate
-	// is made from.
-	usagePaceMinSpan = 3 * time.Hour
-	usageHistoryKeep = usageChartHours * time.Hour
-	usageReadTimeout = 30 * time.Second
-	usageDayLayout   = "2006-01-02"
+	usageChartHours    = 12
+	usagePaceMinSpan   = 3 * time.Hour
+	usageHistoryKeep   = usageChartHours * time.Hour
+	usageReadTimeout   = 30 * time.Second
+	usageDayLayout     = "2006-01-02"
 
-	usageLowMessage       = "⚠️ Codex の利用枠（%s）の残りが %d%% を下回りました。%s"
-	usageExhaustedMessage = "🚫 Codex の利用枠（%s）を使い切りました。%sまで、ebi-x は作業できません。"
-	usageResetSuffix      = "%sにリセットされます。"
-	usageSummaryPrefix    = "今の残り: "
-	usageUnknownReset     = "リセットされる"
-	usageReplyPrefix      = "Codex の利用枠の残り: "
-	usageUnavailableReply = "⚠️ Codex の利用枠を読み取れませんでした。"
-	usageDailyHeader      = "📊 %s の Codex の利用枠（%d回確認）"
-	usageDailyLine        = "- %s: %d%% → %d%%（最低 %d%%）"
-	usageHourlyHeader     = "📈 Codex の利用枠（%s 時点）"
-	usageHourlyLine       = "- %s: 残り %.1f%%"
-	usageHourlyChange     = "前回から %+.1fpt"
-	usageHourlyWasReset   = "前回からリセット済み"
-	usageHourlyEmptyAt    = "このペースだと%sに使い切り"
-	usageHourlyResetAt    = "%sにリセット"
-	usageChartTimeLayout  = "15:04"
-	usageChartMissing     = "    -"
-	// usageChartBarWidth is the bar length of a full window; one block is
-	// 10%.
-	usageChartBarWidth = 10
-	// usageLimitFailureMessage replaces workFailureMessage when the turn
-	// stopped on the usage limit, so the requester knows why and when to
-	// ask again.
+	usageLowMessage          = "⚠️ Codex の利用枠（%s）の残りが %d%% を下回りました。%s"
+	usageExhaustedMessage    = "🚫 Codex の利用枠（%s）を使い切りました。%sまで、ebi-x は作業できません。"
+	usageResetSuffix         = "%sにリセットされます。"
+	usageSummaryPrefix       = "今の残り: "
+	usageUnknownReset        = "リセットされる"
+	usageReplyPrefix         = "Codex の利用枠の残り: "
+	usageUnavailableReply    = "⚠️ Codex の利用枠を読み取れませんでした。"
+	usageDailyHeader         = "📊 %s の Codex の利用枠（%d回確認）"
+	usageDailyLine           = "- %s: %d%% → %d%%（最低 %d%%）"
+	usageHourlyHeader        = "📈 Codex の利用枠（%s 時点）"
+	usageHourlyLine          = "- %s: 残り %.1f%%"
+	usageHourlyChange        = "前回から %+.1fpt"
+	usageHourlyWasReset      = "前回からリセット済み"
+	usageHourlyEmptyAt       = "このペースだと%sに使い切り"
+	usageHourlyResetAt       = "%sにリセット"
+	usageChartTimeLayout     = "15:04"
+	usageChartMissing        = "    -"
+	usageChartBarWidth       = 10
 	usageLimitFailureMessage = "⚠️ Codex の利用上限に達したため、作業を完了できませんでした。%s%s、新しい mention で依頼し直してください。途中までの変更が作業領域に残っている場合があります。"
 	usageLimitRetryAt        = "%s以降に"
 	usageLimitRetryLater     = "利用枠がリセットされてから"
-	// usageLimitAdminAlert tells the approval channel when the reset time
-	// could not be read, so the limit is not announced by recordUsage.
+	// Used when the reset time could not be read, so recordUsage cannot
+	// announce the limit.
 	usageLimitAdminAlert = "🚫 Codex の利用上限に達したため、ebi-x は作業できません。利用枠がリセットされるまでお待ちください。"
-	// authFailureMessage replaces workFailureMessage when Codex is not
-	// signed in or its sign-in expired.
-	authFailureMessage = "⚠️ ebi-x の Codex のログインが切れているため、作業できませんでした。%s復旧したら、新しい mention で依頼し直してください。"
-	authAdminAlert     = "🔑 ebi-x の Codex のログインが切れているため、作業できません。ebi-x を動かしている環境で `codex login` を実行して、ログインし直してください。"
-	adminNotifiedText  = "管理者に知らせたので、お待ちください。"
-	adminContactText   = "管理者に連絡してください。"
-	// adminAlertInterval is the shortest gap between two alerts of the same
-	// kind, so every failing request does not repeat it.
-	adminAlertInterval = time.Hour
+	authFailureMessage   = "⚠️ ebi-x の Codex のログインが切れているため、作業できませんでした。%s復旧したら、新しい mention で依頼し直してください。"
+	authAdminAlert       = "🔑 ebi-x の Codex のログインが切れているため、作業できません。ebi-x を動かしている環境で `codex login` を実行して、ログインし直してください。"
+	adminNotifiedText    = "管理者に知らせたので、お待ちください。"
+	adminContactText     = "管理者に連絡してください。"
+	adminAlertInterval   = time.Hour
 )
 
-// usageThresholds are the remaining percentages announced once per window
-// period, highest first. 0 means the window is used up.
 var usageThresholds = []int{10, 0}
 
-// usageQuestionWords mark a mention in the approval channel that asks for
-// the current usage.
 var usageQuestionWords = []string{"usage", "残り", "利用枠", "使用量"}
 
-// UsageReader reads the Codex account's current usage.
 type UsageReader interface {
 	ReadRateLimits(ctx context.Context) (*codex.RateLimits, error)
 }
@@ -83,12 +63,6 @@ func (b *Bot) usageWatchEnabled() bool {
 	return b.config.Usage != nil && b.config.ApprovalChannelID != ""
 }
 
-// runUsageWatch checks the Codex usage until ctx is done. Each check is
-// recorded for the day's summary, which the first check of the next day
-// posts in the approval channel, and a window that runs low is announced
-// there. The first check of each hour also posts the remaining usage there
-// with a chart, unless nothing changed since the last report. Nothing is
-// posted on Saturdays and Sundays.
 func (b *Bot) runUsageWatch(ctx context.Context) {
 	if !b.usageWatchEnabled() {
 		return
@@ -118,7 +92,6 @@ func (b *Bot) readUsage(ctx context.Context) (*codex.RateLimits, error) {
 	return b.config.Usage.ReadRateLimits(readCtx)
 }
 
-// isUsageQuestion reports whether a mention's text asks for the usage.
 func isUsageQuestion(text string) bool {
 	lower := strings.ToLower(text)
 	for _, word := range usageQuestionWords {
@@ -129,7 +102,6 @@ func isUsageQuestion(text string) bool {
 	return false
 }
 
-// usageReply answers a question about the current usage.
 func (b *Bot) usageReply(ctx context.Context) string {
 	if b.config.Usage == nil {
 		return usageUnavailableReply
@@ -158,9 +130,6 @@ func (b *Bot) usageReply(ctx context.Context) string {
 	return usageReplyPrefix + strings.Join(parts, "・")
 }
 
-// recordUsage adds one check to the day's record, posting the previous
-// day's summary first when the day changed, and announces the windows that
-// fell to a level not yet announced in their current period.
 func (b *Bot) recordUsage(ctx context.Context, limits *codex.RateLimits) {
 	b.usageMu.Lock()
 	defer b.usageMu.Unlock()
@@ -215,9 +184,6 @@ func (b *Bot) recordUsage(ctx context.Context, limits *codex.RateLimits) {
 	}
 }
 
-// reportUsage posts the latest check in the approval channel with a bar
-// chart of the recent hours, once an hour. An hour with no change since the
-// last report is skipped.
 func (b *Bot) reportUsage(ctx context.Context) {
 	b.usageMu.Lock()
 	defer b.usageMu.Unlock()
@@ -256,10 +222,6 @@ func (b *Bot) reportUsage(ctx context.Context) {
 	}
 }
 
-// usageChart draws the remaining percent of each window in the latest check
-// at the end of each of the last usageChartHours hours as a text bar chart
-// in a code block. An hour without a check, when ebi-x was not running,
-// shows "-".
 func usageChart(history []state.UsageSample, now time.Time) string {
 	current := localHour(now)
 	latest := history[len(history)-1]
@@ -298,9 +260,6 @@ func usageChart(history []state.UsageSample, now time.Time) string {
 	return strings.Join(lines, "\n") + "```"
 }
 
-// usageHourlyReport describes the latest check in history, with each
-// window's change since the previous report and, while it falls, when it
-// would run out at its pace over the recent checks.
 func usageHourlyReport(previous *state.UsageSample, history []state.UsageSample) string {
 	latest := history[len(history)-1]
 	lines := []string{fmt.Sprintf(usageHourlyHeader, latest.At.In(time.Local).Format("1/2 15:04"))}
@@ -335,9 +294,8 @@ func usageHourlyReport(previous *state.UsageSample, history []state.UsageSample)
 	return strings.Join(lines, "\n")
 }
 
-// usageEmptyAt estimates when window key runs out at its average pace since
-// the oldest kept check of its current period. Codex reports whole percents,
-// so a span shorter than usagePaceMinSpan is too coarse to estimate from.
+// Codex reports whole percents, so a span shorter than usagePaceMinSpan is too
+// coarse to estimate from.
 func usageEmptyAt(history []state.UsageSample, key string) (time.Time, bool) {
 	latest := history[len(history)-1]
 	remaining := latest.Remaining[key]
@@ -356,9 +314,8 @@ func usageEmptyAt(history []state.UsageSample, key string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// usageSampleLabel names window key of sample by its length, falling back
-// to Codex's usual 5-hour and weekly windows for checks that did not keep
-// it.
+// Falls back to Codex's usual 5-hour and weekly windows for checks that did not
+// keep the length.
 func usageSampleLabel(sample state.UsageSample, key string) string {
 	return usageWindowLabel(key, codex.RateLimitWindow{WindowMinutes: sample.Minutes[key]})
 }
@@ -377,8 +334,6 @@ func usageSample(at time.Time, windows map[string]codex.RateLimitWindow) state.U
 	return sample
 }
 
-// appendUsageSample adds sample and drops checks older than
-// usageHistoryKeep.
 func appendUsageSample(history []state.UsageSample, sample state.UsageSample) []state.UsageSample {
 	history = append(history, sample)
 	cutoff := sample.At.Add(-usageHistoryKeep)
@@ -389,8 +344,6 @@ func appendUsageSample(history []state.UsageSample, sample state.UsageSample) []
 	return history[first:]
 }
 
-// usageSampleChanged reports whether any window's remaining percent, as
-// reported to a tenth, or its reset time differs.
 func usageSampleChanged(a, b state.UsageSample) bool {
 	if len(a.Remaining) != len(b.Remaining) {
 		return true
@@ -408,15 +361,13 @@ func sameLocalHour(a, b time.Time) bool {
 	return localHour(a).Equal(localHour(b))
 }
 
-// localHour returns the start of t's hour in local time. time.Truncate
-// counts from UTC, which splits hours wrongly in zones offset by 30 minutes.
+// Not time.Truncate: it counts from UTC, which splits hours wrongly in zones
+// offset by 30 minutes.
 func localHour(t time.Time) time.Time {
 	t = t.In(time.Local)
 	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, time.Local)
 }
 
-// usageAlerts returns the levels announced after this check and the
-// announcement lines for windows that fell to a new level.
 func usageAlerts(announced map[string]int, windows map[string]codex.RateLimitWindow) (map[string]int, []string) {
 	next := make(map[string]int, len(windows))
 	var lines []string
@@ -449,8 +400,6 @@ func usageAlerts(announced map[string]int, windows map[string]codex.RateLimitWin
 	return next, lines
 }
 
-// usageDailySummary describes a recorded day, or returns "" when nothing was
-// recorded.
 func usageDailySummary(usage state.Usage) string {
 	day, err := time.ParseInLocation(usageDayLayout, usage.Day, time.Local)
 	if err != nil || len(usage.Windows) == 0 {
@@ -470,9 +419,6 @@ func usageDailySummary(usage state.Usage) string {
 	return header + "\n" + strings.Join(lines, "\n")
 }
 
-// usageLimitFailure returns the failure message for a turn that hit the
-// usage limit, naming when the exhausted window resets when Codex says so.
-// The approval channel is told about the exhausted window.
 func (b *Bot) usageLimitFailure(ctx context.Context) string {
 	retry := usageLimitRetryLater
 	var limits *codex.RateLimits
@@ -506,8 +452,6 @@ func (b *Bot) usageLimitFailure(ctx context.Context) string {
 	return fmt.Sprintf(usageLimitFailureMessage, notice, retry)
 }
 
-// authFailure returns the failure message for a turn that failed because
-// Codex is not signed in, telling the approval channel.
 func (b *Bot) authFailure(ctx context.Context) string {
 	if b.config.ApprovalChannelID == "" {
 		return fmt.Sprintf(authFailureMessage, adminContactText)
@@ -516,8 +460,6 @@ func (b *Bot) authFailure(ctx context.Context) string {
 	return fmt.Sprintf(authFailureMessage, adminNotifiedText)
 }
 
-// alertAdmin posts text in the approval channel unless an alert of the same
-// kind was posted within adminAlertInterval.
 func (b *Bot) alertAdmin(ctx context.Context, kind, text string) {
 	b.usageMu.Lock()
 	defer b.usageMu.Unlock()
@@ -535,11 +477,9 @@ func (b *Bot) alertAdmin(ctx context.Context, kind, text string) {
 	b.adminAlerts[kind] = now
 }
 
-// usageWindowKeys are the window slots, shorter first.
 var usageWindowKeys = []string{"primary", "secondary"}
 
-// usageWindows keys the reported windows by their slot, which stays the same
-// across resets.
+// Keyed by slot, which stays the same across resets.
 func usageWindows(limits *codex.RateLimits) map[string]codex.RateLimitWindow {
 	windows := make(map[string]codex.RateLimitWindow, 2)
 	if limits.Primary != nil {
@@ -551,7 +491,6 @@ func usageWindows(limits *codex.RateLimits) map[string]codex.RateLimitWindow {
 	return windows
 }
 
-// usageLevel returns the lowest threshold window has fallen to, if any.
 func usageLevel(window codex.RateLimitWindow) (int, bool) {
 	remaining := 100 - window.UsedPercent
 	level, crossed := 0, false
@@ -598,7 +537,6 @@ func formatUsageReset(window codex.RateLimitWindow, unknown string) string {
 	return unknown
 }
 
-// usageSummary lists every window's remaining percentage.
 func usageSummary(limits *codex.RateLimits) string {
 	var parts []string
 	windows := usageWindows(limits)

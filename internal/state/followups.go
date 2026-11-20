@@ -9,24 +9,17 @@ import (
 
 const followUpsFilename = "followups.json"
 
-// FollowUp is work a turn scheduled for itself: at DueAt the bot resumes the
-// thread's session with Task and posts the result, so the agent can keep a
-// request moving after the conversation has stopped.
 type FollowUp struct {
-	Channel  string `json:"channel"`
-	ThreadTS string `json:"thread_ts"`
-	// AuthorID is the user whose request scheduled the follow-up. The
-	// follow-up runs with that user's permissions, checked again when due.
+	Channel  string    `json:"channel"`
+	ThreadTS string    `json:"thread_ts"`
 	AuthorID string    `json:"author_id"`
 	Task     string    `json:"task"`
 	DueAt    time.Time `json:"due_at"`
-	// Chain counts follow-ups scheduled in a row without a person writing in
-	// the thread, so an agent cannot keep itself running indefinitely.
+	// Capped so an agent cannot keep itself running indefinitely.
 	Chain     int       `json:"chain"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// GetFollowUp returns the follow-up scheduled for threadKey.
 func (s *Store) GetFollowUp(threadKey string) (FollowUp, bool) {
 	s.followUpsMu.Lock()
 	defer s.followUpsMu.Unlock()
@@ -34,8 +27,6 @@ func (s *Store) GetFollowUp(threadKey string) (FollowUp, bool) {
 	return followUp, ok
 }
 
-// SetFollowUp schedules followUp for threadKey, replacing any earlier one: a
-// thread has at most one pending follow-up.
 func (s *Store) SetFollowUp(threadKey string, followUp FollowUp) error {
 	s.followUpsMu.Lock()
 	defer s.followUpsMu.Unlock()
@@ -52,8 +43,6 @@ func (s *Store) SetFollowUp(threadKey string, followUp FollowUp) error {
 	return nil
 }
 
-// DeleteFollowUp cancels the follow-up scheduled for threadKey and returns
-// it, reporting whether there was one.
 func (s *Store) DeleteFollowUp(threadKey string) (FollowUp, bool, error) {
 	s.followUpsMu.Lock()
 	defer s.followUpsMu.Unlock()
@@ -69,9 +58,8 @@ func (s *Store) DeleteFollowUp(threadKey string) (FollowUp, bool, error) {
 	return previous, true, nil
 }
 
-// TakeDueFollowUps removes and returns the follow-ups due at now, earliest
-// first. They are removed before they run, so a crash cannot run one twice;
-// like any work turn, a follow-up may have side effects.
+// Removed before they run, so a crash cannot run one twice; a follow-up may
+// have side effects.
 func (s *Store) TakeDueFollowUps(now time.Time) ([]FollowUp, error) {
 	s.followUpsMu.Lock()
 	defer s.followUpsMu.Unlock()
@@ -99,7 +87,6 @@ func (s *Store) TakeDueFollowUps(now time.Time) ([]FollowUp, error) {
 	return due, nil
 }
 
-// FollowUps returns every scheduled follow-up, earliest first.
 func (s *Store) FollowUps() []FollowUp {
 	s.followUpsMu.Lock()
 	defer s.followUpsMu.Unlock()

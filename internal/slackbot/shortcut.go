@@ -10,9 +10,7 @@ import (
 )
 
 const (
-	// requestShortcutID is the message shortcut "ebi-x に頼む".
 	requestShortcutID = "ebix_request"
-	// requestModalID is the modal the shortcut opens.
 	requestModalID    = "ebix_request_modal"
 	requestBlockID    = "request"
 	requestActionID   = "request_text"
@@ -20,8 +18,6 @@ const (
 	shortcutForbidden = "このメッセージについて ebi-x に依頼する許可がありません。"
 )
 
-// requestTarget is the message a shortcut request is about, carried through
-// the modal's private metadata.
 type requestTarget struct {
 	Channel   string `json:"channel"`
 	MessageTS string `json:"message_ts"`
@@ -35,7 +31,6 @@ func (t requestTarget) thread() string {
 	return t.MessageTS
 }
 
-// HandleInteraction routes the message shortcut and its modal.
 func (b *Bot) HandleInteraction(ctx context.Context, callback *slack.InteractionCallback) {
 	switch {
 	case callback.Type == slack.InteractionTypeMessageAction && callback.CallbackID == requestShortcutID:
@@ -45,9 +40,7 @@ func (b *Bot) HandleInteraction(ctx context.Context, callback *slack.Interaction
 	}
 }
 
-// HandleRequestShortcut opens the request modal for a message, like Devin's
-// "Create a new session" message shortcut. Only users who may use the bot
-// in that conversation get it.
+// Only users who may use the bot in that conversation get it.
 func (b *Bot) HandleRequestShortcut(ctx context.Context, callback *slack.InteractionCallback) {
 	target := requestTarget{Channel: callback.Channel.ID, MessageTS: callback.Message.Timestamp, ThreadTS: callback.Message.ThreadTimestamp}
 	if target.Channel == "" || target.MessageTS == "" {
@@ -70,9 +63,8 @@ func (b *Bot) HandleRequestShortcut(ctx context.Context, callback *slack.Interac
 	}
 }
 
-// HandleRequestSubmission starts the request entered in the modal in the
-// message's thread. Permissions are checked again, since the modal may have
-// stayed open while they changed.
+// Permissions are checked again, since the modal may have stayed open while
+// they changed.
 func (b *Bot) HandleRequestSubmission(ctx context.Context, callback *slack.InteractionCallback) {
 	var target requestTarget
 	if err := json.Unmarshal([]byte(callback.View.PrivateMetadata), &target); err != nil || target.Channel == "" || target.MessageTS == "" {
@@ -114,8 +106,6 @@ func formatRequestPost(user, text string) string {
 	return "📝 <@" + user + "> からの依頼（このスレッドのメッセージについて）:\n> " + strings.ReplaceAll(text, "\n", "\n> ")
 }
 
-// OpenRequestModal opens the modal where the user writes a request about
-// the quoted message.
 func (w *webAPI) OpenRequestModal(ctx context.Context, triggerID, metadata, quoted string) error {
 	input := slack.NewPlainTextInputBlockElement(slack.NewTextBlockObject(slack.PlainTextType, "例: このエラーの原因を調べて", false, false), requestActionID)
 	input.Multiline = true

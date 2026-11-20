@@ -9,45 +9,34 @@ import (
 
 const pullWatchesFilename = "pullwatches.json"
 
-// PullWatch is a pull request a thread's session asked the bot to watch.
-// The bot polls GitHub and resumes the session when CI fails or someone
-// reviews or comments, so the agent follows its pull request through.
 type PullWatch struct {
-	Channel  string `json:"channel"`
-	ThreadTS string `json:"thread_ts"`
-	// AuthorID is the user whose request started the watch; resumed turns
-	// run with that user's permissions, checked again each time.
-	AuthorID string `json:"author_id"`
-	Owner    string `json:"owner"`
-	Repo     string `json:"repo"`
-	Number   int    `json:"number"`
-	URL      string `json:"url"`
-	// HeadSHA and Checks are the head commit and its check state last seen.
-	HeadSHA string `json:"head_sha"`
-	Checks  string `json:"checks"`
-	// Cursor holds the newest review and comment IDs already handled.
-	Cursor PullCursor `json:"cursor"`
-	// Wakes counts the turns the watch has started, which are capped so a
-	// pull request cannot keep the agent running indefinitely.
+	Channel  string     `json:"channel"`
+	ThreadTS string     `json:"thread_ts"`
+	AuthorID string     `json:"author_id"`
+	Owner    string     `json:"owner"`
+	Repo     string     `json:"repo"`
+	Number   int        `json:"number"`
+	URL      string     `json:"url"`
+	HeadSHA  string     `json:"head_sha"`
+	Checks   string     `json:"checks"`
+	Cursor   PullCursor `json:"cursor"`
+	// Capped so a pull request cannot keep the agent running indefinitely.
 	Wakes     int       `json:"wakes"`
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// PullCursor is the newest review and comment IDs seen on a pull request,
-// per kind, since each kind has its own ID sequence.
+// Per kind, since each kind has its own ID sequence.
 type PullCursor struct {
 	Review        int64 `json:"review"`
 	ReviewComment int64 `json:"review_comment"`
 	Comment       int64 `json:"comment"`
 }
 
-// Key identifies the watch: one per pull request.
 func (w PullWatch) Key() string {
 	return fmt.Sprintf("%s/%s#%d", w.Owner, w.Repo, w.Number)
 }
 
-// PullWatches returns every watch, oldest first.
 func (s *Store) PullWatches() []PullWatch {
 	s.pullWatchesMu.Lock()
 	defer s.pullWatchesMu.Unlock()
@@ -59,7 +48,6 @@ func (s *Store) PullWatches() []PullWatch {
 	return watches
 }
 
-// GetPullWatch returns the watch for key.
 func (s *Store) GetPullWatch(key string) (PullWatch, bool) {
 	s.pullWatchesMu.Lock()
 	defer s.pullWatchesMu.Unlock()
@@ -67,8 +55,6 @@ func (s *Store) GetPullWatch(key string) (PullWatch, bool) {
 	return watch, ok
 }
 
-// SetPullWatch saves watch, replacing any earlier watch of the same pull
-// request.
 func (s *Store) SetPullWatch(watch PullWatch) error {
 	s.pullWatchesMu.Lock()
 	defer s.pullWatchesMu.Unlock()
@@ -86,7 +72,6 @@ func (s *Store) SetPullWatch(watch PullWatch) error {
 	return nil
 }
 
-// DeletePullWatches removes the watches match selects and returns them.
 func (s *Store) DeletePullWatches(match func(PullWatch) bool) ([]PullWatch, error) {
 	s.pullWatchesMu.Lock()
 	defer s.pullWatchesMu.Unlock()

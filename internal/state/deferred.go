@@ -9,11 +9,7 @@ import (
 
 const deferredFilename = "deferred.json"
 
-// Deferred is a request that arrived while the bot was finishing its running
-// work before a restart. The restarted process takes it and runs it as if it
-// had just arrived.
 type Deferred struct {
-	// Source names how the request arrived, such as "mention" or "follow_up".
 	Source      string    `json:"source"`
 	AuthorID    string    `json:"author_id"`
 	Channel     string    `json:"channel"`
@@ -25,13 +21,10 @@ type Deferred struct {
 	DeferredAt  time.Time `json:"deferred_at"`
 }
 
-// Key identifies the Slack event the request came from.
 func (d Deferred) Key() string {
 	return d.Channel + ":" + d.Timestamp
 }
 
-// AddDeferred saves deferred until the restarted process takes it. A request
-// already deferred for the same event is kept as it is.
 func (s *Store) AddDeferred(deferred Deferred) error {
 	s.deferredMu.Lock()
 	defer s.deferredMu.Unlock()
@@ -47,8 +40,7 @@ func (s *Store) AddDeferred(deferred Deferred) error {
 	return nil
 }
 
-// TakeDeferred removes and returns every deferred request, oldest first.
-// They are removed before they run, so a crash cannot run one twice.
+// Removed before they run, so a crash cannot run one twice.
 func (s *Store) TakeDeferred() ([]Deferred, error) {
 	s.deferredMu.Lock()
 	defer s.deferredMu.Unlock()
@@ -69,8 +61,6 @@ func (s *Store) TakeDeferred() ([]Deferred, error) {
 	return taken, nil
 }
 
-// DeleteDeferred removes the deferred requests match selects and returns
-// how many there were.
 func (s *Store) DeleteDeferred(match func(Deferred) bool) (int, error) {
 	s.deferredMu.Lock()
 	defer s.deferredMu.Unlock()

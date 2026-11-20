@@ -14,10 +14,7 @@ import (
 
 const lockFilename = "ebi-x.lock"
 
-// LockDir takes an exclusive lock on dir so a second ebi-x process sharing
-// the same data cannot overwrite this one's state. The lock lasts until the
-// returned release is called or the process exits. The holder's PID is kept
-// in the file so a conflict names the process to stop.
+// The holder's PID is kept in the file so a conflict names the process to stop.
 func LockDir(dir string) (release func(), err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create state directory %q: %w", dir, err)
@@ -40,8 +37,6 @@ func LockDir(dir string) (release func(), err error) {
 	return func() { _ = file.Close() }, nil
 }
 
-// holderPID returns " (pid N)" for the PID the holder wrote to path, or ""
-// when it cannot be read.
 func holderPID(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {

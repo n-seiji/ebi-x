@@ -9,23 +9,16 @@ import (
 
 const remindersFilename = "reminders.json"
 
-// Reminder is a one-time message a person asked for: at DueAt the bot posts
-// Text in the thread where it was set and mentions AuthorID. Unlike a
-// follow-up it starts no work, and a thread may hold several.
 type Reminder struct {
-	// ID is unique across reminders and keys the saved file.
-	ID       string `json:"id"`
-	Channel  string `json:"channel"`
-	ThreadTS string `json:"thread_ts"`
-	// AuthorID asked for the reminder. They are mentioned when it fires,
-	// and their access is checked again then.
+	ID        string    `json:"id"`
+	Channel   string    `json:"channel"`
+	ThreadTS  string    `json:"thread_ts"`
 	AuthorID  string    `json:"author_id"`
 	Text      string    `json:"text"`
 	DueAt     time.Time `json:"due_at"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// AddReminder saves reminder, replacing one with the same ID.
 func (s *Store) AddReminder(reminder Reminder) error {
 	s.remindersMu.Lock()
 	defer s.remindersMu.Unlock()
@@ -42,8 +35,6 @@ func (s *Store) AddReminder(reminder Reminder) error {
 	return nil
 }
 
-// DeleteReminders removes the reminders match selects and returns them,
-// earliest first.
 func (s *Store) DeleteReminders(match func(Reminder) bool) ([]Reminder, error) {
 	s.remindersMu.Lock()
 	defer s.remindersMu.Unlock()
@@ -67,14 +58,11 @@ func (s *Store) DeleteReminders(match func(Reminder) bool) ([]Reminder, error) {
 	return removed, nil
 }
 
-// TakeDueReminders removes and returns the reminders due at now, earliest
-// first. They are removed before they are posted, so a crash cannot post
-// one twice; one due while the bot was down is posted when it starts again.
+// Removed before they are posted, so a crash cannot post one twice.
 func (s *Store) TakeDueReminders(now time.Time) ([]Reminder, error) {
 	return s.DeleteReminders(func(reminder Reminder) bool { return !reminder.DueAt.After(now) })
 }
 
-// Reminders returns every pending reminder, earliest first.
 func (s *Store) Reminders() []Reminder {
 	s.remindersMu.Lock()
 	defer s.remindersMu.Unlock()

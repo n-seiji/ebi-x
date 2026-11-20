@@ -9,34 +9,22 @@ import (
 
 const doneWatchesFilename = "donewatches.json"
 
-// DoneWatch is a Slack message whose @-mentioned people the bot reminds
-// until each has reacted with the done reaction.
 type DoneWatch struct {
-	Channel string `json:"channel"`
-	// ThreadTS is the thread the watch was started in, where reminders are
-	// posted and where the watch is stopped.
-	ThreadTS string `json:"thread_ts"`
-	// MessageTS is the message whose reactions are checked.
-	MessageTS string `json:"message_ts"`
-	// AuthorID is the user who started the watch; it runs only while that
-	// user may use the bot.
-	AuthorID string `json:"author_id"`
-	// Targets are the users mentioned in the message, in mention order.
-	Targets []string `json:"targets"`
-	// IntervalDays is the gap between two reminders.
+	Channel      string    `json:"channel"`
+	ThreadTS     string    `json:"thread_ts"`
+	MessageTS    string    `json:"message_ts"`
+	AuthorID     string    `json:"author_id"`
+	Targets      []string  `json:"targets"`
 	IntervalDays int       `json:"interval_days"`
 	NextAt       time.Time `json:"next_at"`
-	// Reminders counts the reminders posted, which are capped.
-	Reminders int       `json:"reminders"`
-	CreatedAt time.Time `json:"created_at"`
+	Reminders    int       `json:"reminders"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
-// Key identifies the watch: one per message.
 func (w DoneWatch) Key() string {
 	return w.Channel + ":" + w.MessageTS
 }
 
-// DoneWatches returns every watch, oldest first.
 func (s *Store) DoneWatches() []DoneWatch {
 	s.doneWatchesMu.Lock()
 	defer s.doneWatchesMu.Unlock()
@@ -48,7 +36,6 @@ func (s *Store) DoneWatches() []DoneWatch {
 	return watches
 }
 
-// SetDoneWatch saves watch, replacing any earlier watch of the same message.
 func (s *Store) SetDoneWatch(watch DoneWatch) error {
 	s.doneWatchesMu.Lock()
 	defer s.doneWatchesMu.Unlock()
@@ -66,9 +53,8 @@ func (s *Store) SetDoneWatch(watch DoneWatch) error {
 	return nil
 }
 
-// UpdateDoneWatch applies update to the saved watch with key and saves the
-// result. It does nothing when the watch is gone, so a check that raced a
-// stop cannot bring the watch back, or when update returns false.
+// Does nothing when the watch is gone, so a check that raced a stop cannot
+// bring the watch back.
 func (s *Store) UpdateDoneWatch(key string, update func(*DoneWatch) bool) (DoneWatch, bool, error) {
 	s.doneWatchesMu.Lock()
 	defer s.doneWatchesMu.Unlock()
@@ -89,7 +75,6 @@ func (s *Store) UpdateDoneWatch(key string, update func(*DoneWatch) bool) (DoneW
 	return watch, true, nil
 }
 
-// DeleteDoneWatches removes the watches match selects and returns them.
 func (s *Store) DeleteDoneWatches(match func(DoneWatch) bool) ([]DoneWatch, error) {
 	s.doneWatchesMu.Lock()
 	defer s.doneWatchesMu.Unlock()

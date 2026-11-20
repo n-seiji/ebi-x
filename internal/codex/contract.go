@@ -9,44 +9,32 @@ import (
 	"time"
 )
 
-// Follow-up limits. The prompt states them and the bot enforces them.
 const (
 	FollowUpMinDelay = 5 * time.Minute
 	FollowUpMaxDelay = 7 * 24 * time.Hour
-	// MaxFollowUpChain is how many follow-ups may be scheduled in a row
-	// without a person writing in the thread.
 	MaxFollowUpChain = 10
 )
 
-// FollowUpRange describes the accepted follow-up times, for the prompt and
-// for the notice that rejects a time.
 func FollowUpRange() string {
 	minimum := strings.TrimSuffix(FollowUpMinDelay.String(), "0s")
 	return fmt.Sprintf("%s後から%d日後まで", minimum, int(FollowUpMaxDelay/(24*time.Hour)))
 }
 
-// FollowUpDueAt reads a follow-up's "いつ": a delay such as "30m", "2h", or
-// "1d", or an RFC 3339 time. It fails outside FollowUpRange.
 func FollowUpDueAt(when string, now time.Time) (time.Time, error) {
 	return dueAt(when, now, FollowUpMinDelay, FollowUpMaxDelay)
 }
 
-// Reminder limits. The prompt states them and the bot enforces them. A
-// reminder only posts a message, so it may be set much further ahead than a
+// A reminder only posts a message, so it may be set much further ahead than a
 // follow-up.
 const (
 	ReminderMinDelay = time.Minute
 	ReminderMaxDelay = 366 * 24 * time.Hour
 )
 
-// ReminderRange describes the accepted reminder times, for the prompt and
-// for the notice that rejects a time.
 func ReminderRange() string {
 	return fmt.Sprintf("%d分後から%d日後まで", int(ReminderMinDelay/time.Minute), int(ReminderMaxDelay/(24*time.Hour)))
 }
 
-// ReminderDueAt reads a reminder's "いつ" like FollowUpDueAt. It fails
-// outside ReminderRange.
 func ReminderDueAt(when string, now time.Time) (time.Time, error) {
 	return dueAt(when, now, ReminderMinDelay, ReminderMaxDelay)
 }
@@ -86,29 +74,20 @@ const (
 	followUpTaskKey             = "やること"
 	reminderHeading             = "## リマインダー"
 	reminderTextKey             = "内容"
-	// ReminderStopWord in "いつ" cancels the thread's reminders.
-	ReminderStopWord = "停止"
-	questionsHeading = "## 回答待ち"
-	pullWatchHeading = "## PR の見守り"
-	// UserSettingsHeading replaces the requester's own settings.
-	UserSettingsHeading = "## 個人設定"
-	// userSettingsClear is the only bullet of a section that removes every
-	// setting.
-	userSettingsClear = "なし"
-	// CheckoutRequestHeading asks the bot to prepare the thread's checkouts
-	// and continue the same session in them.
-	CheckoutRequestHeading = "## 作業用クローン要求"
+	ReminderStopWord            = "停止"
+	questionsHeading            = "## 回答待ち"
+	pullWatchHeading            = "## PR の見守り"
+	UserSettingsHeading         = "## 個人設定"
+	userSettingsClear           = "なし"
+	CheckoutRequestHeading      = "## 作業用クローン要求"
 )
 
-// MemoryAppends contains optional entries proposed by a work turn.
 type MemoryAppends struct {
 	Global string
 }
 
-// SanitizeSlackOutput removes the retired user-memory section and everything
-// after it wherever the exact heading appears in model output. Truncating at
-// the first occurrence prevents fenced, inline, and malformed variants from
-// exposing the following private payload while preserving prior output.
+// Truncating at the first occurrence, not just the section, keeps fenced,
+// inline, and malformed variants from exposing the private payload after it.
 func SanitizeSlackOutput(text string) string {
 	index := strings.Index(text, forbiddenUserMemoryHeading)
 	if index < 0 {
@@ -117,11 +96,7 @@ func SanitizeSlackOutput(text string) string {
 	return strings.TrimSpace(text[:index])
 }
 
-// SplitMemoryAppends separates optional trailing memory sections from a work
-// response. Sections must occur at most once and in global, retired channel
-// order. The legacy generic heading is treated as global memory, and the
-// retired channel section is stripped without being returned. Ambiguous
-// output causes no memory writes and is stripped from the visible result.
+// Ambiguous output writes no memory rather than guessing which entry was meant.
 func SplitMemoryAppends(text string) (rest string, appends MemoryAppends, valid bool) {
 	if strings.Contains(text, forbiddenUserMemoryHeading) {
 		return SanitizeSlackOutput(text), MemoryAppends{}, false
@@ -180,7 +155,6 @@ func SplitMemoryAppends(text string) (rest string, appends MemoryAppends, valid 
 	return result, appends, true
 }
 
-// SplitMemoryAppend preserves the original single-global-memory API.
 func SplitMemoryAppend(text string) (rest, entry string) {
 	rest, appends, valid := SplitMemoryAppends(text)
 	if !valid {
@@ -189,8 +163,6 @@ func SplitMemoryAppend(text string) (rest, entry string) {
 	return rest, appends.Global
 }
 
-// SplitCheckoutRequest removes every checkout request heading outside code
-// blocks and reports whether there was one.
 func SplitCheckoutRequest(text string) (rest string, requested bool) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	prose := proseLines(lines)
@@ -208,11 +180,7 @@ func SplitCheckoutRequest(text string) (rest string, requested bool) {
 	return strings.TrimSpace(strings.Join(kept, "\n")), true
 }
 
-// SplitAttachments removes the attachment section from a work response. The
-// section is its heading followed by bullet lines, one file path each. It
-// ends at the first other line, so text or memory sections after it stay in
-// place. It must occur at most once. Malformed output yields no attachments
-// and reports valid as false, so the bot can tell the user instead of
+// Malformed output yields no attachments, so the bot tells the user instead of
 // guessing which files were meant.
 func SplitAttachments(text string) (rest string, paths []string, valid bool) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
@@ -269,9 +237,7 @@ func SplitAttachments(text string) (rest string, paths []string, valid bool) {
 	return rest, paths, true
 }
 
-// proseLines reports, for each line, whether it is outside fenced code
-// blocks and is not a fence line itself, so headings quoted in code are not
-// taken as output-contract sections.
+// Headings quoted in code are not output-contract sections.
 func proseLines(lines []string) []bool {
 	prose := make([]bool, len(lines))
 	inFence := false
@@ -293,9 +259,6 @@ func proseLines(lines []string) []bool {
 	return prose
 }
 
-// fenceMarker reports the fence character and the number of times it is
-// repeated at the start of line. A closing fence must use the same character
-// as its opening fence and be at least as long.
 func fenceMarker(line string) (char byte, length int, ok bool) {
 	if len(line) < 3 || (line[0] != '`' && line[0] != '~') {
 		return 0, 0, false
@@ -310,19 +273,13 @@ func fenceMarker(line string) (char byte, length int, ok bool) {
 	return char, length, true
 }
 
-// FollowUpRequest is the work a turn schedules for itself. When is as the
-// model wrote it; the bot decides whether it is a valid time.
+// When is kept as the model wrote it; the bot decides whether it is a valid
+// time.
 type FollowUpRequest struct {
 	When string
 	Task string
 }
 
-// SplitFollowUp removes the follow-up section from a work response. The
-// section is its heading followed by the bullets "- いつ: ..." and
-// "- やること: ...", each once, and ends at the first other line. It returns
-// the request, or nil when there is no section. invalid reports a section
-// that appears more than once or has incomplete bullets; it yields no
-// request.
 func SplitFollowUp(text string) (rest string, request *FollowUpRequest, invalid bool) {
 	rest, fields, present, invalid := splitFieldSection(text, followUpHeading, followUpWhenKey, followUpTaskKey)
 	if !present {
@@ -334,17 +291,14 @@ func SplitFollowUp(text string) (rest string, request *FollowUpRequest, invalid 
 	return rest, &FollowUpRequest{When: fields[followUpWhenKey], Task: fields[followUpTaskKey]}, false
 }
 
-// ReminderRequest is the reminder a turn asks for. Stop cancels the
-// thread's pending reminders; otherwise When is as the model wrote it.
+// When is kept as the model wrote it; the bot decides whether it is a valid
+// time.
 type ReminderRequest struct {
 	When string
 	Text string
 	Stop bool
 }
 
-// SplitReminder removes the reminder section: its heading followed by
-// "- いつ: ..." and "- 内容: ...", or "- いつ: 停止" alone. It returns nil
-// when there is no section; invalid reports one the bot cannot read.
 func SplitReminder(text string) (rest string, request *ReminderRequest, invalid bool) {
 	rest, fields, present, invalid := splitFieldSection(text, reminderHeading, followUpWhenKey, reminderTextKey)
 	if !present {
@@ -362,10 +316,6 @@ func SplitReminder(text string) (rest string, request *ReminderRequest, invalid 
 	return rest, &ReminderRequest{When: fields[followUpWhenKey], Text: fields[reminderTextKey]}, false
 }
 
-// splitFieldSection removes the section under heading whose lines are
-// "- key: ..." bullets for the given keys (such as "いつ" and "やること"), and
-// ends at the first other line. present reports the heading; invalid reports
-// a repeated heading, field, or an unreadable bullet.
 func splitFieldSection(text, heading string, keys ...string) (rest string, fields map[string]string, present, invalid bool) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	prose := proseLines(lines)
@@ -407,8 +357,6 @@ func splitFieldSection(text, heading string, keys ...string) (rest string, field
 	return strings.TrimSpace(strings.Join(kept, "\n")), fields, true, invalid
 }
 
-// cutField splits "key: value" for one of keys, accepting a full-width colon
-// too.
 func cutField(item string, keys []string) (key, value string, ok bool) {
 	for _, separator := range []string{":", "："} {
 		if key, value, ok = strings.Cut(item, separator); ok {
@@ -422,12 +370,8 @@ func cutField(item string, keys []string) (key, value string, ok bool) {
 	return "", "", false
 }
 
-// SplitQuestions removes the section where a turn asks the requester
-// something it cannot continue without. The section is its heading followed
-// by bullet lines, one question each, and ends at the first other line.
-// waiting reports that the heading was present, even with no bullets, so a
-// turn that stopped to ask is never shown as finished. Only the first
-// section counts; later copies of the heading are removed with their bullets.
+// waiting is true even with no bullets, so a turn that stopped to ask is never
+// shown as finished.
 func SplitQuestions(text string) (rest string, questions []string, waiting bool) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	prose := proseLines(lines)
@@ -461,11 +405,6 @@ func SplitQuestions(text string) (rest string, questions []string, waiting bool)
 	return strings.TrimSpace(strings.Join(kept, "\n")), questions, true
 }
 
-// SplitPullWatches removes the section that asks the bot to watch pull
-// requests. The section is its heading followed by bullet lines, one pull
-// request URL each, and ends at the first other line. Every copy of the
-// heading is removed with its bullets; the URLs of all of them are returned
-// once each, and the bot decides which are pull requests it can watch.
 func SplitPullWatches(text string) (rest string, urls []string) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	prose := proseLines(lines)
@@ -502,12 +441,7 @@ func SplitPullWatches(text string) (rest string, urls []string) {
 	return strings.TrimSpace(strings.Join(kept, "\n")), urls
 }
 
-// SplitUserSettings removes the section that replaces the requester's own
-// settings. The section is its heading followed by bullet lines, one setting
-// each, and ends at the first other line; the single bullet "なし" removes
-// every setting. present reports the heading. Every copy of the heading is
-// removed with its bullets so none reaches Slack, and invalid reports more
-// than one copy or a heading without bullets, which change nothing.
+// Every copy of the heading is removed so none reaches Slack.
 func SplitUserSettings(text string) (rest string, settings []string, present, invalid bool) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	prose := proseLines(lines)

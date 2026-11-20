@@ -10,21 +10,13 @@ import (
 	"github.com/n-seiji/ebi-x/internal/github"
 )
 
-// GitHubApp is the GitHub App whose installation tokens work turns use.
 type GitHubApp struct {
-	ID string
-	// InstallationID is 0 when the App's only installation is meant.
+	ID             string
 	InstallationID int64
-	// KeyLocation is where the PEM private key is: a file path, or
-	// github.KeychainPrefix and a macOS Keychain service name.
-	KeyLocation string
-	// KeyPath is the canonical key file, hidden from Codex; empty for a
-	// Keychain item.
-	KeyPath string
+	KeyLocation    string
+	KeyPath        string
 }
 
-// loadGitHubApp reads EBIX_GITHUB_APP_ID, EBIX_GITHUB_APP_PRIVATE_KEY, and
-// EBIX_GITHUB_APP_INSTALLATION_ID. It returns nil when none is set.
 func loadGitHubApp() (*GitHubApp, error) {
 	id := strings.TrimSpace(os.Getenv("EBIX_GITHUB_APP_ID"))
 	location := strings.TrimSpace(os.Getenv("EBIX_GITHUB_APP_PRIVATE_KEY"))

@@ -12,16 +12,10 @@ import (
 )
 
 const (
-	// maxStatusDetailRunes keeps one detail short enough for the one-line
-	// status Slack shows under the thread.
 	maxStatusDetailRunes = 30
 )
 
-// progress turns the activity of a running turn into the thread status, so
-// the requester can see what the agent is doing instead of a fixed
-// "working" line for many minutes. Each update carries the whole state, so a
-// lost update only delays the status.
-//
+// Each update carries the whole state, so a lost update only delays the status.
 // The runner reports activity from its output loop, one event at a time, so
 // progress needs no locking.
 type progress struct {
@@ -29,7 +23,6 @@ type progress struct {
 	plan   codex.Activity
 }
 
-// observe records activity and returns the status to show.
 func (p *progress) observe(activity codex.Activity) string {
 	switch activity.Kind {
 	case codex.ActivityPlan:
@@ -71,13 +64,10 @@ func (p *progress) status() string {
 	return "が「" + shortDetail(p.plan.Current) + "」を進めています… " + count
 }
 
-// shortDetail makes model-written text fit on the status line.
 func shortDetail(text string) string {
 	return clipText(text, maxStatusDetailRunes)
 }
 
-// clipText puts text on one line and cuts it to limit runes, marking a cut
-// with "…".
 func clipText(text string, limit int) string {
 	text = strings.Join(strings.Fields(text), " ")
 	runes := []rune(text)
@@ -93,9 +83,8 @@ var (
 	commandWord  = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]*$`)
 )
 
-// commandLabel names a command by its program and subcommand, such as
-// "go test" or "git commit". Arguments are left out because a command line
-// can carry tokens or other values that should not appear in the thread.
+// Arguments are left out because a command line can carry tokens or other
+// values that should not appear in the thread.
 func commandLabel(command string) string {
 	command = strings.TrimSpace(command)
 	if wrapper := shellWrapper.FindString(command); wrapper != "" {
@@ -122,9 +111,8 @@ func commandLabel(command string) string {
 	return strings.Join(words, " ")
 }
 
-// statusKeeper shows a thread status and keeps it visible: Slack clears an
-// assistant status after a while, so the current text is set again every
-// statusRefreshDelay, and immediately when it changes.
+// Slack clears an assistant status after a while, so the text is set again
+// every statusRefreshDelay.
 type statusKeeper struct {
 	mu    sync.Mutex
 	text  string
@@ -133,8 +121,6 @@ type statusKeeper struct {
 	stop  func()
 }
 
-// Update changes the status. Rapid changes are coalesced, so only the
-// latest text is sent at most once per statusMinInterval.
 func (k *statusKeeper) Update(text string) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -148,7 +134,6 @@ func (k *statusKeeper) Update(text string) {
 	}
 }
 
-// Stop ends the refresh. It does not clear the status.
 func (k *statusKeeper) Stop() { k.stop() }
 
 func (b *Bot) startStatus(ctx context.Context, channel, threadTS, status string) *statusKeeper {

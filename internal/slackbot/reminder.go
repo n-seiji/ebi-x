@@ -11,12 +11,9 @@ import (
 )
 
 const (
-	// maxRemindersPerUser bounds how many messages one person can leave
-	// pending.
 	maxRemindersPerUser  = 20
 	maxReminderTextRunes = 500
-	// reminderLateAfter is how late a reminder may be posted before it says
-	// so, which happens when the bot was down at its time.
+	// A reminder is late when the bot was down at its time.
 	reminderLateAfter = 5 * time.Minute
 
 	reminderSetNotice     = "🔔 %s にこのスレッドでリマインドします: %s\n取り消す場合は、このスレッドで「停止」と mention してください。"
@@ -30,9 +27,7 @@ const (
 	reminderStoppedMsg    = "予定していたリマインダーを取り消しました。"
 )
 
-// applyReminder sets or cancels a reminder as a finished turn asked and
-// returns the notice to post after its result. Only a person's request may
-// change reminders, like schedules.
+// Only a person's request may change reminders, like schedules.
 func (b *Bot) applyReminder(trigger processingTrigger, output workOutput) string {
 	if !output.reminderInvalid && output.reminder == nil {
 		return ""
@@ -84,8 +79,7 @@ func (b *Bot) applyReminder(trigger processingTrigger, output workOutput) string
 	return fmt.Sprintf(reminderSetNotice, formatFollowUpTime(reminder.DueAt), reminder.Text)
 }
 
-// runReminders posts due reminders until ctx is done. Posting starts no
-// work, so it does not wait for a turn slot.
+// Posting starts no work, so it does not wait for a turn slot.
 func (b *Bot) runReminders(ctx context.Context) {
 	for {
 		due, err := b.store.TakeDueReminders(b.now())
@@ -101,7 +95,6 @@ func (b *Bot) runReminders(ctx context.Context) {
 	}
 }
 
-// fireReminder posts a reminder in its thread, mentioning who asked for it.
 // Access is checked again, since the user or channel may have lost it.
 func (b *Bot) fireReminder(ctx context.Context, reminder state.Reminder) {
 	if !b.userAllowed(reminder.AuthorID) || !b.conversationAllowed(reminder.Channel) {
@@ -117,8 +110,6 @@ func (b *Bot) fireReminder(ctx context.Context, reminder state.Reminder) {
 	}
 }
 
-// stopReminders cancels the thread's pending reminders and returns how many
-// there were.
 func (b *Bot) stopReminders(channel, threadTS string) int {
 	removed, err := b.store.DeleteReminders(func(reminder state.Reminder) bool {
 		return reminder.Channel == channel && reminder.ThreadTS == threadTS

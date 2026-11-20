@@ -12,7 +12,6 @@ import (
 )
 
 const (
-	// maxSchedulesPerUser bounds the unattended work one person can set up.
 	maxSchedulesPerUser  = 5
 	maxScheduleTaskRunes = 500
 
@@ -28,10 +27,8 @@ const (
 	scheduleRunPrefix     = "（依頼者が「%s」の定期実行として設定した作業です。前回までの結果はこのスレッドにはありません）\n"
 )
 
-// applySchedule sets or stops the thread's schedule as a finished turn asked
-// and returns the notice to post after its result. Only a person's request
-// may change a schedule, so unattended turns cannot start more unattended
-// work.
+// Only a person's request may change a schedule, so unattended turns cannot
+// start more unattended work.
 func (b *Bot) applySchedule(trigger processingTrigger, output workOutput) string {
 	if !output.scheduleInvalid && output.schedule == nil {
 		return ""
@@ -80,7 +77,6 @@ func (b *Bot) applySchedule(trigger processingTrigger, output workOutput) string
 		NextAt:    spec.Next(now.In(time.Local)),
 		CreatedAt: now,
 	}
-	// Saving replaces the thread's earlier schedule.
 	if err := b.store.SetSchedule(threadKey, schedule); err != nil {
 		log.Printf("slackbot: save schedule %q: %v", threadKey, err)
 		return scheduleInvalidNotice
@@ -88,7 +84,6 @@ func (b *Bot) applySchedule(trigger processingTrigger, output workOutput) string
 	return fmt.Sprintf(scheduleSetNotice, schedule.Spec, schedule.Task, formatFollowUpTime(schedule.NextAt))
 }
 
-// nextOccurrence is when schedule runs after now.
 func (b *Bot) nextOccurrence(schedule state.Schedule) time.Time {
 	spec, err := codex.ParseScheduleSpec(schedule.Spec)
 	if err != nil {
@@ -100,8 +95,6 @@ func (b *Bot) nextOccurrence(schedule state.Schedule) time.Time {
 	return spec.Next(b.now().In(time.Local))
 }
 
-// runSchedules starts due schedules until acceptCtx is done, like
-// runFollowUps.
 func (b *Bot) runSchedules(acceptCtx, turnCtx context.Context, wg *sync.WaitGroup) {
 	for {
 		due, err := b.store.TakeDueSchedules(b.now(), b.nextOccurrence)
@@ -117,9 +110,7 @@ func (b *Bot) runSchedules(acceptCtx, turnCtx context.Context, wg *sync.WaitGrou
 	}
 }
 
-// fireSchedule starts one occurrence in a new thread of the schedule's
-// channel, as a request from the user who set it. Access is checked again,
-// since the user or channel may have lost it since.
+// Access is checked again, since the user or channel may have lost it since.
 func (b *Bot) fireSchedule(ctx context.Context, schedule state.Schedule) {
 	threadKey := threadRef(schedule.Channel, schedule.ThreadTS)
 	if !b.userAllowed(schedule.AuthorID) || !b.conversationAllowed(schedule.Channel) {
@@ -151,8 +142,6 @@ func (b *Bot) fireSchedule(ctx context.Context, schedule state.Schedule) {
 	})
 }
 
-// stopSchedule removes the schedule set in the thread, reporting whether
-// there was one.
 func (b *Bot) stopSchedule(channel, threadTS string) bool {
 	_, deleted, err := b.store.DeleteSchedule(threadRef(channel, threadTS))
 	if err != nil {
@@ -161,7 +150,6 @@ func (b *Bot) stopSchedule(channel, threadTS string) bool {
 	return deleted
 }
 
-// scheduleSummary describes a schedule for the Home tab.
 func scheduleSummary(schedule state.Schedule) string {
 	return schedule.Spec + "「" + clipText(schedule.Task, 100) + "」（次回 " + formatFollowUpTime(schedule.NextAt) + "）"
 }

@@ -25,7 +25,6 @@ const (
 	homeSettingsHelp  = "ebi-x への依頼の中で「返事は短くして、今後もそうして」のように頼むと設定され、「個人設定から〇〇を消して」で変更や削除ができます。この一覧はあなたにだけ表示されます。"
 )
 
-// homeThread is one thread listed on the Home tab.
 type homeThread struct {
 	channel  string
 	threadTS string
@@ -33,9 +32,6 @@ type homeThread struct {
 	at       time.Time
 }
 
-// publishHome shows the user what ebi-x is doing for them: requests being
-// worked on, scheduled follow-ups, and watched pull requests, like dots'
-// Activity view and Devin's session list.
 func (b *Bot) publishHome(ctx context.Context, userID string) {
 	if !b.userAllowed(userID) {
 		if err := b.api.PublishHome(ctx, userID, []string{homeForbidden}); err != nil {
@@ -125,8 +121,8 @@ func (b *Bot) publishHome(ctx context.Context, userID string) {
 	}
 }
 
-// homeUserSettings lists the user's own settings. The Home tab is the one
-// place they are shown, since only its owner sees it.
+// The Home tab is the one place settings are shown, since only its owner sees
+// it.
 func homeUserSettings(settings []string) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "*%s（%d）*", homeSettingsTitle, len(settings))
@@ -139,7 +135,6 @@ func homeUserSettings(settings []string) string {
 	return builder.String() + "\n_" + homeSettingsHelp + "_"
 }
 
-// homeSection lists items under title, each with a link to its thread.
 func (b *Bot) homeSection(ctx context.Context, links map[string]string, title string, items []homeThread, describe func(homeThread) string) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "*%s（%d）*", title, len(items))
@@ -156,8 +151,6 @@ func (b *Bot) homeSection(ctx context.Context, links map[string]string, title st
 	return builder.String()
 }
 
-// threadLink links to a thread, falling back to its channel when Slack does
-// not give a permalink.
 func (b *Bot) threadLink(ctx context.Context, links map[string]string, channel, threadTS string) string {
 	key := threadRef(channel, threadTS)
 	if link, ok := links[key]; ok {
@@ -185,8 +178,6 @@ func checksLabel(checks string) string {
 	}[checks]
 }
 
-// PublishHome shows the sections on the user's Home tab, one section block
-// each, separated by dividers.
 func (w *webAPI) PublishHome(ctx context.Context, userID string, sections []string) error {
 	var blocks []slack.Block
 	for i, section := range sections {

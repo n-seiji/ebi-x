@@ -16,9 +16,6 @@ import (
 	"github.com/n-seiji/ebi-x/internal/workspace"
 )
 
-// credentialPaths are well-known credential stores, relative to the home
-// directory, that the agent cannot read unless a push needs them or
-// EBIX_ALLOWED_READ_PATHS says so.
 var credentialPaths = []string{
 	"~/.ssh",
 	"~/.aws",
@@ -48,19 +45,14 @@ var credentialPaths = []string{
 	"~/.config/github-copilot",
 }
 
-// pushExemption is a credential path that a repository's pushes depend on.
 type pushExemption struct {
 	path   string
 	reason string
 }
 
-// resolveCredentialPaths returns the default credential stores to deny:
-// those not already in protectedPaths, not listed in allowed, and not needed
-// to push or sign from one of the git repositories among writableRoots.
-// allowed is EBIX_ALLOWED_READ_PATHS and affects only the default list.
-// checkoutsDir is where thread checkouts are created; push credentials are
-// detected from a scratch repository there, which sees the same git
-// configuration (global, system, and includeIf) a thread checkout will.
+// Push credentials are detected from a scratch repository in checkoutsDir,
+// which sees the same git configuration (global, system, includeIf) a thread
+// checkout will.
 func resolveCredentialPaths(writableRoots, protectedPaths []string, allowed, checkoutsDir string, env []string) ([]string, error) {
 	known := make(map[string]struct{}, len(credentialPaths))
 	for _, item := range credentialPaths {
@@ -124,15 +116,9 @@ func canonicalHomePath(path string) (string, error) {
 	return canonicalPath(expanded)
 }
 
-// pushExemptions returns the credential stores a thread checkout of the
-// repository at root needs to push to its origin and sign commits from inside
-// the sandbox.
-//
-// A checkout is a fresh clone: it inherits neither the original repository's
-// local config nor its includeIf matches, only the origin URL the workspace
-// manager copies over. So the detection runs in a scratch repository under
-// checkoutsDir with that same origin URL, where git reads the same global and
-// system configuration a checkout will.
+// Not detected in the original repository: a checkout inherits neither its
+// local config nor its includeIf matches, only the origin URL, so the detection
+// runs in a scratch repository with that origin URL.
 func pushExemptions(ctx context.Context, env []string, root, checkoutsDir string) ([]pushExemption, error) {
 	origin, err := workspace.OriginURL(ctx, root)
 	if err != nil {
@@ -169,12 +155,10 @@ func pushExemptions(ctx context.Context, env []string, root, checkoutsDir string
 	return append(exemptions, found...), nil
 }
 
-// probePrefix names the scratch repositories credential detection creates.
 const probePrefix = ".credprobe-"
 
-// removeStaleProbes deletes scratch repositories a killed earlier run left in
-// checkoutsDir, logging each. Failures are logged and otherwise ignored: a
-// leftover is clutter, not a reason to refuse to start.
+// Failures are only logged: a leftover is clutter, not a reason to refuse to
+// start.
 func removeStaleProbes(checkoutsDir string) {
 	entries, err := os.ReadDir(checkoutsDir)
 	if err != nil {
@@ -194,7 +178,6 @@ func removeStaleProbes(checkoutsDir string) {
 	}
 }
 
-// gitConfigOutput runs git in dir with env and returns its stdout.
 func gitConfigOutput(ctx context.Context, env []string, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	cmd.Env = append(slices.Clone(env), "GIT_TERMINAL_PROMPT=0")
@@ -210,8 +193,6 @@ func gitConfigOutput(ctx context.Context, env []string, dir string, args ...stri
 	return stdout.String(), nil
 }
 
-// gitConfigValues returns the values git prints for a config query, one per
-// line, and none when the key is not set (exit status 1).
 func gitConfigValues(ctx context.Context, env []string, dir string, args ...string) ([]string, error) {
 	out, err := gitConfigOutput(ctx, env, dir, append([]string{"config"}, args...)...)
 	if err != nil {
@@ -223,8 +204,6 @@ func gitConfigValues(ctx context.Context, env []string, dir string, args ...stri
 	return strings.Split(strings.TrimSuffix(out, "\n"), "\n"), nil
 }
 
-// originExemptions returns the credential stores pushing to the probe's
-// origin needs.
 func originExemptions(ctx context.Context, env []string, root, probe string) ([]pushExemption, error) {
 	out, err := gitConfigOutput(ctx, env, probe, "remote", "get-url", "--push", "origin")
 	if err != nil {
@@ -291,15 +270,10 @@ func originExemptions(ctx context.Context, env []string, root, probe string) ([]
 	return exemptions, nil
 }
 
-// helperChain returns every credential helper configured anywhere in the
-// probe's git configuration: credential.helper and each
-// credential.<url>.helper, whatever URL they are scoped to. git consults only
-// the sections matching the push URL, but the exact URL matching (ports,
-// paths, wildcards, pushInsteadOf rewrites) is git's to get right, not ours, so
-// this takes the union and may over-exempt, which only exposes more and never
-// breaks a push. Empty values, which reset the list at the point they appear,
-// are ignored for the same reason: honoring one could drop a helper the
-// remaining sections still call.
+// Takes the union of every helper, whatever URL it is scoped to, rather than
+// matching the push URL: URL matching (ports, paths, wildcards, pushInsteadOf)
+// is git's to get right, and over-exempting only exposes more, never breaks a
+// push. Empty values, which reset the list, are ignored for the same reason.
 func helperChain(ctx context.Context, env []string, probe string) ([]string, error) {
 	lines, err := gitConfigValues(ctx, env, probe, "--get-regexp", `^credential\..*helper$`)
 	if err != nil {
@@ -315,8 +289,7 @@ func helperChain(ctx context.Context, env []string, probe string) ([]string, err
 	return chain, nil
 }
 
-// helperLabel names a credential helper for logs without echoing arguments,
-// which may hold secrets.
+// Arguments are not echoed; they may hold secrets.
 func helperLabel(helper string) string {
 	fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(helper), "!"))
 	if len(fields) == 0 {
@@ -325,7 +298,6 @@ func helperLabel(helper string) string {
 	return filepath.Base(fields[0])
 }
 
-// signingExemptions returns the credential stores commit signing needs.
 func signingExemptions(ctx context.Context, env []string, root, probe string) ([]pushExemption, error) {
 	signing, err := gitConfigValues(ctx, env, probe, "--type=bool", "--get", "commit.gpgsign")
 	if err != nil {
@@ -357,8 +329,6 @@ func signingExemptions(ctx context.Context, env []string, root, probe string) ([
 	return []pushExemption{{resolved, reason}}, nil
 }
 
-// isSSHRemote reports whether a git remote URL pushes over SSH, including
-// the scp-like user@host:path form.
 func isSSHRemote(remote string) bool {
 	if scheme, _, ok := strings.Cut(remote, "://"); ok {
 		return scheme == "ssh" || scheme == "git+ssh" || scheme == "ssh+git"
@@ -367,7 +337,6 @@ func isSSHRemote(remote string) bool {
 	return colon > 0 && !strings.Contains(remote[:colon], "/")
 }
 
-// isGHHelper reports whether a credential helper runs the GitHub CLI.
 func isGHHelper(helper string) bool {
 	for field := range strings.FieldsSeq(helper) {
 		if filepath.Base(strings.TrimPrefix(field, "!")) == "gh" {
@@ -377,8 +346,6 @@ func isGHHelper(helper string) bool {
 	return false
 }
 
-// storeHelperFile reports whether helper is git's store helper and returns
-// its --file argument, empty for the default locations.
 func storeHelperFile(helper string) (string, bool) {
 	fields := strings.Fields(helper)
 	if len(fields) == 0 || (fields[0] != "store" && filepath.Base(fields[0]) != "git-credential-store") {
@@ -395,10 +362,8 @@ func storeHelperFile(helper string) (string, bool) {
 	return "", true
 }
 
-// withSSHAgent adds SSH_AUTH_SOCK to the variables Codex inherits when ~/.ssh
-// is readable, that is when a push or signature needs SSH or the operator
-// allowed it. Otherwise the agent socket would be a way to use keys Codex
-// cannot read.
+// Only when ~/.ssh is readable; otherwise the agent socket would be a way to
+// use keys Codex cannot read.
 func withSSHAgent(codexEnv, credentialPaths, protectedPaths []string) ([]string, error) {
 	ssh, err := canonicalHomePath("~/.ssh")
 	if err != nil {

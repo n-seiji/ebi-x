@@ -1,6 +1,3 @@
-// Package memory reads and appends the global MEMORY.md file.
-// The Codex agent never writes these files directly; the bot validates
-// proposed entries and routes them from authenticated Slack event IDs.
 package memory
 
 import (
@@ -12,25 +9,18 @@ import (
 	"unicode/utf8"
 )
 
-// FileName is the memory file managed inside the memory directory.
 const FileName = "MEMORY.md"
 
 const (
-	// maxPromptBytes caps how much memory content is injected into prompts.
 	maxPromptBytes = 8 << 10
-	// MaxAppendBytes caps the size of one appended entry.
 	MaxAppendBytes = 4 << 10
 )
 
-// Context contains the memory visible to one Slack request. Only global
-// memory remains: lessons about a kind of work belong in its playbook, and a
-// thread's own history lives in its session. Channel memory was retired and
-// its files under channels/ are no longer read.
+// Channel memory was retired; its files under channels/ are no longer read.
 type Context struct {
 	Global string
 }
 
-// ReadContext reads the global memory below root.
 func ReadContext(root string) (Context, error) {
 	value, err := Read(root)
 	if err != nil {
@@ -39,8 +29,6 @@ func ReadContext(root string) (Context, error) {
 	return Context{Global: value}, nil
 }
 
-// Read returns the memory file content capped at maxPromptBytes. A missing
-// file yields an empty string without error.
 func Read(dir string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(dir, FileName))
 	if errors.Is(err, os.ErrNotExist) {
@@ -56,13 +44,9 @@ func Read(dir string) (string, error) {
 	return strings.TrimSpace(text), nil
 }
 
-// Append validates and appends one entry to the memory file, creating the
-// directory and file when needed. It returns the entry actually written.
-//
-// Append does not serialize concurrent callers; callers must do so themselves
-// (the Slack bot holds its memory lock around the call). When Close reports an
-// error the entry may already be on disk, but Append still returns the error
-// and an empty entry; it never retries the write on its own.
+// Append does not serialize concurrent callers; the bot holds its memory lock
+// around the call. When Close fails the entry may already be on disk, but the
+// write is never retried.
 func Append(dir, entry string) (written string, err error) {
 	entry = strings.TrimSpace(entry)
 	if entry == "" {
@@ -111,8 +95,6 @@ func truncateTailRunes(text string, limit int) string {
 	return text[start:]
 }
 
-// ValidChannelID reports whether id looks like a Slack conversation ID
-// (public channel, private channel, or DM).
 func ValidChannelID(id string) bool {
 	return validSlackID(id, "CGD")
 }

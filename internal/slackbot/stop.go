@@ -7,9 +7,7 @@ import (
 	"time"
 )
 
-// stopCommands are the whole messages that stop a thread's work, compared
-// after trimming and lowercasing. A longer message is an ordinary request,
-// so "停止の仕方を教えて" still reaches the agent.
+// Only the whole message counts, so "停止の仕方を教えて" still reaches the agent.
 var stopCommands = map[string]struct{}{
 	"停止": {}, "停止して": {}, "止めて": {}, "とめて": {}, "中止": {}, "中止して": {},
 	"キャンセル": {}, "キャンセルして": {}, "ストップ": {}, "stop": {}, "cancel": {},
@@ -21,20 +19,16 @@ func isStopCommand(message string) bool {
 	return ok
 }
 
-// threadRef names a Slack thread in the bot's per-thread records.
 func threadRef(channel, threadTS string) string {
 	return channel + ":" + threadTS
 }
 
-// runningRequest is a request a thread is processing or waiting to process.
 type runningRequest struct {
 	cancel    context.CancelCauseFunc
 	authorID  string
 	startedAt time.Time
 }
 
-// trackRequest makes a request stoppable from its thread until the returned
-// function is called.
 func (b *Bot) trackRequest(ctx context.Context, threadKey, eventKey, authorID string) (context.Context, func()) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	b.runningMu.Lock()
@@ -58,11 +52,8 @@ func (b *Bot) trackRequest(ctx context.Context, threadKey, eventKey, authorID st
 	}
 }
 
-// stopThread cancels the requests the thread is running or waiting to run,
-// its scheduled follow-up, pull request watches, schedule, reminders,
-// :done: watches, and requests waiting for a restart.
-// Each stopped request reports itself in the thread, so the stop command
-// only gets a reaction.
+// Each stopped request reports itself in the thread, so the stop command only
+// gets a reaction.
 func (b *Bot) stopThread(ctx context.Context, channel, threadTS, timestamp string) {
 	key := threadRef(channel, threadTS)
 	b.runningMu.Lock()

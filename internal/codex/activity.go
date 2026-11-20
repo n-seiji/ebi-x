@@ -1,6 +1,5 @@
 package codex
 
-// ActivityKind is what a turn is doing at the moment.
 type ActivityKind uint8
 
 const (
@@ -11,28 +10,19 @@ const (
 	ActivityPlan
 )
 
-// Activity is one step of a running turn, reported so the bot can show
-// progress while the turn runs. The fields are model or command output and
-// are only fit for display.
+// The fields are model or command output and are only fit for display.
 type Activity struct {
-	Kind ActivityKind
-	// Command is the command line of an ActivityCommand.
-	Command string
-	// Paths are the files of an ActivityFileChange.
-	Paths []string
-	// Query is the query of an ActivityWebSearch.
-	Query string
-	// Tool is "server.tool" for an ActivityToolCall.
-	Tool string
-	// Done and Total count the plan's items and Current is the first item
-	// not yet done, for an ActivityPlan.
+	Kind        ActivityKind
+	Command     string
+	Paths       []string
+	Query       string
+	Tool        string
 	Done, Total int
 	Current     string
 }
 
-// activityFromItem reports the step an item event describes. Commands,
-// searches, and tool calls are reported when they start; file changes only
-// arrive completed; the plan is reported on every update.
+// File changes only arrive completed, so they cannot be reported when they
+// start.
 func activityFromItem(eventType string, item *eventItem) (Activity, bool) {
 	switch item.Type {
 	case "command_execution":

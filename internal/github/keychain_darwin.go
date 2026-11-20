@@ -35,9 +35,7 @@ func loadSecurity() error {
 	return securityErr
 }
 
-// readKeychain returns the password of the generic password item for
-// service in the default keychain search list. It blocks while macOS asks
-// whether ebi-x may read the item.
+// Blocks while macOS asks whether ebi-x may read the item.
 func readKeychain(service string) ([]byte, error) {
 	if err := loadSecurity(); err != nil {
 		return nil, err
