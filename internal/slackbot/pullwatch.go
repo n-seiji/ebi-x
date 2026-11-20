@@ -13,14 +13,9 @@ import (
 )
 
 const (
-	// pullWatchPollInterval is how often watched pull requests are checked.
 	pullWatchPollInterval = 2 * time.Minute
-	// pullWatchTTL is how long a watch lasts after it starts or last acts.
-	pullWatchTTL = 7 * 24 * time.Hour
-	// maxPullWatchWakes caps the turns one watch starts without a person
-	// writing in the thread.
-	maxPullWatchWakes = 10
-	// maxPullWatchesPerTurn bounds the pull requests one answer may watch.
+	pullWatchTTL          = 7 * 24 * time.Hour
+	maxPullWatchWakes     = 10
 	maxPullWatchesPerTurn = 5
 	maxPullActivityItems  = 10
 	maxPullActivityRunes  = 300
@@ -42,7 +37,6 @@ const (
 	pullWatchStoppedMessage = "PR の見守りを終了しました。"
 )
 
-// GitHub is the subset of the GitHub API the pull request watch uses.
 type GitHub interface {
 	ParsePullURL(raw string) (github.PullRef, bool)
 	Pull(ctx context.Context, ref github.PullRef) (github.Pull, error)
@@ -54,10 +48,8 @@ func (b *Bot) pullWatchEnabled() bool {
 	return b.config.GitHub != nil
 }
 
-// watchPulls starts watching the pull requests a finished turn listed and
-// returns the notice to post after its result. A watch starts from the pull
-// request's current state, so only later CI results and comments wake the
-// session.
+// A watch starts from the pull request's current state, so only later CI
+// results and comments wake the session.
 func (b *Bot) watchPulls(ctx context.Context, trigger processingTrigger, urls []string) string {
 	if len(urls) == 0 {
 		return ""
@@ -155,8 +147,6 @@ func (b *Bot) watchPulls(ctx context.Context, trigger processingTrigger, urls []
 	return strings.Join(notices, "\n\n")
 }
 
-// pullRepoWatchable reports whether ref belongs to a repository threads work
-// on.
 func (b *Bot) pullRepoWatchable(ref github.PullRef) bool {
 	name := ref.Owner + "/" + ref.Repo
 	for _, repo := range b.config.GitHubRepos {
@@ -171,9 +161,6 @@ func bulletList(items []string) string {
 	return "\n- " + strings.Join(items, "\n- ")
 }
 
-// runPullWatches checks the watched pull requests until acceptCtx is done.
-// The turns they start run on turnCtx under wg, like a turn started by a
-// Slack event.
 func (b *Bot) runPullWatches(acceptCtx, turnCtx context.Context, wg *sync.WaitGroup) {
 	if !b.pullWatchEnabled() {
 		return
@@ -191,9 +178,6 @@ func (b *Bot) runPullWatches(acceptCtx, turnCtx context.Context, wg *sync.WaitGr
 	}
 }
 
-// checkPullWatch compares a pull request with what its watch last saw. It
-// reports merges, closes, and CI turning green itself, and resumes the
-// thread's session for failed CI and new reviews or comments.
 func (b *Bot) checkPullWatch(ctx, turnCtx context.Context, wg *sync.WaitGroup, watch state.PullWatch) {
 	key := watch.Key()
 	// A turn already working in the thread may be pushing to the pull
@@ -283,8 +267,6 @@ func (b *Bot) checkPullWatch(ctx, turnCtx context.Context, wg *sync.WaitGroup, w
 	wg.Go(func() { b.firePullWatch(turnCtx, watch, summary, task) })
 }
 
-// firePullWatch announces a pull request event in its thread and runs a
-// turn for it as a request from the user who started the watch.
 func (b *Bot) firePullWatch(ctx context.Context, watch state.PullWatch, summary, task string) {
 	var timestamp string
 	if err := b.retrySlack(ctx, func() error {
@@ -306,9 +288,7 @@ func (b *Bot) firePullWatch(ctx context.Context, watch state.PullWatch, summary,
 	})
 }
 
-// describePullEvent writes what happened on the pull request for the
-// session. Review and comment bodies are clipped and listed up to a limit;
-// the session can read them in full on GitHub.
+// Bodies are clipped; the session can read them in full on GitHub.
 func describePullEvent(pull github.Pull, checks github.Checks, activity []github.Activity, events []string) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "PR: %s（%s）\n", pull.URL, pull.Title)
@@ -336,8 +316,6 @@ func describePullEvent(pull github.Pull, checks github.Checks, activity []github
 	return strings.TrimSpace(builder.String())
 }
 
-// endPullWatch removes a watch and, when message is set, says why in its
-// thread.
 func (b *Bot) endPullWatch(ctx context.Context, watch state.PullWatch, message string) {
 	key := watch.Key()
 	if _, err := b.store.DeletePullWatches(func(w state.PullWatch) bool { return w.Key() == key }); err != nil {
@@ -352,7 +330,6 @@ func (b *Bot) endPullWatch(ctx context.Context, watch state.PullWatch, message s
 	}
 }
 
-// stopPullWatches ends every watch the thread started, for the stop command.
 func (b *Bot) stopPullWatches(channel, threadTS string) bool {
 	removed, err := b.store.DeletePullWatches(func(w state.PullWatch) bool {
 		return w.Channel == channel && w.ThreadTS == threadTS
@@ -363,7 +340,6 @@ func (b *Bot) stopPullWatches(channel, threadTS string) bool {
 	return len(removed) > 0
 }
 
-// threadBusy reports whether the thread has a request running or waiting.
 func (b *Bot) threadBusy(threadKey string) bool {
 	b.runningMu.Lock()
 	defer b.runningMu.Unlock()

@@ -1,9 +1,3 @@
-// Package usersettings keeps each Slack user's own settings for how ebi-x
-// answers them, such as the reply language or length. Only the person
-// themselves asks for a setting; the bot writes it, the Codex agent never
-// reads or writes the file, and the settings are never posted to a thread.
-// A thread's session is shared by everyone who writes in it, so the bot
-// passes only the current speaker's settings with each request.
 package usersettings
 
 import (
@@ -15,18 +9,14 @@ import (
 	"unicode/utf8"
 )
 
-// FileName is the settings file inside a user's directory. It is not the
-// retired MEMORY.md, so old user memory never comes back as settings.
+// Not MEMORY.md, so retired user memory never comes back as settings.
 const FileName = "settings.md"
 
 const (
-	// MaxLines caps how many settings one user keeps.
-	MaxLines = 10
-	// MaxLineBytes caps one setting.
+	MaxLines     = 10
 	MaxLineBytes = 200
 )
 
-// Dir returns the directory holding userID's settings below root.
 func Dir(root, userID string) (string, error) {
 	if !ValidUserID(userID) {
 		return "", fmt.Errorf("invalid Slack user ID %q", userID)
@@ -34,8 +24,6 @@ func Dir(root, userID string) (string, error) {
 	return filepath.Join(root, "users", userID), nil
 }
 
-// Read returns userID's settings, one per line. A missing file yields no
-// settings without error.
 func Read(root, userID string) ([]string, error) {
 	dir, err := Dir(root, userID)
 	if err != nil {
@@ -58,8 +46,7 @@ func Read(root, userID string) ([]string, error) {
 	return Normalize(settings), nil
 }
 
-// Write replaces userID's settings and returns them as written. No settings
-// remove the file. Callers serialize concurrent writes.
+// Callers serialize concurrent writes.
 func Write(root, userID string, settings []string) ([]string, error) {
 	dir, err := Dir(root, userID)
 	if err != nil {
@@ -100,8 +87,6 @@ func Write(root, userID string, settings []string) ([]string, error) {
 	return settings, nil
 }
 
-// Normalize puts each setting on one line, drops empty and repeated ones,
-// and applies the size limits.
 func Normalize(settings []string) []string {
 	var result []string
 	seen := make(map[string]bool)
@@ -130,7 +115,6 @@ func truncateRunes(text string, limit int) string {
 	return text[:end]
 }
 
-// ValidUserID reports whether id looks like a Slack user ID.
 func ValidUserID(id string) bool {
 	if len(id) < 2 || (id[0] != 'U' && id[0] != 'W') {
 		return false

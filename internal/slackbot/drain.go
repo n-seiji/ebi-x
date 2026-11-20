@@ -10,16 +10,10 @@ import (
 	"github.com/n-seiji/ebi-x/internal/state"
 )
 
-// deferredMessage tells the requester that a request which arrived during a
-// restart will start once the restarted bot is up.
 const deferredMessage = "🔄 ebi-x を更新しています。いま動いている作業が終わり次第再起動し、この依頼は再起動後に自動で始めます。"
 
-// deferredStoppedMessage reports that a stop cancelled requests that were
-// waiting for the restart.
 const deferredStoppedMessage = "再起動後に始める予定だった依頼を取り消しました。"
 
-// errDraining reports that a request was not started because the bot is
-// finishing its running work before a restart.
 var errDraining = errors.New("ebi-x is draining for a restart")
 
 var triggerSourceNames = map[triggerSource]string{
@@ -30,15 +24,12 @@ var triggerSourceNames = map[triggerSource]string{
 	scheduleTrigger:  "schedule",
 }
 
-// drainer stops new requests from starting while the running ones finish, so
-// the process can be replaced without cutting off anyone's work.
 type drainer struct {
 	mu     sync.Mutex
 	ctx    context.Context
 	cancel context.CancelFunc
 	active sync.WaitGroup
-	// count is the number of requests in active, for logging.
-	count atomic.Int64
+	count  atomic.Int64
 }
 
 func newDrainer() *drainer {
@@ -46,10 +37,6 @@ func newDrainer() *drainer {
 	return &drainer{ctx: ctx, cancel: cancel}
 }
 
-// Drain makes the bot defer every request that has not started work yet and
-// stops follow-ups, pull request watches, and schedules from firing. The
-// returned channel closes when the requests that had already started are
-// done. Deferred requests are saved and run by the next process.
 func (b *Bot) Drain() <-chan struct{} {
 	b.drain.mu.Lock()
 	b.drain.cancel()
@@ -66,8 +53,6 @@ func (b *Bot) draining() bool {
 	return b.drain.ctx.Err() != nil
 }
 
-// beginRequest registers a request that is about to start, unless the bot is
-// draining. finish must be called once the request is done.
 func (b *Bot) beginRequest() (finish func(), ok bool) {
 	b.drain.mu.Lock()
 	defer b.drain.mu.Unlock()
@@ -82,13 +67,10 @@ func (b *Bot) beginRequest() (finish func(), ok bool) {
 	}, true
 }
 
-// ActiveRequests returns how many requests have started and not finished.
 func (b *Bot) ActiveRequests() int64 {
 	return b.drain.count.Load()
 }
 
-// untilDrain returns a context that is also cancelled, with errDraining as
-// its cause, once the bot starts draining.
 func (b *Bot) untilDrain(ctx context.Context) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	stop := context.AfterFunc(b.drain.ctx, func() { cancel(errDraining) })
@@ -98,10 +80,8 @@ func (b *Bot) untilDrain(ctx context.Context) (context.Context, context.CancelFu
 	}
 }
 
-// deferRequest saves a request that arrived while draining and tells the
-// thread it will start after the restart. The request's event stays claimed
-// as received; the next process's startup recovery releases it, so it can
-// be claimed again when the deferred request runs.
+// The event stays claimed as received; the next process's startup recovery
+// releases it, so it can be claimed again when the deferred request runs.
 func (b *Bot) deferRequest(ctx context.Context, trigger processingTrigger) {
 	deferred := state.Deferred{
 		Source:      triggerSourceNames[trigger.source],
@@ -127,8 +107,6 @@ func (b *Bot) deferRequest(ctx context.Context, trigger processingTrigger) {
 	}
 }
 
-// runDeferred runs the requests the previous process deferred. Requests in
-// one thread run in the order they arrived.
 func (b *Bot) runDeferred(ctx context.Context, wg *sync.WaitGroup) {
 	deferred, err := b.store.TakeDeferred()
 	if err != nil {
@@ -178,8 +156,6 @@ func deferredTrigger(deferred state.Deferred) (processingTrigger, bool) {
 	return processingTrigger{}, false
 }
 
-// stopDeferred cancels the thread's requests that wait for a restart and
-// reports whether there were any.
 func (b *Bot) stopDeferred(channel, threadTS string) bool {
 	removed, err := b.store.DeleteDeferred(func(deferred state.Deferred) bool {
 		return deferred.Channel == channel && deferred.ThreadTS == threadTS

@@ -7,7 +7,6 @@ import (
 	"os"
 )
 
-// reloadSignal is nil where a process cannot replace itself.
 var reloadSignal os.Signal
 
 func reexec(string, []string) error {

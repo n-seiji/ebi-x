@@ -9,23 +9,19 @@ import (
 )
 
 const (
-	scheduleHeading = "## 定期実行"
-	// ScheduleStopWord in "いつ" asks to stop the thread's schedule.
+	scheduleHeading  = "## 定期実行"
 	ScheduleStopWord = "停止"
 )
 
 var weekdayNames = []string{"日", "月", "火", "水", "木", "金", "土"}
 
-// ScheduleSpec is a weekly recurrence at a time of day, in the bot's local
-// time zone. Running at most daily keeps unattended work bounded.
+// Running at most daily keeps unattended work bounded.
 type ScheduleSpec struct {
 	Days   [7]bool
 	Hour   int
 	Minute int
 }
 
-// ParseScheduleSpec reads "毎日 09:00", "平日 9:00", "週末 10:00", or
-// "毎週月水金 9:30" ("毎週月・木曜日 9:00" also works).
 func ParseScheduleSpec(when string) (ScheduleSpec, error) {
 	fields := strings.Fields(strings.ReplaceAll(strings.TrimSpace(when), "：", ":"))
 	if len(fields) != 2 {
@@ -76,7 +72,6 @@ func ParseScheduleSpec(when string) (ScheduleSpec, error) {
 	return spec, nil
 }
 
-// String is the canonical form ParseScheduleSpec reads back.
 func (s ScheduleSpec) String() string {
 	var days string
 	switch s.Days {
@@ -99,8 +94,6 @@ func (s ScheduleSpec) String() string {
 	return fmt.Sprintf("%s %02d:%02d", days, s.Hour, s.Minute)
 }
 
-// Next returns the first occurrence strictly after after, in after's
-// location.
 func (s ScheduleSpec) Next(after time.Time) time.Time {
 	day := time.Date(after.Year(), after.Month(), after.Day(), 0, 0, 0, 0, after.Location())
 	for i := 0; i <= 7; i++ {
@@ -114,17 +107,12 @@ func (s ScheduleSpec) Next(after time.Time) time.Time {
 	return time.Time{}
 }
 
-// ScheduleRequest is the schedule a turn asks for. Stop asks to stop the
-// thread's schedule; otherwise When is as the model wrote it.
 type ScheduleRequest struct {
 	When string
 	Task string
 	Stop bool
 }
 
-// SplitSchedule removes the schedule section, which has the same bullets as
-// the follow-up section ("- いつ: 停止" alone stops the schedule). It returns
-// nil when there is no section; invalid reports one the bot cannot read.
 func SplitSchedule(text string) (rest string, request *ScheduleRequest, invalid bool) {
 	rest, fields, present, invalid := splitFieldSection(text, scheduleHeading, followUpWhenKey, followUpTaskKey)
 	if !present {

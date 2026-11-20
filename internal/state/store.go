@@ -1,5 +1,3 @@
-// Package state persists Codex sessions, Slack event processing states, and
-// access approvals.
 package state
 
 import (
@@ -20,23 +18,17 @@ const (
 	approvalsFilename     = "approvals.json"
 )
 
-// State is the processing state of a Slack mention event.
 type State string
 
 const (
-	// Received means the event has been claimed but execution has not started.
 	Received State = "received"
-	// Planning is a legacy pre-execution state recovered from older versions.
-	Planning State = "planning"
-	// PlanPosted is a legacy pre-execution state recovered from older versions.
+	// Planning and PlanPosted are legacy states, kept so older files recover.
+	Planning   State = "planning"
 	PlanPosted State = "plan_posted"
-	// Working means the work turn may have started making changes.
-	Working State = "working"
-	// Done means the event completed successfully or was closed fail-safe.
-	Done State = "done"
-	// Failed means work did not start and the event may be claimed again.
-	Failed State = "failed"
-	// Interrupted means work may have made changes and must not be retried.
+	Working    State = "working"
+	Done       State = "done"
+	Failed     State = "failed"
+	// Interrupted work may have made changes, so it is never retried.
 	Interrupted State = "interrupted"
 )
 
@@ -45,14 +37,11 @@ type event struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// Subscription is an expiring subscription for a Slack thread.
 type Subscription struct {
 	StartedAt time.Time `json:"started_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// Store persists thread sessions, event states, subscriptions, and approvals
-// in separate JSON files.
 type Store struct {
 	dir string
 
@@ -90,7 +79,6 @@ type Store struct {
 	deferred   map[string]Deferred
 }
 
-// NewStore loads or creates a state store rooted at dir.
 func NewStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create state directory %q: %w", dir, err)
@@ -196,7 +184,6 @@ func NewStore(dir string) (*Store, error) {
 	}, nil
 }
 
-// GetThread returns the Codex thread ID associated with threadKey.
 func (s *Store) GetThread(threadKey string) (string, bool) {
 	s.sessionsMu.Lock()
 	defer s.sessionsMu.Unlock()
@@ -205,7 +192,6 @@ func (s *Store) GetThread(threadKey string) (string, bool) {
 	return threadID, ok
 }
 
-// SetThread associates threadKey with a Codex thread ID.
 func (s *Store) SetThread(threadKey string, threadID string) error {
 	s.sessionsMu.Lock()
 	defer s.sessionsMu.Unlock()
@@ -223,7 +209,6 @@ func (s *Store) SetThread(threadKey string, threadID string) error {
 	return nil
 }
 
-// GetSubscription returns the expiring subscription associated with threadKey.
 func (s *Store) GetSubscription(threadKey string) (Subscription, bool) {
 	s.subscriptionsMu.Lock()
 	defer s.subscriptionsMu.Unlock()
@@ -232,7 +217,6 @@ func (s *Store) GetSubscription(threadKey string) (Subscription, bool) {
 	return subscription, ok
 }
 
-// SetSubscription associates threadKey with an expiring subscription.
 func (s *Store) SetSubscription(threadKey string, startedAt, expiresAt time.Time) error {
 	s.subscriptionsMu.Lock()
 	defer s.subscriptionsMu.Unlock()
@@ -250,7 +234,6 @@ func (s *Store) SetSubscription(threadKey string, startedAt, expiresAt time.Time
 	return nil
 }
 
-// DeleteSubscription removes the subscription associated with threadKey.
 func (s *Store) DeleteSubscription(threadKey string) error {
 	s.subscriptionsMu.Lock()
 	defer s.subscriptionsMu.Unlock()
@@ -267,9 +250,7 @@ func (s *Store) DeleteSubscription(threadKey string) error {
 	return nil
 }
 
-// DeleteSubscriptionIfExpired atomically removes a subscription only when its
-// current expiry is at or before now. A concurrent renewal that acquires the
-// subscription lock first is preserved.
+// A concurrent renewal that takes the lock first is preserved.
 func (s *Store) DeleteSubscriptionIfExpired(threadKey string, now time.Time) (bool, error) {
 	s.subscriptionsMu.Lock()
 	defer s.subscriptionsMu.Unlock()
@@ -286,7 +267,6 @@ func (s *Store) DeleteSubscriptionIfExpired(threadKey string, now time.Time) (bo
 	return true, nil
 }
 
-// ClaimEvent atomically claims an unregistered or failed event.
 func (s *Store) ClaimEvent(eventKey string) (bool, error) {
 	s.eventsMu.Lock()
 	defer s.eventsMu.Unlock()
@@ -307,7 +287,6 @@ func (s *Store) ClaimEvent(eventKey string) (bool, error) {
 	return true, nil
 }
 
-// Transition atomically changes an event from its expected state to an allowed state.
 func (s *Store) Transition(eventKey string, from, to State) error {
 	s.eventsMu.Lock()
 	defer s.eventsMu.Unlock()
@@ -331,7 +310,6 @@ func (s *Store) Transition(eventKey string, from, to State) error {
 	return nil
 }
 
-// RecoverStartup marks abandoned pre-work events failed and working events interrupted.
 func (s *Store) RecoverStartup() error {
 	s.eventsMu.Lock()
 	defer s.eventsMu.Unlock()
@@ -362,7 +340,6 @@ func (s *Store) RecoverStartup() error {
 	return nil
 }
 
-// GC removes terminal events older than the supplied retention duration and expired subscriptions.
 func (s *Store) GC(now time.Time, olderThan time.Duration) error {
 	s.eventsMu.Lock()
 	defer s.eventsMu.Unlock()

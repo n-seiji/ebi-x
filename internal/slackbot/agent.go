@@ -10,12 +10,8 @@ import (
 	"github.com/slack-go/slack/slackevents"
 )
 
-// appHomeMessagesTab is the App Home tab where Slack shows an agent app's
-// conversations with one user.
 const appHomeMessagesTab = "messages"
 
-// suggestedPrompt is a request offered at the top of the agent's Messages tab.
-// Choosing one sends message as the user's own message.
 type suggestedPrompt struct {
 	title   string
 	message string
@@ -27,21 +23,16 @@ var agentSuggestedPrompts = []suggestedPrompt{
 	{title: "最近の変更", message: "作業できるリポジトリの最近の変更をまとめて"},
 }
 
-// isDirectMessage reports whether channel is a one-to-one conversation with
-// the bot. Slack gives every such conversation an ID starting with D.
 func isDirectMessage(channel string) bool {
 	return strings.HasPrefix(channel, "D")
 }
 
-// conversationAllowed reports whether the bot works in channel. A direct
-// message involves only its user, so the user's own permission covers it.
+// A direct message involves only its user, so the user's own permission covers
+// it.
 func (b *Bot) conversationAllowed(channel string) bool {
 	return isDirectMessage(channel) || b.channelAllowed(channel)
 }
 
-// handleDirectMessage processes a message sent to the bot in its Messages tab
-// or a direct message. No mention is needed there: a top-level message starts
-// a thread and replies continue it.
 func (b *Bot) handleDirectMessage(ctx context.Context, event *slackevents.MessageEvent) {
 	if event.User == "" ||
 		event.User == b.config.BotUserID ||
@@ -89,8 +80,6 @@ func (b *Bot) handleDirectMessage(ctx context.Context, event *slackevents.Messag
 	})
 }
 
-// HandleAppHomeOpened shows the user's work on the Home tab, and offers
-// suggested prompts when an allowed user opens the agent's Messages tab.
 func (b *Bot) HandleAppHomeOpened(ctx context.Context, event *slackevents.AppHomeOpenedEvent) {
 	if event == nil || event.User == "" {
 		return
@@ -107,8 +96,7 @@ func (b *Bot) HandleAppHomeOpened(ctx context.Context, event *slackevents.AppHom
 	}
 }
 
-// SetSuggestedPrompts replaces the prompts at the top of the agent's Messages
-// tab. It needs the assistant:write scope and the Agent App setting.
+// Needs the assistant:write scope and the Agent App setting.
 func (w *webAPI) SetSuggestedPrompts(ctx context.Context, channel string, prompts []suggestedPrompt) error {
 	params := slack.AssistantThreadsSetSuggestedPromptsParameters{ChannelID: channel}
 	for _, prompt := range prompts {

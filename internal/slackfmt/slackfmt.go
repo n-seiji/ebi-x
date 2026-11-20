@@ -1,9 +1,5 @@
-// Package slackfmt prepares Markdown model output for delivery to Slack.
-//
-// Slack renders a Block Kit markdown block as standard Markdown, so the model
-// output itself needs no rewriting. What it does need is to be cut into blocks
-// Slack accepts without breaking the Markdown across the cut, and a plain-text
-// rendering for the places Slack cannot show a block.
+// Package slackfmt does not rewrite model output: Slack renders a Block Kit
+// markdown block as standard Markdown.
 package slackfmt
 
 import (
@@ -11,15 +7,10 @@ import (
 	"strings"
 )
 
-// minimumSplitLimit is the smallest limit for which Split keeps track of code
-// fences. Below it the fence bookkeeping would not reliably fit in a chunk, so
-// Split degrades to plain rune chunks instead.
+// Below it the fence bookkeeping would not reliably fit in a chunk, so Split
+// degrades to plain rune chunks.
 const minimumSplitLimit = 64
 
-// Split breaks text into chunks of at most limit runes, cutting on line
-// boundaries so headings, list items, and table rows survive the cut. A chunk
-// that would end inside a fenced code block closes the fence, and the next
-// chunk reopens it with the same marker, so neither half renders as prose.
 func Split(text string, limit int) []string {
 	if limit <= 0 || len([]rune(text)) <= limit {
 		return []string{text}
@@ -57,9 +48,8 @@ func (s *splitter) add(line string) {
 	s.track(line)
 }
 
-// addOversized places a line that cannot fit in any single chunk, cutting it
-// at rune boundaries. Fence state is tracked from the whole line, because the
-// pieces are the same line as far as Markdown is concerned.
+// Fence state is tracked from the whole line, because the pieces are the same
+// line as far as Markdown is concerned.
 func (s *splitter) addOversized(line string) {
 	runes := []rune(line)
 	for len(runes) > 0 {
@@ -101,8 +91,6 @@ func (s *splitter) append(line string) {
 	s.lines = append(s.lines, line)
 }
 
-// cost is the runes a line adds to the current chunk, including the newline
-// that joins it to the line before it.
 func (s *splitter) cost(line string) int {
 	cost := len([]rune(line))
 	if len(s.lines) > 0 {
@@ -111,8 +99,6 @@ func (s *splitter) cost(line string) int {
 	return cost
 }
 
-// reserve is the room held back for the fence line that closes an open fence
-// at the end of the current chunk.
 func (s *splitter) reserve() int {
 	if s.open == "" {
 		return 0
@@ -168,9 +154,8 @@ func (s *splitter) clearFence() {
 	s.width = 0
 }
 
-// fenceMarker reports the fence character and how many times it is repeated at
-// the start of line. A closing fence must use the same character as its
-// opening fence and be at least as long.
+// A closing fence must use the same character as its opening fence and be at
+// least as long.
 func fenceMarker(line string) (marker byte, width int, ok bool) {
 	if len(line) < 3 || (line[0] != '`' && line[0] != '~') {
 		return 0, 0, false
@@ -205,10 +190,8 @@ var (
 	emphasisMarks  = strings.NewReplacer("**", "", "__", "", "`", "")
 )
 
-// PlainText renders Markdown without its syntax. Slack shows it in notification
-// previews and in clients that cannot render blocks, and the bot falls back to
-// it when Slack rejects a block payload, so it keeps link targets rather than
-// only their labels.
+// Keeps link targets rather than only their labels: the bot falls back to it
+// when Slack rejects a block payload.
 func PlainText(text string) string {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = linkPattern.ReplaceAllString(text, "$1 ($2)")
@@ -224,13 +207,11 @@ func PlainText(text string) string {
 	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
-// slackLinkPattern matches Slack's <target|label> link syntax, which the
-// model sometimes writes even though the bot posts Markdown.
+// The model sometimes writes Slack's link syntax even though the bot posts
+// Markdown.
 var slackLinkPattern = regexp.MustCompile(`<([^<>|\s]+)\|([^<>]*)>`)
 
-// HideLocalPaths keeps paths on the bot's machine out of Slack, where no
-// reader can open them. A link to a local file keeps only its label, and a
-// path under home is shown relative to home, so the operator can still find
+// A path under home is shown relative to home, so the operator can still find
 // it without the machine's home directory showing.
 func HideLocalPaths(text, home string) string {
 	text = linkPattern.ReplaceAllStringFunc(text, func(link string) string {
@@ -254,8 +235,6 @@ func HideLocalPaths(text, home string) string {
 	return strings.ReplaceAll(text, home+"/", "")
 }
 
-// localTarget reports whether a link target names a file on this machine
-// rather than a URL.
 func localTarget(target string) bool {
 	switch {
 	case strings.HasPrefix(target, "//"):

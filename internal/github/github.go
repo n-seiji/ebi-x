@@ -1,6 +1,3 @@
-// Package github reads the pull request state ebi-x watches for a Slack
-// thread: whether it merged or closed, its head commit's checks, and new
-// reviews and comments.
 package github
 
 import (
@@ -15,14 +12,10 @@ import (
 	"time"
 )
 
-// DefaultAPIURL is the API of github.com.
 const DefaultAPIURL = "https://api.github.com"
 
-// maxListPages bounds how many pages one list request reads.
 const maxListPages = 10
 
-// Client calls the GitHub REST API with a token that can read the watched
-// repositories.
 type Client struct {
 	apiURL  string
 	webHost string
@@ -30,7 +23,6 @@ type Client struct {
 	http    *http.Client
 }
 
-// NewClient returns a client for apiURL, or for github.com when it is empty.
 func NewClient(apiURL, token string) (*Client, error) {
 	if apiURL == "" {
 		apiURL = DefaultAPIURL
@@ -53,19 +45,16 @@ func NewClient(apiURL, token string) (*Client, error) {
 	}, nil
 }
 
-// PullRef names one pull request.
 type PullRef struct {
 	Owner  string
 	Repo   string
 	Number int
 }
 
-// String returns owner/repo#number.
 func (r PullRef) String() string {
 	return fmt.Sprintf("%s/%s#%d", r.Owner, r.Repo, r.Number)
 }
 
-// ParsePullURL reads a pull request's web URL on the client's GitHub host.
 func (c *Client) ParsePullURL(raw string) (PullRef, bool) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Host, c.webHost) {
@@ -82,9 +71,6 @@ func (c *Client) ParsePullURL(raw string) (PullRef, bool) {
 	return PullRef{Owner: parts[0], Repo: parts[1], Number: number}, true
 }
 
-// RepoFromRemote reads owner and repository from a git remote URL on the
-// client's GitHub host, in the https, ssh://, or scp-like git@host:owner/repo
-// form.
 func (c *Client) RepoFromRemote(remote string) (owner, repo string, ok bool) {
 	remote = strings.TrimSpace(remote)
 	var host, path string
@@ -109,7 +95,6 @@ func (c *Client) RepoFromRemote(remote string) (owner, repo string, ok bool) {
 	return parts[0], parts[1], true
 }
 
-// hostname drops a port from host.
 func hostname(host string) string {
 	return (&url.URL{Host: host}).Hostname()
 }
@@ -126,7 +111,6 @@ func validName(name string) bool {
 	return true
 }
 
-// Pull is the part of a pull request the watcher reacts to.
 type Pull struct {
 	Title   string
 	URL     string
@@ -135,7 +119,6 @@ type Pull struct {
 	HeadSHA string
 }
 
-// Pull reads a pull request.
 func (c *Client) Pull(ctx context.Context, ref PullRef) (Pull, error) {
 	var body struct {
 		Title   string `json:"title"`
@@ -152,7 +135,6 @@ func (c *Client) Pull(ctx context.Context, ref PullRef) (Pull, error) {
 	return Pull{Title: body.Title, URL: body.HTMLURL, State: body.State, Merged: body.Merged, HeadSHA: body.Head.SHA}, nil
 }
 
-// Check states of a commit.
 const (
 	ChecksNone    = "none"
 	ChecksPending = "pending"
@@ -160,15 +142,11 @@ const (
 	ChecksFailure = "failure"
 )
 
-// Checks summarizes a commit's check runs and commit statuses. State is
-// failure once any finished check failed, pending while any is unfinished,
-// success when all passed, and none when the commit has no checks.
 type Checks struct {
 	State  string
 	Failed []string
 }
 
-// Checks reads the check runs and commit statuses of sha.
 func (c *Client) Checks(ctx context.Context, ref PullRef, sha string) (Checks, error) {
 	var failed []string
 	pending, total := false, 0
@@ -234,27 +212,23 @@ func failedConclusion(conclusion string) bool {
 	return false
 }
 
-// Activity kinds.
 const (
 	KindReview        = "review"
 	KindReviewComment = "review_comment"
 	KindComment       = "comment"
 )
 
-// Activity is one review or comment on a pull request.
 type Activity struct {
 	Kind   string
 	ID     int64
 	Author string
-	// State is a review's verdict, such as CHANGES_REQUESTED.
-	State string
-	Body  string
-	Path  string
-	URL   string
+	State  string
+	Body   string
+	Path   string
+	URL    string
 }
 
-// Cursor is the newest review and comment IDs already seen, per kind,
-// since each kind has its own ID sequence.
+// Per kind, since each kind has its own ID sequence.
 type Cursor struct {
 	Review        int64 `json:"review"`
 	ReviewComment int64 `json:"review_comment"`
@@ -267,10 +241,8 @@ type Cursor struct {
 // request, so their text must not start one.
 var trustedAssociations = map[string]bool{"OWNER": true, "MEMBER": true, "COLLABORATOR": true}
 
-// ActivitySince returns the reviews and comments newer than cursor, oldest
-// kind first, and the cursor that covers them. Items by ignoreAuthor, such
-// as the bot's own token user, and by authors without write access to the
-// repository advance the cursor but are not returned.
+// Items by ignoreAuthor or by authors without write access advance the cursor
+// but are not returned, so they never wake a watch later.
 func (c *Client) ActivitySince(ctx context.Context, ref PullRef, cursor Cursor, ignoreAuthor string) ([]Activity, Cursor, error) {
 	type item struct {
 		ID   int64 `json:"id"`
@@ -324,7 +296,6 @@ func (c *Client) ActivitySince(ctx context.Context, ref PullRef, cursor Cursor, 
 	return activity, cursor, nil
 }
 
-// Login returns the token user's login.
 func (c *Client) Login(ctx context.Context) (string, error) {
 	var body struct {
 		Login string `json:"login"`

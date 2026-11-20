@@ -40,9 +40,8 @@ func (access Access) disabledServers(servers map[string]any) []string {
 	return slices.Sorted(maps.Keys(off))
 }
 
-// loadConfigOverrides converts a local Codex TOML file into deterministic
-// command-line overrides. The caller keeps --ignore-user-config enabled and
-// appends ebi-x's mandatory security overrides after these values.
+// The caller keeps --ignore-user-config and appends ebi-x's security overrides
+// after these, so local values cannot override them.
 func loadConfigOverrides(path string, access Access) ([]string, error) {
 	if path == "" {
 		return nil, nil
@@ -124,11 +123,9 @@ func disableServers(overrides, names []string) []string {
 	return kept
 }
 
-// bigQueryReadOnlyOverrides keeps the SQL tool of MCP Toolbox's prebuilt
-// BigQuery server read-only. Toolbox allows any statement unless its write
-// mode says otherwise, so a server exposing execute_sql without an explicit
-// BIGQUERY_WRITE_MODE or BIGQUERY_READONLY runs in "blocked" mode, where
-// only SELECT statements are accepted.
+// Toolbox's execute_sql allows any statement unless its write mode says
+// otherwise, so a server without an explicit BIGQUERY_WRITE_MODE or
+// BIGQUERY_READONLY runs in "blocked" mode.
 func bigQueryReadOnlyOverrides(servers map[string]any) []string {
 	var overrides []string
 	for _, name := range slices.Sorted(maps.Keys(servers)) {
@@ -159,7 +156,6 @@ func isToolboxBigQuery(server map[string]any) bool {
 	return false
 }
 
-// exposesTool reports whether Codex offers the tool of an enabled server.
 func exposesTool(server map[string]any, tool string) bool {
 	if enabled, ok := server["enabled"].(bool); ok && !enabled {
 		return false

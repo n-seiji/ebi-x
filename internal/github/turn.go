@@ -10,33 +10,26 @@ import (
 	"time"
 )
 
-// revokeTimeout bounds the revocation that runs at the end of a turn, which
-// delays the Slack reply.
+// Kept short: the revocation runs at the end of a turn and delays the Slack
+// reply.
 const revokeTimeout = 10 * time.Second
 
 const (
-	// mintAttempts is how many times TurnEnv tries to mint a token.
 	mintAttempts      = 3
 	mintFirstBackoff  = time.Second
 	mintSecondBackoff = 2 * time.Second
 )
 
-// credentialHelperScript answers git's credential get with the token stored
-// beside it, and ignores store and erase so git cannot overwrite it.
+// store and erase are ignored so git cannot overwrite the token.
 const credentialHelperScript = `#!/bin/sh
 test "$1" = get || exit 0
 printf 'username=x-access-token\npassword=%s\n' "$(cat "$(dirname "$0")/token")"
 `
 
-// TurnEnv mints a token for one turn and writes it where git and gh run by
-// the turn find it. It returns the variables that point them there and a
-// function that revokes the token and removes it, so the token lives only
-// as long as the turn. The variables avoid the names Codex keeps from
-// commands (KEY, SECRET, TOKEN): GH_CONFIG_DIR selects a gh configuration
-// holding the token, and GIT_CONFIG_PARAMETERS replaces git's credential
-// helpers for the host with one that prints it. The host's own helpers, and
-// the App private key they may need, are then never used inside the turn.
-// A transient failure to mint is retried first.
+// The variables avoid the names Codex keeps from commands (KEY, SECRET, TOKEN),
+// so GH_CONFIG_DIR and GIT_CONFIG_PARAMETERS are used rather than GH_TOKEN. The
+// host's own helpers, and the App private key they may need, are then never
+// used inside the turn.
 func (a *AppTokens) TurnEnv(ctx context.Context) ([]string, func(), error) {
 	token, err := a.mintWithRetry(ctx)
 	if err != nil {
@@ -69,8 +62,6 @@ func (a *AppTokens) TurnEnv(ctx context.Context) ([]string, func(), error) {
 	return env, cleanup, nil
 }
 
-// mintWithRetry calls Mint up to mintAttempts times, waiting between
-// attempts, while it fails transiently. It returns promptly when ctx ends.
 func (a *AppTokens) mintWithRetry(ctx context.Context) (string, error) {
 	for attempt := 1; ; attempt++ {
 		token, err := a.Mint(ctx)
@@ -131,14 +122,11 @@ func writeTurnCredentials(dir, host, token string) ([]string, error) {
 	}, nil
 }
 
-// shellQuote quotes value the way git's sq_quote does.
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
-// PrepareTurnDir creates dir for the turns' credentials, private to the bot,
-// and removes what a crashed run left in it. The leftover tokens are
-// short-lived, so a failed removal is only logged.
+// The leftover tokens are short-lived, so a failed removal is only logged.
 func PrepareTurnDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create turn GitHub credentials directory: %w", err)

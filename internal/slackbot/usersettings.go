@@ -13,8 +13,6 @@ const (
 	userSettingsFailedNotice  = "⚠️ 個人設定を保存できませんでした。もう一度お試しください。このメッセージはあなたにだけ表示されています。"
 )
 
-// readUserSettings returns the speaker's own settings for the prompt. A
-// request nobody wrote, such as a follow-up, has no speaker's settings.
 func (b *Bot) readUserSettings(userID string) []string {
 	if b.config.MemoryDir == "" || !usersettings.ValidUserID(userID) {
 		return nil
@@ -28,10 +26,9 @@ func (b *Bot) readUserSettings(userID string) []string {
 	return settings
 }
 
-// saveUserSettings replaces the requester's settings with the ones a work
-// turn wrote and returns the notice for the requester. Only a request a
-// person wrote changes settings, and only that person's, so a follow-up, a
-// pull request event, or a scheduled run cannot change anyone's settings.
+// Only a request a person wrote changes settings, and only that person's, so a
+// follow-up, a pull request event, or a scheduled run cannot change anyone's
+// settings.
 func (b *Bot) saveUserSettings(eventKey string, trigger processingTrigger, settings []string) string {
 	if trigger.source != mentionTrigger && trigger.source != messageTrigger {
 		log.Printf("slackbot: ignore user settings from a request nobody wrote %q", eventKey)

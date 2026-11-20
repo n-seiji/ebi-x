@@ -8,13 +8,9 @@ import (
 	"os"
 )
 
-// maxActionRulesBytes bounds the operator's rules file, which every new
-// thread's prompt carries.
 const maxActionRulesBytes = 16 << 10
 
-// readActionRules returns the operator's action rules, or "" for the
-// built-in rules when the file is missing or unreadable. It is read for each
-// new thread, so edits apply without a restart.
+// Read for each new thread, so edits apply without a restart.
 func readActionRules(path string) string {
 	if path == "" {
 		return ""

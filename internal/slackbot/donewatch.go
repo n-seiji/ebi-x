@@ -15,21 +15,12 @@ import (
 )
 
 const (
-	// doneReaction is the reaction that marks a mentioned person as done.
-	doneReaction = "done"
-	// doneWatchPollInterval is how often watched messages are checked, so a
-	// watch ends soon after the last person reacts.
+	doneReaction          = "done"
 	doneWatchPollInterval = 30 * time.Minute
-	// defaultDoneWatchDays is the gap between reminders, in weekdays, when
-	// the command names none: every weekday.
-	defaultDoneWatchDays = 1
-	maxDoneWatchDays     = 7
-	// doneWatchHour is the local hour reminders go out at.
-	doneWatchHour = 19
-	// maxDoneWatchReminders is how many reminders a watch sends before it
-	// ends, unless everyone reacts or someone stops it first.
+	defaultDoneWatchDays  = 1
+	maxDoneWatchDays      = 7
+	doneWatchHour         = 19
 	maxDoneWatchReminders = 5
-	// maxDoneWatchesPerUser bounds the watches one person keeps running.
 	maxDoneWatchesPerUser = 10
 	maxDoneWatchTargets   = 100
 
@@ -51,26 +42,16 @@ const (
 	doneWatchNothingToStop    = "このスレッドで続けている :done: の監視はありません。"
 )
 
-// doneWatchCommand is what follows the bot's mention at the end of a message
-// to start a watch, such as "監視して", "毎日監視して", or "3日おきに監視して".
 var doneWatchCommand = regexp.MustCompile(`^(?:(毎日)|(\d{1,2})日(おき|ごと|毎)に?)?\s*監視(?:して|お願い(?:します)?|よろしく)?(?:ください)?[。．.!！\s]*$`)
 
-// doneWatchStopCommand is a whole message that stops the thread's watches.
 var doneWatchStopCommand = regexp.MustCompile(`^監視を?(?:とめ|止め|やめ|停止し?|終了し?|解除し?)(?:て(?:ください)?)?[。．.!！\s]*$|^監視(?:停止|終了|解除)[。．.!！\s]*$`)
 
-// slackUserMention matches a user mention in a Slack message's text.
 var slackUserMention = regexp.MustCompile(`<@([UW][A-Z0-9]+)(?:\|[^>]*)?>`)
 
-// slackBroadcast matches @channel, @here, and @everyone, which a watch reads
-// as every member of the channel.
 var slackBroadcast = regexp.MustCompile(`<!(?:channel|here|everyone)(?:\|[^>]*)?>`)
 
-// slackUserGroup matches a user group mention such as @dev_team, which a
-// watch reads as every member of the group.
 var slackUserGroup = regexp.MustCompile(`<!subteam\^([A-Z0-9]+)(?:\|[^>]*)?>`)
 
-// parseDoneWatchCommand reports whether text ends with the bot's mention and
-// a watch command, and the days between reminders it asks for.
 func parseDoneWatchCommand(text, botUserID string) (int, bool) {
 	if botUserID == "" {
 		return 0, false
@@ -108,8 +89,6 @@ func isDoneWatchStopCommand(message string) bool {
 	return doneWatchStopCommand.MatchString(strings.TrimSpace(message))
 }
 
-// mentionedUsers lists the users text mentions, in order and once each,
-// leaving out the bot.
 func mentionedUsers(text, botUserID string) []string {
 	seen := make(map[string]struct{})
 	var users []string
@@ -127,10 +106,6 @@ func mentionedUsers(text, botUserID string) []string {
 	return users
 }
 
-// startDoneWatch watches the message a "監視して" mention points at. That is
-// the mention's own message when it mentions people, and otherwise the
-// thread's first message. @channel and the like stand for every person in
-// the channel but the author.
 func (b *Bot) startDoneWatch(ctx context.Context, channel, threadTS, timestamp, text, authorID string, days int) {
 	messageTS := timestamp
 	targets := mentionedUsers(text, b.config.BotUserID)
@@ -235,8 +210,6 @@ func (b *Bot) startDoneWatch(ctx context.Context, channel, threadTS, timestamp, 
 	b.postDoneWatchNotice(ctx, channel, threadTS, fmt.Sprintf(doneWatchStartedNotice, len(targets), doneWatchIntervalLabel(days), formatFollowUpTime(watch.NextAt), outsideNote, maxDoneWatchReminders))
 }
 
-// nextDoneWatchReminder returns the days-th weekday 19:00 local time after
-// after, so reminders skip Saturdays and Sundays.
 func nextDoneWatchReminder(after time.Time, days int) time.Time {
 	local := after.In(time.Local)
 	at := time.Date(local.Year(), local.Month(), local.Day(), doneWatchHour, 0, 0, 0, time.Local)
@@ -254,10 +227,7 @@ func nextDoneWatchReminder(after time.Time, days int) time.Time {
 	}
 }
 
-// expandDoneWatchTargets adds the people that @channel and user group
-// mentions stand for. Only channel members count, since a mention does not
-// reach anyone else; outside is how many group members were left out for
-// that.
+// Only channel members count, since a mention does not reach anyone else.
 func (b *Bot) expandDoneWatchTargets(ctx context.Context, channelMembers, named []string, everyone bool, groups []string, authorID string) (targets []string, outside int, err error) {
 	inChannel := makeSet(channelMembers)
 	var members []string
@@ -310,7 +280,6 @@ func (b *Bot) postDoneWatchNotice(ctx context.Context, channel, threadTS, text s
 	}
 }
 
-// doneWatchIntervalLabel says how often a watch reminds.
 func doneWatchIntervalLabel(days int) string {
 	switch days {
 	case 1:
@@ -321,7 +290,6 @@ func doneWatchIntervalLabel(days int) string {
 	return fmt.Sprintf("平日%d日ごとの%d時", days, doneWatchHour)
 }
 
-// notIn returns the users that are not among members, in order.
 func notIn(users, members []string) []string {
 	in := makeSet(members)
 	var out []string
@@ -333,8 +301,6 @@ func notIn(users, members []string) []string {
 	return out
 }
 
-// mentionedGroups lists the user groups mentioned in text, in order and
-// without repeats.
 func mentionedGroups(text string) []string {
 	var groups []string
 	seen := map[string]struct{}{}
@@ -348,9 +314,6 @@ func mentionedGroups(text string) []string {
 	return groups
 }
 
-// mergeTargets adds the channel's and the groups' members after the people
-// mentioned by name, leaving out the author and the bot unless they were
-// named.
 func mergeTargets(named, members []string, authorID, botUserID string) []string {
 	targets := append([]string(nil), named...)
 	seen := makeSet(named)
@@ -367,7 +330,6 @@ func mergeTargets(named, members []string, authorID, botUserID string) []string 
 	return targets
 }
 
-// pendingUsers lists the targets missing from reacted.
 func pendingUsers(targets, reacted []string) []string {
 	done := makeSet(reacted)
 	var pending []string
@@ -387,9 +349,8 @@ func userMentions(users []string) string {
 	return strings.Join(mentions, " ")
 }
 
-// runDoneWatches checks the watched messages until ctx is done. It wakes for
-// the next reminder when that comes before the next poll, so reminders go
-// out on the hour.
+// Wakes for a reminder due before the next poll, so reminders go out on the
+// hour.
 func (b *Bot) runDoneWatches(ctx context.Context) {
 	for {
 		for _, watch := range b.store.DoneWatches() {
@@ -410,8 +371,6 @@ func (b *Bot) runDoneWatches(ctx context.Context) {
 	}
 }
 
-// checkDoneWatch ends a watch once every target has reacted, and when a
-// reminder is due, mentions the targets who have not yet.
 func (b *Bot) checkDoneWatch(ctx context.Context, watch state.DoneWatch) {
 	key := watch.Key()
 	if !b.userAllowed(watch.AuthorID) || !b.conversationAllowed(watch.Channel) {
@@ -478,8 +437,6 @@ func (b *Bot) checkDoneWatch(ctx context.Context, watch state.DoneWatch) {
 	}
 }
 
-// endDoneWatch removes a watch and, when message is set, says why in its
-// thread.
 func (b *Bot) endDoneWatch(ctx context.Context, watch state.DoneWatch, message string) {
 	key := watch.Key()
 	removed, err := b.store.DeleteDoneWatches(func(w state.DoneWatch) bool { return w.Key() == key })
@@ -496,8 +453,6 @@ func (b *Bot) endDoneWatch(ctx context.Context, watch state.DoneWatch, message s
 	}
 }
 
-// stopDoneWatches ends every watch started in the thread, reporting whether
-// there was one.
 func (b *Bot) stopDoneWatches(channel, threadTS string) bool {
 	removed, err := b.store.DeleteDoneWatches(func(w state.DoneWatch) bool {
 		return w.Channel == channel && w.ThreadTS == threadTS
@@ -508,13 +463,10 @@ func (b *Bot) stopDoneWatches(channel, threadTS string) bool {
 	return len(removed) > 0
 }
 
-// doneWatchSummary describes a watch for the Home tab.
 func doneWatchSummary(watch state.DoneWatch) string {
 	return fmt.Sprintf("対象%d人、%s（次回 %s）", len(watch.Targets), doneWatchIntervalLabel(watch.IntervalDays), formatFollowUpTime(watch.NextAt))
 }
 
-// stopDoneWatchCommand answers "監視をとめて": it ends the thread's :done:
-// watches and leaves its other work running.
 func (b *Bot) stopDoneWatchCommand(ctx context.Context, channel, threadTS string) {
 	message := doneWatchNothingToStop
 	if b.stopDoneWatches(channel, threadTS) {

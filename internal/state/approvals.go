@@ -10,62 +10,43 @@ import (
 	"time"
 )
 
-// ApprovalKind is the kind of Slack entity an approval applies to.
 type ApprovalKind string
 
 const (
-	// ApprovalUser approves a Slack user.
-	ApprovalUser ApprovalKind = "user"
-	// ApprovalChannel approves a Slack channel.
-	ApprovalChannel ApprovalKind = "channel"
-	// ApprovalWorkflow approves a Slack workflow.
+	ApprovalUser     ApprovalKind = "user"
+	ApprovalChannel  ApprovalKind = "channel"
 	ApprovalWorkflow ApprovalKind = "workflow"
 )
 
-// ApprovalStatus is the decision recorded for an approval.
 type ApprovalStatus string
 
 const (
-	// Pending means a request was posted and nobody has decided yet.
-	Pending ApprovalStatus = "pending"
-	// Approved means the entity may use the bot.
+	Pending  ApprovalStatus = "pending"
 	Approved ApprovalStatus = "approved"
-	// Denied means the entity is rejected without asking again.
-	Denied ApprovalStatus = "denied"
+	Denied   ApprovalStatus = "denied"
 )
 
-// Approval is the recorded access decision for one Slack entity.
 type Approval struct {
-	Kind        ApprovalKind   `json:"kind"`
-	ID          string         `json:"id"`
-	Status      ApprovalStatus `json:"status"`
-	RequestedAt time.Time      `json:"requested_at"`
-	// RequestedBy is the user whose mention triggered the request.
-	RequestedBy string `json:"requested_by,omitempty"`
-	// RequestChannel and RequestThreadTS locate the triggering mention's
-	// thread, which is told when the request is approved.
-	RequestChannel  string `json:"request_channel,omitempty"`
-	RequestThreadTS string `json:"request_thread_ts,omitempty"`
-	// RequestMessageTS is the request posted in the approval channel, whose
-	// thread approvers answer in.
-	RequestMessageTS string `json:"request_message_ts,omitempty"`
-	// MentionTS and MentionText are the latest mention that waited for this
-	// approval, so it can be started once everything it needs is approved.
-	MentionTS   string    `json:"mention_ts,omitempty"`
-	MentionText string    `json:"mention_text,omitempty"`
-	DecidedBy   string    `json:"decided_by,omitempty"`
-	DecidedAt   time.Time `json:"decided_at,omitzero"`
+	Kind             ApprovalKind   `json:"kind"`
+	ID               string         `json:"id"`
+	Status           ApprovalStatus `json:"status"`
+	RequestedAt      time.Time      `json:"requested_at"`
+	RequestedBy      string         `json:"requested_by,omitempty"`
+	RequestChannel   string         `json:"request_channel,omitempty"`
+	RequestThreadTS  string         `json:"request_thread_ts,omitempty"`
+	RequestMessageTS string         `json:"request_message_ts,omitempty"`
+	MentionTS        string         `json:"mention_ts,omitempty"`
+	MentionText      string         `json:"mention_text,omitempty"`
+	DecidedBy        string         `json:"decided_by,omitempty"`
+	DecidedAt        time.Time      `json:"decided_at,omitzero"`
 }
 
-// ApprovalStatus returns the recorded status of kind and id, or "" when
-// nothing is recorded.
 func (s *Store) ApprovalStatus(kind ApprovalKind, id string) ApprovalStatus {
 	s.approvalsMu.Lock()
 	defer s.approvalsMu.Unlock()
 	return s.approvals[approvalKey(kind, id)].Status
 }
 
-// GetApproval returns the recorded approval of kind and id.
 func (s *Store) GetApproval(kind ApprovalKind, id string) (Approval, bool) {
 	s.approvalsMu.Lock()
 	defer s.approvalsMu.Unlock()
@@ -73,9 +54,7 @@ func (s *Store) GetApproval(kind ApprovalKind, id string) (Approval, bool) {
 	return approval, ok
 }
 
-// RequestApproval records a pending request for kind and id unless something
-// is already recorded for them. It reports whether this call created the
-// request, so only one caller posts it.
+// Reports whether this call created the request, so only one caller posts it.
 func (s *Store) RequestApproval(kind ApprovalKind, id, requestedBy, requestChannel, requestThreadTS string, now time.Time) (bool, error) {
 	if err := validApprovalKind(kind); err != nil {
 		return false, err
@@ -103,9 +82,7 @@ func (s *Store) RequestApproval(kind ApprovalKind, id, requestedBy, requestChann
 	return true, nil
 }
 
-// DecideApproval approves or denies a pending request. When the request is
-// no longer pending, it reports false with the current record, so the first
-// decision wins.
+// The first decision wins.
 func (s *Store) DecideApproval(kind ApprovalKind, id string, approve bool, decidedBy string, now time.Time) (approval Approval, decided bool, err error) {
 	s.approvalsMu.Lock()
 	defer s.approvalsMu.Unlock()
@@ -130,8 +107,6 @@ func (s *Store) DecideApproval(kind ApprovalKind, id string, approve bool, decid
 	return next, true, nil
 }
 
-// SetApprovalRequestMessage records where the request for kind and id was
-// posted in the approval channel.
 func (s *Store) SetApprovalRequestMessage(kind ApprovalKind, id, timestamp string) error {
 	s.approvalsMu.Lock()
 	defer s.approvalsMu.Unlock()
@@ -151,9 +126,6 @@ func (s *Store) SetApprovalRequestMessage(kind ApprovalKind, id, timestamp strin
 	return nil
 }
 
-// SetApprovalMention records mention as the latest one waiting for the
-// pending request of kind and id; the origin thread moves to it. It reports
-// false without saving when the request is no longer pending.
 func (s *Store) SetApprovalMention(kind ApprovalKind, id string, mention ApprovalMention) (bool, error) {
 	s.approvalsMu.Lock()
 	defer s.approvalsMu.Unlock()
@@ -177,18 +149,14 @@ func (s *Store) SetApprovalMention(kind ApprovalKind, id string, mention Approva
 	return true, nil
 }
 
-// ApprovalMention is a mention that waits for an approval.
 type ApprovalMention struct {
 	User     string
 	Channel  string
 	ThreadTS string
 	TS       string
-	// Text is the request with the bot mention removed.
-	Text string
+	Text     string
 }
 
-// FindApprovalByRequestMessage returns the approval whose request was posted
-// at timestamp in the approval channel.
 func (s *Store) FindApprovalByRequestMessage(timestamp string) (Approval, bool) {
 	if timestamp == "" {
 		return Approval{}, false
@@ -203,8 +171,6 @@ func (s *Store) FindApprovalByRequestMessage(timestamp string) (Approval, bool) 
 	return Approval{}, false
 }
 
-// DeleteApproval removes whatever is recorded for kind and id, so the next
-// mention asks again. It reports whether a record existed.
 func (s *Store) DeleteApproval(kind ApprovalKind, id string) (bool, error) {
 	s.approvalsMu.Lock()
 	defer s.approvalsMu.Unlock()
@@ -229,8 +195,7 @@ func (s *Store) saveApprovals() error {
 	return nil
 }
 
-// sortedApprovals returns a stable copy of the approvals; approvalsMu must be
-// held.
+// approvalsMu must be held.
 func (s *Store) sortedApprovals() []Approval {
 	approvals := slices.Collect(maps.Values(s.approvals))
 	slices.SortFunc(approvals, func(a, b Approval) int {

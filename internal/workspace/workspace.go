@@ -1,6 +1,3 @@
-// Package workspace prepares per-thread working directories and git
-// checkouts so work turns for different Slack threads can run in parallel
-// without touching each other's files.
 package workspace
 
 import (
@@ -21,60 +18,37 @@ import (
 )
 
 const (
-	// branchPrefix names the branches created in thread checkouts.
 	branchPrefix = "ebi-x/"
-	// lastUsedFile records, by its modification time, when a thread's
-	// checkouts were last used by a work turn.
 	lastUsedFile = ".last-used"
-	// gitDirSuffix names a checkout's git directory. Codex keeps every
-	// directory named .git read-only even when it is a writable root, which
-	// would make commits impossible, so the git directory lives beside the
-	// checkout under another name.
+	// Codex keeps every directory named .git read-only even when it is a
+	// writable root, which would make commits impossible.
 	gitDirSuffix = ".gitdir"
 )
 
-// Checkout is a clone of a git repository dedicated to one Slack thread.
 type Checkout struct {
-	// Repo is the original repository configured as a writable root.
-	Repo string
-	// Path is the thread's checkout of Repo.
+	Repo   string
 	Path   string
 	Branch string
 }
 
-// Lease holds a thread's workspace for the duration of one work turn. It
-// keeps the thread locked, so the garbage collector never removes a leased
+// Holding the thread lock keeps the garbage collector from removing a leased
 // thread's checkouts.
 type Lease struct {
-	// Dir is the thread's workspace directory, used as the turn's cwd.
-	Dir string
-	// WritableRoots replaces each git repository among the configured
-	// writable roots with its thread checkout and that checkout's git
-	// directory. The original repository is not writable.
+	Dir           string
 	WritableRoots []string
 	Checkouts     []Checkout
-	// PendingRepos are the repositories this thread has no checkout of yet,
-	// because the lease was acquired without creating them. The turn may
-	// read the originals and ask for checkouts when it has to change them.
-	PendingRepos []string
-	// Shared reports that Dir is used by every thread, so it does not belong
-	// to this thread alone.
-	Shared bool
-	Area   Area
+	PendingRepos  []string
+	Shared        bool
+	Area          Area
 
 	once    sync.Once
 	release func()
 }
 
-// NewLease returns a lease that calls release once when it is released. It
-// lets other implementations of a workspace provider hand out leases.
 func NewLease(dir string, writableRoots []string, checkouts []Checkout, release func()) *Lease {
 	return &Lease{Dir: dir, WritableRoots: writableRoots, Checkouts: checkouts, release: release}
 }
 
-// ThreadAreas returns the directories that belong to this thread alone: its
-// workspace directory, unless it is shared, and its checkouts. Shared
-// writable roots are excluded.
 func (l *Lease) ThreadAreas() []string {
 	var areas []string
 	if !l.Shared {
@@ -86,38 +60,26 @@ func (l *Lease) ThreadAreas() []string {
 	return areas
 }
 
-// Release returns the lease. It is safe to call more than once.
 func (l *Lease) Release() {
 	l.once.Do(l.release)
 }
 
 type root struct {
-	path string
-	// name is the root's directory name inside a thread's checkout
-	// directory; empty when the root is not the top level of a git
-	// repository.
-	name string
-	// originURL is the repository's origin remote, which checkouts push to.
+	path      string
+	name      string
 	originURL string
 }
 
-// Manager creates per-thread workspace directories and git checkouts and
-// removes checkouts that have not been used for a while.
 type Manager struct {
 	workspaceDir string
 	checkoutsDir string
 	closedDir    string
 	roots        []root
 
-	mu sync.Mutex
-	// idLocks serialize preparing, using, and removing one thread's
-	// checkouts.
+	mu      sync.Mutex
 	idLocks map[string]*sync.Mutex
 }
 
-// New returns a Manager. Every writable root that is the top level of a git
-// repository is worked on through per-thread checkouts; other roots stay
-// shared by all threads.
 func New(ctx context.Context, workspaceDir, checkoutsDir, closedDir string, writableRoots []string) (*Manager, error) {
 	m := &Manager{
 		workspaceDir: workspaceDir,
@@ -143,8 +105,6 @@ func New(ctx context.Context, workspaceDir, checkoutsDir, closedDir string, writ
 	return m, nil
 }
 
-// Repositories returns the writable roots that are worked on through
-// per-thread checkouts.
 func (m *Manager) Repositories() []string {
 	var repos []string
 	for _, r := range m.roots {
@@ -155,8 +115,6 @@ func (m *Manager) Repositories() []string {
 	return repos
 }
 
-// OriginURLs returns the origin remotes of the repositories threads work on
-// through checkouts, which their branches are pushed to.
 func (m *Manager) OriginURLs() []string {
 	var urls []string
 	for _, r := range m.roots {
@@ -167,7 +125,6 @@ func (m *Manager) OriginURLs() []string {
 	return urls
 }
 
-// ThreadID derives a filesystem- and branch-safe identifier for a Slack thread.
 func ThreadID(channel, threadTS string) (string, error) {
 	if !memory.ValidChannelID(channel) || !validTimestamp(threadTS) {
 		return "", fmt.Errorf("invalid Slack thread %q/%q", channel, threadTS)
@@ -192,7 +149,6 @@ func (m *Manager) dirs(area Area) (string, string, error) {
 	return filepath.Join(base, "workspace"), filepath.Join(base, "checkouts"), nil
 }
 
-// ThreadDir returns the thread's workspace directory, creating it if needed.
 func (m *Manager) ThreadDir(threadID string, area Area) (string, error) {
 	workspaceDir, _, err := m.dirs(area)
 	if err != nil {
@@ -208,10 +164,7 @@ func (m *Manager) ThreadDir(threadID string, area Area) (string, error) {
 	return dir, nil
 }
 
-// Acquire prepares the thread's workspace and checkouts for a work turn.
-// Existing checkouts are reused, so later work in the thread continues on the
-// same branch. Missing checkouts are cloned only when createCheckouts is set;
-// otherwise their repositories are listed in Lease.PendingRepos, so a request
+// Missing checkouts are cloned only when createCheckouts is set, so a request
 // that only reads code does not pay for clones.
 func (m *Manager) Acquire(ctx context.Context, threadID string, area Area, createCheckouts bool) (*Lease, error) {
 	area = m.settledArea(threadID, area)
@@ -324,11 +277,8 @@ func (m *Manager) prepare(ctx context.Context, threadID, dir, threadCheckouts st
 	return lease, nil
 }
 
-// GC removes the checkouts, and with them the thread branches, of every
-// thread whose last work turn ended at or before now minus idle: an idle
-// thread's work is considered finished, and anything worth keeping should
-// have been pushed or merged by then. Original repositories are never
-// touched. It returns the thread IDs whose checkouts were removed.
+// An idle thread's work is considered finished: anything worth keeping should
+// have been pushed or merged by then.
 func (m *Manager) GC(now time.Time, idle time.Duration) ([]string, error) {
 	dirs := []string{m.checkoutsDir}
 	if m.closedDir != "" {
@@ -412,11 +362,9 @@ func threadPath(base, threadID string) (string, error) {
 	return filepath.Join(base, threadID), nil
 }
 
-// ensureCheckout clones the repository's current HEAD into a thread branch.
-// Objects are copied, not hardlinked: the checkout's git directory is
-// writable by Codex, and a shared inode would let it rewrite the original
-// repository's objects in place. When originURL is set, the
-// checkout's origin points there too so the branch can be pushed.
+// Objects are copied, not hardlinked: the checkout's git directory is writable
+// by Codex, and a shared inode would let it rewrite the original repository's
+// objects in place.
 func ensureCheckout(ctx context.Context, checkout Checkout, originURL string) error {
 	if checkoutReady(checkout) {
 		return nil
@@ -443,7 +391,6 @@ func ensureCheckout(ctx context.Context, checkout Checkout, originURL string) er
 	return git(ctx, checkout.Path, "remote", "set-url", "origin", originURL)
 }
 
-// checkoutReady reports whether a previous turn finished cloning checkout.
 func checkoutReady(checkout Checkout) bool {
 	if _, err := os.Stat(filepath.Join(checkout.Path, ".git")); err != nil {
 		return false
@@ -452,9 +399,7 @@ func checkoutReady(checkout Checkout) bool {
 	return err == nil
 }
 
-// OriginURL returns the origin URL a thread checkout of the repository at
-// path gets: the configured remote.origin.url, before any url.*.insteadOf
-// rewriting. It is empty when the repository has no origin.
+// The configured remote.origin.url, before any url.*.insteadOf rewriting.
 func OriginURL(ctx context.Context, path string) (string, error) {
 	out, err := gitOutput(ctx, path, "config", "--get", "remote.origin.url")
 	if err != nil {
@@ -467,8 +412,6 @@ func OriginURL(ctx context.Context, path string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// IsRepositoryTopLevel reports whether path is the top level of a git
-// repository.
 func IsRepositoryTopLevel(ctx context.Context, path string) (bool, error) {
 	if _, err := os.Lstat(filepath.Join(path, ".git")); errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -506,7 +449,6 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 	return stdout.String(), nil
 }
 
-// touch records the current time as the file's modification time.
 func touch(path string) error {
 	now := time.Now()
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
@@ -523,9 +465,7 @@ func validThreadID(id string) bool {
 	return ok && memory.ValidChannelID(channel) && validTimestamp(threadTS)
 }
 
-// validTimestamp accepts Slack message timestamps (digits and at most one
-// inner dot), which keeps thread IDs valid as both directory names and git
-// branch names.
+// Keeps thread IDs valid as both directory names and git branch names.
 func validTimestamp(value string) bool {
 	if value == "" || value[0] == '.' || value[len(value)-1] == '.' {
 		return false

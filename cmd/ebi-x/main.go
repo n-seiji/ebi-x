@@ -1,4 +1,3 @@
-// Command ebi-x is the entry point for the ebi-x Slack bot.
 package main
 
 import (
@@ -27,14 +26,10 @@ import (
 	"github.com/n-seiji/ebi-x/internal/workspace"
 )
 
-// checkoutGCInterval is how often idle thread checkouts are looked for.
 const checkoutGCInterval = time.Hour
 
-// checkConfigArg makes ebi-x only load its configuration and exit, so a
-// reload can check the new binary before handing over to it.
 const checkConfigArg = "-check-config"
 
-// drainLogInterval is how often a reload reports what it is waiting for.
 const drainLogInterval = time.Minute
 
 func main() {
@@ -51,8 +46,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("load configuration: %v", err)
 	}
-	// A reload execs the binary at this path, so a rebuilt binary takes
-	// effect without a new process.
 	executable, err := os.Executable()
 	if err != nil {
 		log.Printf("find own executable; reload is unavailable: %v", err)
@@ -258,9 +251,6 @@ run:
 	}
 }
 
-// waitForDrain waits until the bot's running requests are done, logging
-// what it still waits for. It reports false when a shutdown was requested
-// meanwhile, so the process exits instead of restarting.
 func waitForDrain(signalCtx context.Context, bot *slackbot.Bot, reloadRequested <-chan os.Signal) bool {
 	drained := bot.Drain()
 	ticker := time.NewTicker(drainLogInterval)
@@ -281,8 +271,6 @@ func waitForDrain(signalCtx context.Context, bot *slackbot.Bot, reloadRequested 
 	}
 }
 
-// checkExecutable runs the binary at path with checkConfigArg and returns
-// why it failed, if it did.
 func checkExecutable(path string, env []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -294,8 +282,6 @@ func checkExecutable(path string, env []string) error {
 	return nil
 }
 
-// collectIdleCheckouts removes thread checkouts that have not been used for
-// idle, at startup and then every checkoutGCInterval until ctx is done.
 func collectIdleCheckouts(ctx context.Context, workspaces *workspace.Manager, idle time.Duration) {
 	ticker := time.NewTicker(checkoutGCInterval)
 	defer ticker.Stop()
@@ -319,8 +305,7 @@ func collectIdleCheckouts(ctx context.Context, workspaces *workspace.Manager, id
 // an hour) reliably outlasts.
 const maxGitHubTokenTurn = 55 * time.Minute
 
-// githubAppTokens loads the App's private key and checks that it mints a
-// token, which it revokes again. A failed mint is only logged: each turn tries again, and until one
+// A failed mint is only logged, not fatal: each turn tries again, and until one
 // succeeds turns use the host's git and gh configuration.
 func githubAppTokens(apiURL string, app *config.GitHubApp, turnDir string, codexTimeout time.Duration) (*github.AppTokens, error) {
 	if strings.HasPrefix(app.KeyLocation, github.KeychainPrefix) {
@@ -357,9 +342,7 @@ func githubAppTokens(apiURL string, app *config.GitHubApp, turnDir string, codex
 	return tokens, nil
 }
 
-// pushToken returns the token the work turns push to a GitHub origin with,
-// so watching needs no token of its own. It is empty when every origin uses
-// SSH or git has no stored credential for it.
+// Watching reuses the push token rather than needing one of its own.
 func pushToken(apiURL string, origins []string) string {
 	client, err := github.NewClient(apiURL, "")
 	if err != nil {
@@ -380,7 +363,6 @@ func pushToken(apiURL string, origins []string) string {
 	return ""
 }
 
-// redactURL drops any credential embedded in a remote URL before logging it.
 func redactURL(raw string) string {
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.User == nil {

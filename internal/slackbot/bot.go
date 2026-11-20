@@ -1,4 +1,3 @@
-// Package slackbot connects Slack mentions to persistent Codex sessions.
 package slackbot
 
 import (
@@ -44,65 +43,48 @@ const (
 	stoppedMessage          = "⏹️ 依頼により作業を停止しました。途中までの変更が作業領域に残っている場合があります。続ける場合は、新しい mention で依頼してください。"
 	nothingToStopMessage    = "停止する作業はありません。"
 	statusRefreshDelay      = 80 * time.Second
-	// statusMinInterval is the shortest gap between two status changes.
-	statusMinInterval = 3 * time.Second
+	statusMinInterval       = 3 * time.Second
 )
 
-// errStoppedByUser is the cancellation cause of a request stopped from Slack.
 var errStoppedByUser = errors.New("stopped by user")
 
-// SlackAPI is the subset of Slack Web API used by Bot.
 type SlackAPI interface {
 	PostMessage(ctx context.Context, channel, threadTS, text string) (string, error)
 	GetThreadMessages(ctx context.Context, channel, threadTS, latest string) ([]ThreadMessage, error)
-	// GetMessage reads one message of a thread (the root when timestamp is
-	// threadTS), with its files.
 	GetMessage(ctx context.Context, channel, threadTS, timestamp string) (ThreadMessage, error)
 	ChannelInfo(ctx context.Context, channel string) (ChannelInfo, error)
-	// DownloadFile writes a file shared in Slack, given its private URL.
 	DownloadFile(ctx context.Context, url string, w io.Writer) error
 	SetStatus(ctx context.Context, channel, threadTS, status string) error
 	HasReaction(ctx context.Context, channel, timestamp, reaction string) (bool, error)
-	// ReactionUsers lists the users who reacted to the message with reaction.
 	ReactionUsers(ctx context.Context, channel, timestamp, reaction string) ([]string, error)
-	// ChannelMembers lists every member of channel, bots included.
 	ChannelMembers(ctx context.Context, channel string) ([]string, error)
-	// UserGroupMembers lists every member of the user group.
 	UserGroupMembers(ctx context.Context, group string) ([]string, error)
-	// People keeps the users that are active people, leaving out bots and
-	// deactivated accounts.
 	People(ctx context.Context, users []string) ([]string, error)
 	AddReaction(ctx context.Context, channel, timestamp, name string) error
 	RemoveReaction(ctx context.Context, channel, timestamp, name string) error
 	UploadFile(ctx context.Context, channel, threadTS, filename string, size int64, content io.Reader) error
 	SetSuggestedPrompts(ctx context.Context, channel string, prompts []suggestedPrompt) error
-	// PublishHome shows sections of mrkdwn text on userID's App Home tab.
 	PublishHome(ctx context.Context, userID string, sections []string) error
 	Permalink(ctx context.Context, channel, timestamp string) (string, error)
-	// OpenRequestModal opens the "ebi-x に頼む" modal for a message shortcut.
 	OpenRequestModal(ctx context.Context, triggerID, metadata, quoted string) error
 	PostEphemeral(ctx context.Context, channel, user, text string) error
 }
 
-// ThreadMessage is the Slack thread data supplied to a first turn.
 type ThreadMessage struct {
 	AuthorID  string
 	Timestamp string
 	Text      string
-	// Files are the files shared with the message.
-	Files []SlackFile
+	Files     []SlackFile
 }
 
-// SlackFile is a file someone shared in a Slack message.
 type SlackFile struct {
 	Name     string
 	Mimetype string
 	Size     int
-	// URL is the private download URL; reading it needs files:read.
+	// Reading it needs files:read.
 	URL string
 }
 
-// Store is the persistent state used by Bot.
 type Store interface {
 	ClaimEvent(eventKey string) (bool, error)
 	Transition(eventKey string, from, to state.State) error
@@ -139,76 +121,46 @@ type Store interface {
 	DeleteDeferred(match func(state.Deferred) bool) (int, error)
 }
 
-// Runner executes one Codex turn. deniedPaths are hidden from the turn in
-// addition to the runner's own protected paths. onActivity, when set,
-// receives the turn's steps while it runs.
 type Runner interface {
 	Run(ctx context.Context, threadID, sandbox, cwd string, writableRoots, deniedPaths []string, access codex.Access, text string, onThreadStarted func(string) error, onActivity func(codex.Activity)) (*codex.TurnResult, error)
 }
 
-// Workspaces provides per-thread working directories and git checkouts.
 type Workspaces interface {
 	Acquire(ctx context.Context, threadID string, area workspace.Area, createCheckouts bool) (*workspace.Lease, error)
 	Denied(area workspace.Area) ([]string, error)
 }
 
-// Config contains paths, allowlists, and timeout settings needed by Bot.
 type Config struct {
-	AllowedUserIDs    []string
-	AllowedChannelIDs []string
-	// ApprovalChannelID is where users, channels, and workflows outside the
-	// allowlists are approved. Approvals are disabled unless both it and
-	// Approvals are set.
-	ApprovalChannelID string
-	// ApproverUserIDs are the only users who may decide approvals.
-	ApproverUserIDs []string
-	// Approvals records the decisions made in ApprovalChannelID.
-	Approvals      Approvals
-	AllowWorkflows bool
-	// AllowedWorkflowIDs are the only workflows accepted when AllowWorkflows
-	// is set.
-	AllowedWorkflowIDs []string
-	AdminUserID        string
-	// EBIXHome is ebi-x's own directory. Paths under it are shown relative
-	// to it in Slack.
-	EBIXHome         string
-	WorkspaceDir     string
-	MemoryDir        string
-	PlaybooksDir     string
-	ChannelRulesFile string
-	// ActionRulesFile holds the operator's rules on which actions need the
-	// requester's confirmation. Built-in rules apply when it is missing.
+	AllowedUserIDs             []string
+	AllowedChannelIDs          []string
+	ApprovalChannelID          string
+	ApproverUserIDs            []string
+	Approvals                  Approvals
+	AllowWorkflows             bool
+	AllowedWorkflowIDs         []string
+	AdminUserID                string
+	EBIXHome                   string
+	WorkspaceDir               string
+	MemoryDir                  string
+	PlaybooksDir               string
+	ChannelRulesFile           string
 	ActionRulesFile            string
 	CodexTimeout               time.Duration
 	ThreadSubscriptionReaction string
 	ThreadSubscriptionTTL      time.Duration
 	BotUserID                  string
-	// WritableRoots are extra directories the work turn may write to.
-	WritableRoots []string
-	// MaxParallelWork is how many work turns for different Slack threads may
-	// run at once. Values below 1 mean 1.
-	MaxParallelWork int
-	// GitHub reads the pull requests turns ask the bot to watch. Watching is
-	// off when it is nil.
-	GitHub GitHub
-	// GitHubLogin is the GitHub user behind GitHub's token, whose own
-	// reviews and comments do not wake a watch.
+	WritableRoots              []string
+	MaxParallelWork            int
+	GitHub                     GitHub
+	// Its own reviews and comments do not wake a watch.
 	GitHubLogin string
-	// GitHubRepos are the owner/repo names whose pull requests may be
-	// watched: the repositories threads work on. A turn could otherwise watch
-	// any pull request the token can read and relay it into its channel.
+	// A turn could otherwise watch any pull request the token can read and
+	// relay it into its channel.
 	GitHubRepos []string
-	// Workspaces gives each Slack thread its cwd and writable roots. When
-	// nil, every thread shares WorkspaceDir and WritableRoots.
-	Workspaces Workspaces
-	// Usage reads the Codex account's usage. When it is set, the usage is
-	// recorded and summarized daily in ApprovalChannelID, low usage is
-	// announced there, it answers questions about the usage there, and a
-	// turn stopped by the usage limit says when to ask again.
-	Usage UsageReader
+	Workspaces  Workspaces
+	Usage       UsageReader
 }
 
-// Bot handles Slack mentions.
 type Bot struct {
 	api       SlackAPI
 	store     Store
@@ -225,27 +177,17 @@ type Bot struct {
 	threadMu         sync.Mutex
 	threadLocks      map[string]*sync.Mutex
 	workLocks        map[string]*sync.Mutex
-	// running holds the cancel functions of the requests each thread is
-	// processing or waiting to process, keyed by thread and then event.
-	runningMu sync.Mutex
-	running   map[string]map[string]runningRequest
-	// usageMu serializes usage announcements from the poll and from turns
-	// that hit the limit.
-	usageMu sync.Mutex
-	// adminAlerts is when each kind of alert was last posted in the
-	// approval channel.
-	adminAlerts map[string]time.Time
-	// failureMu guards recentFailures, the times of the requests that failed
-	// within repeatedFailureWindow.
-	failureMu      sync.Mutex
-	recentFailures []time.Time
-	// drain defers new requests while the running ones finish before a
-	// restart.
-	drain   *drainer
-	scopeMu sync.Mutex
-	scopes  map[string]cachedScope
-	now     func() time.Time
-	sleep   func(context.Context, time.Duration) error
+	runningMu        sync.Mutex
+	running          map[string]map[string]runningRequest
+	usageMu          sync.Mutex
+	adminAlerts      map[string]time.Time
+	failureMu        sync.Mutex
+	recentFailures   []time.Time
+	drain            *drainer
+	scopeMu          sync.Mutex
+	scopes           map[string]cachedScope
+	now              func() time.Time
+	sleep            func(context.Context, time.Duration) error
 }
 
 type triggerSource uint8
@@ -253,11 +195,8 @@ type triggerSource uint8
 const (
 	mentionTrigger triggerSource = iota
 	messageTrigger
-	// followUpTrigger is a follow-up the thread's session scheduled.
 	followUpTrigger
-	// pullWatchTrigger is an event on a pull request the session watches.
 	pullWatchTrigger
-	// scheduleTrigger is an occurrence of a schedule a person set.
 	scheduleTrigger
 )
 
@@ -269,11 +208,9 @@ type processingTrigger struct {
 	threadTS    string
 	message     string
 	threadReply bool
-	// followUp is the due follow-up a followUpTrigger runs.
-	followUp *state.FollowUp
+	followUp    *state.FollowUp
 }
 
-// New constructs a Bot.
 func New(api SlackAPI, store Store, runner Runner, config Config, playbooks []playbook.Playbook) *Bot {
 	config.WritableRoots = append([]string(nil), config.WritableRoots...)
 	if config.Workspaces == nil {
@@ -300,7 +237,6 @@ func New(api SlackAPI, store Store, runner Runner, config Config, playbooks []pl
 	return b
 }
 
-// HandleMention filters and processes one already-acknowledged app mention.
 func (b *Bot) HandleMention(ctx context.Context, event *slackevents.AppMentionEvent) {
 	b.handleMention(ctx, event, "")
 }
@@ -380,9 +316,6 @@ func (b *Bot) handleMention(ctx context.Context, event *slackevents.AppMentionEv
 	})
 }
 
-// HandleMessage filters and processes one already-acknowledged ordinary
-// message event: a direct message to the bot, or a channel message from an
-// active subscribed thread.
 func (b *Bot) HandleMessage(ctx context.Context, event *slackevents.MessageEvent) {
 	if event != nil && event.ChannelType == "im" {
 		b.handleDirectMessage(ctx, event)
@@ -468,9 +401,7 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		return
 	}
 	defer finish()
-	// stopCtx ends when the request is stopped from Slack. Only waiting and
-	// the Codex turn use it; Slack calls keep ctx, so a stop never keeps the
-	// bot from reporting.
+	// Slack calls keep ctx, so a stop never keeps the bot from reporting.
 	stopCtx, untrack := b.trackRequest(ctx, threadRef(channel, threadTS), eventKey, trigger.authorID)
 	defer untrack()
 	failure := func(message string) string {
@@ -491,10 +422,9 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		return
 	}
 
-	// A Slack thread owns one Codex session. Hold the lock through execution
-	// and delivery so replies see the preceding result and never resume a
-	// session concurrently.
-	// Do not resume older sessions carrying the retired planning contract.
+	// Hold the lock through execution and delivery so replies see the preceding
+	// result and never resume a session concurrently. The version prefix keeps
+	// sessions with the retired planning contract from resuming.
 	threadKey := "v5:" + channel + ":" + threadTS
 	lock := b.keyedLock(b.threadLocks, threadKey)
 	lock.Lock()
@@ -606,45 +536,27 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	b.finalReaction(ctx, channel, timestamp, reaction)
 }
 
-// workOutput is what a completed work turn hands back for posting.
 type workOutput struct {
-	text          string
-	memoryUpdated bool
-	// userSettingsNotice tells the requester, and only them, that their
-	// settings changed.
-	userSettingsNotice string
-	// attachmentOutputInvalid reports an attachment section the bot could not
-	// read, so no files were sent.
+	text                    string
+	memoryUpdated           bool
+	userSettingsNotice      string
 	attachmentOutputInvalid bool
-	// failedAttachments lists files that were rejected or failed to upload.
-	failedAttachments []attachment.Rejection
-	// followUp is the follow-up the turn asked for, and followUpInvalid
-	// reports a follow-up section the bot could not read.
-	followUp        *codex.FollowUpRequest
-	followUpInvalid bool
-	// schedule is the schedule the turn asked to set or stop, and
-	// scheduleInvalid reports a schedule section the bot could not read.
-	schedule        *codex.ScheduleRequest
-	scheduleInvalid bool
-	// reminder is the reminder the turn asked to set or cancel, and
-	// reminderInvalid reports a reminder section the bot could not read.
-	reminder        *codex.ReminderRequest
-	reminderInvalid bool
-	// waiting reports that the turn stopped to ask the requester questions.
-	waiting   bool
-	questions []string
-	// pullURLs are the pull requests the turn asked the bot to watch.
-	pullURLs []string
-	// playbookFold is the fold of a playbook's notes into its body this
-	// request caused, if any.
-	playbookFold *playbookFold
-	// playbookNoteNotice tells the thread what became of the playbook note
-	// the turn wrote.
-	playbookNoteNotice string
+	failedAttachments       []attachment.Rejection
+	followUp                *codex.FollowUpRequest
+	followUpInvalid         bool
+	schedule                *codex.ScheduleRequest
+	scheduleInvalid         bool
+	reminder                *codex.ReminderRequest
+	reminderInvalid         bool
+	waiting                 bool
+	questions               []string
+	pullURLs                []string
+	playbookFold            *playbookFold
+	playbookNoteNotice      string
 }
 
-// attachmentNotice tells the user which files did not reach Slack, so the
-// posted result never reads as a complete delivery when it was not.
+// Without it the posted result would read as a complete delivery when it was
+// not.
 func (o workOutput) attachmentNotice() string {
 	if o.attachmentOutputInvalid {
 		return attachmentOutputNotice
@@ -660,9 +572,7 @@ func (o workOutput) attachmentNotice() string {
 	return builder.String()
 }
 
-// work runs one complete request in the Slack thread's Codex session. started reports whether the event
-// reached the working state; when it did not, nothing was run and the event
-// may be retried. stopCtx bounds the waiting and the turn; ctx the rest.
+// started false means nothing was run and the event may be retried.
 func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread string, files []ThreadMessage, scope channelScope, trigger processingTrigger) (output workOutput, started bool, err error) {
 	// Work still waiting for its turn when a restart begins is deferred
 	// rather than started, so the restart only waits for running turns.
@@ -695,11 +605,7 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	}
 	defer func() { lease.Release() }()
 	scope.hidden = rule.limitLease(lease)
-	// Playbooks and global memory reach every channel, so only the approval
-	// channel may change them.
 	sharedWritable := b.sharedWritable(channel)
-	// Files people shared are saved in the thread's workspace so the turn
-	// can open them; the list follows the request.
 	trigger.message += b.saveSharedFiles(ctx, lease, files)
 	trigger.message += scope.note()
 
@@ -734,8 +640,6 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	if err := b.store.Transition(eventKey, state.Received, state.Working); err != nil {
 		return workOutput{}, false, err
 	}
-	// Keep the status visible throughout the execution turn, and show what
-	// the turn is doing as it goes.
 	status := b.startStatus(ctx, channel, threadTS, workingStatus)
 	defer status.Stop()
 	tracker := &progress{}
@@ -743,7 +647,6 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		status.Update(tracker.observe(activity))
 	}
 
-	// sessionID is the session a checkout request continues in.
 	sessionID := threadID
 	persistThread := func(id string) error {
 		sessionID = id
@@ -774,7 +677,6 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		if err != nil {
 			return workOutput{}, true, err
 		}
-		// A second request has nothing more to prepare.
 		finalText, _ = codex.SplitCheckoutRequest(finalText)
 	}
 
@@ -843,7 +745,6 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	return output, true, nil
 }
 
-// runWorkTurn runs one turn in lease and returns its final message.
 func (b *Bot) runWorkTurn(ctx context.Context, threadID string, lease *workspace.Lease, scope channelScope, sharedWritable bool, text string, onThreadStarted func(string) error, onActivity func(codex.Activity)) (string, error) {
 	roots := append([]string(nil), lease.WritableRoots...)
 	if b.config.PlaybooksDir != "" && sharedWritable {
@@ -888,9 +789,8 @@ func (b *Bot) runWorkTurn(ctx context.Context, threadID string, lease *workspace
 	return result.Messages[len(result.Messages)-1], nil
 }
 
-// uploadAttachments sends the files a work turn listed to the Slack thread.
-// Only files in the thread's own workspace directory and checkouts qualify;
-// shared writable roots and the playbooks directory are other threads' too.
+// Shared writable roots and the playbooks directory are not attachable: they
+// belong to other threads too.
 func (b *Bot) uploadAttachments(ctx context.Context, eventKey, channel, threadTS string, lease *workspace.Lease, paths []string) []attachment.Rejection {
 	files, failed := attachment.Resolve(lease.ThreadAreas(), lease.Dir, paths)
 	for _, rejection := range failed {
@@ -921,10 +821,6 @@ func (b *Bot) uploadAttachments(ctx context.Context, eventKey, channel, threadTS
 	return failed
 }
 
-// acquireWork waits until this Slack thread has no other work turn running
-// and a parallel work slot is free. Work turns for one thread run in order;
-// different threads run in parallel up to MaxParallelWork. While waiting,
-// the thread shows a queued status. The returned function releases both.
 func (b *Bot) acquireWork(ctx context.Context, threadKey, channel, threadTS string) (func(), error) {
 	lock := b.keyedLock(b.workLocks, threadKey)
 	release := func() {
@@ -957,8 +853,6 @@ func (b *Bot) acquireWork(ctx context.Context, threadKey, channel, threadTS stri
 	}
 }
 
-// sharedWorkspaces runs every thread in one directory with the same writable
-// roots. It is the default when Config.Workspaces is not set.
 type sharedWorkspaces struct {
 	dir   string
 	roots []string
@@ -972,8 +866,7 @@ func (w sharedWorkspaces) Acquire(context.Context, string, workspace.Area, bool)
 
 func (w sharedWorkspaces) Denied(workspace.Area) ([]string, error) { return nil, nil }
 
-// forbidden tells the author that the mention is refused, naming who lacks
-// access so they know to ask the admin rather than retry.
+// Names who lacks access so the author asks the admin rather than retrying.
 func (b *Bot) forbidden(ctx context.Context, event *slackevents.AppMentionEvent, missing []approvalSubject) {
 	contact := "@seiji"
 	if b.config.AdminUserID != "" {
@@ -1040,16 +933,12 @@ func (b *Bot) fail(ctx context.Context, eventKey string, from, to state.State, c
 	b.finalReaction(ctx, channel, timestamp, failedReaction)
 }
 
-// Terminal reactions on a request: ✅ when it is done, 🙋 when the turn is
-// waiting for the requester's answer, and ❌ only when it failed or was
-// interrupted.
 const (
 	finishedReaction = "white_check_mark"
 	waitingReaction  = "raising_hand"
 	failedReaction   = "x"
 )
 
-// finalReaction replaces the request's 👀 with its terminal reaction.
 func (b *Bot) finalReaction(ctx context.Context, channel, timestamp, name string) {
 	// Add the terminal reaction first so a transient API failure cannot leave
 	// the message with no status reaction.
@@ -1078,11 +967,8 @@ func (b *Bot) clearStatus(ctx context.Context, channel, threadTS string) {
 	b.setStatus(clearCtx, channel, threadTS, "")
 }
 
-// broadcastMention matches Slack's special mentions that notify a whole
-// channel or user group.
 var broadcastMention = regexp.MustCompile(`(?i)<!(channel|here|everyone|subteam\^[^>|]*)(\|[^>]*)?>`)
 
-// neutralizeBroadcasts keeps model output from notifying everyone in a channel.
 func neutralizeBroadcasts(text string) string {
 	return broadcastMention.ReplaceAllString(text, "@$1")
 }
@@ -1193,10 +1079,8 @@ type webAPI struct {
 	client *slack.Client
 }
 
-// PostMessage sends the text as a Block Kit markdown block so Slack renders
-// headings, tables, and links rather than printing their syntax. The text
-// option is not a second copy of the body: Slack shows it in notification
-// previews and in clients that cannot render blocks.
+// The text option is not a second copy of the body: Slack shows it in
+// notification previews and in clients that cannot render blocks.
 func (w *webAPI) PostMessage(ctx context.Context, channel, threadTS, text string) (string, error) {
 	text = neutralizeBroadcasts(text)
 	fallback := slackfmt.PlainText(text)
@@ -1216,8 +1100,6 @@ func (w *webAPI) PostMessage(ctx context.Context, channel, threadTS, text string
 	return timestamp, err
 }
 
-// rejectedBlocks reports whether Slack refused the block payload itself, which
-// a retry without blocks can still deliver.
 func rejectedBlocks(err error) bool {
 	response, ok := errors.AsType[slack.SlackErrorResponse](err)
 	if !ok {
@@ -1369,8 +1251,8 @@ func (w *webAPI) UserGroupMembers(ctx context.Context, group string) ([]string, 
 	return members, nil
 }
 
-// People needs users:read. One users.list walk tells bots apart, instead of
-// a users.info call per user; slack-go waits out its rate limit.
+// Needs users:read. One users.list walk tells bots apart instead of a
+// users.info call per user.
 func (w *webAPI) People(ctx context.Context, members []string) ([]string, error) {
 	users, err := w.client.GetUsersContext(ctx)
 	if err != nil {
@@ -1399,9 +1281,7 @@ func (w *webAPI) RemoveReaction(ctx context.Context, channel, timestamp, name st
 	return w.client.RemoveReactionContext(ctx, name, slack.ItemRef{Channel: channel, Timestamp: timestamp})
 }
 
-// UploadFile shares one file in the thread through Slack's external upload
-// flow (files.getUploadURLExternal, then files.completeUploadExternal). It
-// needs the files:write scope.
+// Needs the files:write scope.
 func (w *webAPI) UploadFile(ctx context.Context, channel, threadTS, filename string, size int64, content io.Reader) error {
 	_, err := w.client.UploadFileV2Context(ctx, slack.UploadFileV2Parameters{
 		Reader:          content,
@@ -1414,8 +1294,6 @@ func (w *webAPI) UploadFile(ctx context.Context, channel, threadTS, filename str
 	return err
 }
 
-// RunSocketMode connects a Bot to Slack Socket Mode. It acknowledges every
-// envelope before dispatching app mentions and ordinary messages separately.
 func RunSocketMode(acceptCtx, turnCtx context.Context, botToken, appToken string, bot *Bot, wg *sync.WaitGroup) error {
 	client := slack.New(botToken, slack.OptionAppLevelToken(appToken))
 	auth, err := client.AuthTestContext(acceptCtx)

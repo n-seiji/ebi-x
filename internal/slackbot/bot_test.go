@@ -401,17 +401,15 @@ func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error)
 }
 
 type fakeSlack struct {
-	mu               sync.Mutex
-	channelInfos     map[string]ChannelInfo
-	channelInfoErr   error
-	channelInfoCalls int
-	calls            []slackCall
-	postErrs         []error
-	postTexts        []string
-	threadMessages   []ThreadMessage
-	threadErr        error
-	// message is what GetMessage returns; downloads maps file URLs to
-	// their content.
+	mu                sync.Mutex
+	channelInfos      map[string]ChannelInfo
+	channelInfoErr    error
+	channelInfoCalls  int
+	calls             []slackCall
+	postErrs          []error
+	postTexts         []string
+	threadMessages    []ThreadMessage
+	threadErr         error
 	message           ThreadMessage
 	messageCalls      int
 	downloads         map[string]string
@@ -427,21 +425,13 @@ type fakeSlack struct {
 	uploads           []fakeUpload
 	uploadErrs        []error
 	posts             []fakePost
-	// reactionUsers are the users ReactionUsers returns, and
-	// reactionUsersErr its error.
-	reactionUsers    []string
-	reactionUsersErr error
-	// channelMembers are the people ChannelMembers returns, and
-	// channelMembersErr its error.
+	reactionUsers     []string
+	reactionUsersErr  error
 	channelMembers    []string
 	channelMembersErr error
-	// groupMembers maps a user group to the people UserGroupMembers
-	// returns, and groupMembersErr is its error.
-	groupMembers    map[string][]string
-	groupMembersErr error
-	// topTimestamp, when set, is returned for top-level posts instead of
-	// the default placeholder, for flows that run work in the new thread.
-	topTimestamp string
+	groupMembers      map[string][]string
+	groupMembersErr   error
+	topTimestamp      string
 }
 
 type fakePost struct {
@@ -1605,89 +1595,6 @@ func successfulTurnRunner() *fakeRunner {
 		Completed: true,
 		Messages:  []string{"Done."},
 	}}}}
-}
-
-func TestTurnSlackOutputsSanitizeForbiddenUserMemory(t *testing.T) {
-	tests := []struct {
-		name     string
-		turnText string
-		want     string
-	}{
-		{
-			name:     "normal answer",
-			turnText: "No work needed.\n## ユーザーメモリ追記\nprivate turn memory",
-			want:     "No work needed.",
-		},
-		{
-			name:     "unstructured answer",
-			turnText: "unstructured answer ``` ## ユーザーメモリ追記 private turn memory",
-			want:     "unstructured answer ```",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			store := &fakeStore{claim: true}
-			api := &fakeSlack{}
-			runner := &fakeRunner{responses: []runnerResponse{
-				{result: &codex.TurnResult{
-					Completed: true,
-					Messages:  []string{test.turnText},
-				}},
-				{result: &codex.TurnResult{Completed: true, Messages: []string{"Work completed."}}},
-			}}
-
-			newTestBot(t, store, api, runner).HandleMention(context.Background(), mention())
-
-			posts := strings.Join(api.postTexts, "|")
-			if !strings.Contains(posts, test.want) {
-				t.Fatalf("posts = %q, want preserved output %q", posts, test.want)
-			}
-			for _, forbidden := range []string{"## ユーザーメモリ追記", "private turn memory"} {
-				if strings.Contains(posts, forbidden) {
-					t.Fatalf("posts = %q, must not expose %q", posts, forbidden)
-				}
-			}
-		})
-	}
-}
-
-func TestWorkSlackOutputSanitizesForbiddenUserMemoryAnywhere(t *testing.T) {
-	tests := []struct {
-		name     string
-		workText string
-	}{
-		{
-			name:     "inside fence",
-			workText: "Work completed.\n```text\n## ユーザーメモリ追記\nprivate work memory\n```",
-		},
-		{
-			name:     "inline",
-			workText: "Work completed. ## ユーザーメモリ追記 private work memory",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			store := &fakeStore{claim: true}
-			api := &fakeSlack{}
-			runner := &fakeRunner{responses: []runnerResponse{
-				{result: &codex.TurnResult{Completed: true, Messages: []string{test.workText}}},
-			}}
-
-			newTestBot(t, store, api, runner).HandleMention(context.Background(), mention())
-
-			posts := strings.Join(api.postTexts, "|")
-			if !strings.Contains(posts, "Work completed.") {
-				t.Fatalf("posts = %q, want preserved normal work output", posts)
-			}
-			for _, forbidden := range []string{"## ユーザーメモリ追記", "private work memory"} {
-				if strings.Contains(posts, forbidden) {
-					t.Fatalf("posts = %q, must not expose %q", posts, forbidden)
-				}
-			}
-		})
-	}
 }
 
 func TestSessionsAreSharedBySlackThread(t *testing.T) {

@@ -13,21 +13,14 @@ import (
 	"time"
 )
 
-// maxAppServerLineBytes bounds one JSON-RPC message read from the app server.
 const maxAppServerLineBytes = 1 << 20
 
-// ErrUsageLimit marks a turn that failed because the Codex account's usage
-// limit was reached.
 var ErrUsageLimit = errors.New("codex usage limit reached")
 
-// IsUsageLimitMessage reports whether a turn's error message says the usage
-// limit was reached, as Codex words it ("You've hit your usage limit...").
 func IsUsageLimitMessage(message string) bool {
 	return strings.Contains(strings.ToLower(message), "usage limit")
 }
 
-// ErrNotSignedIn marks a turn that failed because Codex is not signed in or
-// its sign-in can no longer be refreshed.
 var ErrNotSignedIn = errors.New("codex is not signed in")
 
 // notSignedInPhrases are how Codex words a missing or expired sign-in, as in
@@ -35,8 +28,6 @@ var ErrNotSignedIn = errors.New("codex is not signed in")
 // again." or "401 Unauthorized".
 var notSignedInPhrases = []string{"sign in again", "not logged in", "401 unauthorized", "access token could not be refreshed"}
 
-// IsNotSignedInMessage reports whether an error message says Codex is not
-// signed in.
 func IsNotSignedInMessage(message string) bool {
 	lower := strings.ToLower(message)
 	for _, phrase := range notSignedInPhrases {
@@ -47,25 +38,17 @@ func IsNotSignedInMessage(message string) bool {
 	return false
 }
 
-// RateLimitWindow is one usage window of the Codex account, such as the
-// 5-hour or the weekly limit.
 type RateLimitWindow struct {
-	UsedPercent float64 `json:"usedPercent"`
-	// WindowMinutes is the window's length; 0 when Codex did not report it.
-	WindowMinutes int64 `json:"windowDurationMins"`
-	// ResetsAt is when the window resets, in Unix seconds; 0 when unknown.
-	ResetsAt int64 `json:"resetsAt"`
+	UsedPercent   float64 `json:"usedPercent"`
+	WindowMinutes int64   `json:"windowDurationMins"`
+	ResetsAt      int64   `json:"resetsAt"`
 }
 
-// RateLimits is the Codex account's current usage.
 type RateLimits struct {
-	// Primary is the shorter window (5 hours) and Secondary the longer one
-	// (a week). Either is nil when the plan does not have it.
 	Primary   *RateLimitWindow `json:"primary"`
 	Secondary *RateLimitWindow `json:"secondary"`
 }
 
-// Windows returns the reported windows, shorter first.
 func (r *RateLimits) Windows() []RateLimitWindow {
 	var windows []RateLimitWindow
 	for _, window := range []*RateLimitWindow{r.Primary, r.Secondary} {
@@ -76,7 +59,6 @@ func (r *RateLimits) Windows() []RateLimitWindow {
 	return windows
 }
 
-// ResetTime returns when the window resets, or the zero time when unknown.
 func (w RateLimitWindow) ResetTime() time.Time {
 	if w.ResetsAt <= 0 {
 		return time.Time{}
@@ -92,10 +74,8 @@ type appServerMessage struct {
 	} `json:"error"`
 }
 
-// ReadRateLimits asks a short-lived "codex app-server" for the account's
-// usage. It uses the same Codex command and credentials as the turns, so it
-// works whenever they do; an account signed in with an API key has no usage
-// windows and returns an error.
+// Uses the same Codex command and credentials as the turns, so it works
+// whenever they do.
 func (r *Runner) ReadRateLimits(ctx context.Context) (*RateLimits, error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

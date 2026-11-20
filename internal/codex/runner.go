@@ -1,4 +1,3 @@
-// Package codex runs Codex CLI turns and parses their JSONL output.
 package codex
 
 import (
@@ -44,18 +43,13 @@ var envAllowNames = map[string]struct{}{
 	"HTTP_PROXY": {}, "HTTPS_PROXY": {}, "NO_PROXY": {}, "ALL_PROXY": {},
 	"http_proxy": {}, "https_proxy": {}, "no_proxy": {}, "all_proxy": {},
 	"SSL_CERT_FILE": {}, "SSL_CERT_DIR": {},
-	// Codex authenticates with these.
 	"OPENAI_API_KEY": {}, "CODEX_API_KEY": {},
-	// Endpoint and certificate configuration.
 	"OPENAI_BASE_URL": {}, "CODEX_CA_CERTIFICATE": {}, "NODE_EXTRA_CA_CERTS": {},
 	"REQUESTS_CA_BUNDLE": {}, "CURL_CA_BUNDLE": {}, "GIT_SSL_CAINFO": {},
-	// git configuration.
 	"GIT_SSH_COMMAND": {}, "GIT_CONFIG_GLOBAL": {}, "GIT_CONFIG_SYSTEM": {}, "GIT_CONFIG_NOSYSTEM": {}, "GNUPGHOME": {},
-	// Toolchain locations and settings.
 	"GOPATH": {}, "GOPRIVATE": {}, "GOPROXY": {}, "GONOSUMDB": {}, "GONOPROXY": {}, "GOFLAGS": {},
 	"CARGO_HOME": {}, "RUSTUP_HOME": {}, "JAVA_HOME": {}, "PYENV_ROOT": {},
 	"NVM_DIR": {}, "VOLTA_HOME": {}, "PNPM_HOME": {},
-	// GitHub CLI location, and the desktop session bus.
 	"GH_HOST": {}, "GH_CONFIG_DIR": {}, "DBUS_SESSION_BUS_ADDRESS": {},
 }
 
@@ -65,40 +59,26 @@ var envAllowPrefixes = []string{"LC_", "XDG_", "MISE_"}
 // allowed prefix, so MISE_GITHUB_TOKEN stays out although MISE_ is allowed.
 var envSecretMarkers = []string{"TOKEN", "SECRET", "PASSWORD", "KEY"}
 
-// Runner executes Codex CLI turns.
 type Runner struct {
 	Command string
 	Model   string
-	// ConfigPath is a local project config whose values are forwarded as CLI
-	// overrides while the global user config remains disabled.
+	// Forwarded as CLI overrides because the global user config stays disabled.
 	ConfigPath string
-	// DeniedReadPaths are protected backing stores that model-generated
-	// commands must not read or write. They are enforced with a Codex
-	// permission profile, independently of prompt instructions.
+	// Enforced with a Codex permission profile, independently of prompt
+	// instructions.
 	DeniedReadPaths []string
-	// PassEnv lists extra environment variable names Codex inherits beyond
-	// the built-in allowlist.
-	PassEnv []string
-	// CodexHome holds Codex credentials, configuration, and the history of
-	// every thread. Each turn denies everything in it except codexHomeVisible.
-	CodexHome string
-	// DeveloperInstructions is injected into each session with the
-	// "developer" role, which outranks user messages and AGENTS.md in the
-	// model's chain of command. Codex stores it once per thread, so passing
-	// it again on resume does not duplicate it.
+	PassEnv         []string
+	CodexHome       string
+	// Codex stores it once per thread, so passing it again on resume does not
+	// duplicate it.
 	DeveloperInstructions string
-	// GitHub, when set, gives each turn its own short-lived GitHub
-	// credential instead of the host's git and gh configuration.
-	GitHub TurnCredentials
+	GitHub                TurnCredentials
 }
 
-// TurnCredentials prepares a credential for one turn: the variables that
-// point its commands at it and a function that removes it.
 type TurnCredentials interface {
 	TurnEnv(ctx context.Context) ([]string, func(), error)
 }
 
-// TurnResult is the outcome reported by one Codex CLI turn.
 type TurnResult struct {
 	ThreadID  string
 	Messages  []string
@@ -106,7 +86,6 @@ type TurnResult struct {
 	Err       string
 }
 
-// Run executes a new or resumed Codex CLI turn.
 func (r *Runner) Run(
 	ctx context.Context,
 	threadID, sandbox, cwd string,
@@ -217,9 +196,8 @@ var codexHomeVisible = map[string]struct{}{
 	"shell_snapshots": {},
 }
 
-// codexHomeDenied lists the entries of home to hide. Codex adds state files
-// across versions, so everything not known to be needed is denied rather
-// than naming the sensitive ones.
+// Everything not known to be needed is denied, rather than naming the sensitive
+// ones, because Codex adds state files across versions.
 func codexHomeDenied(home string) ([]string, error) {
 	if home == "" {
 		return nil, nil
@@ -240,14 +218,11 @@ func codexHomeDenied(home string) ([]string, error) {
 	return denied, nil
 }
 
-// FilterEnv returns the entries of env that Codex may inherit: the built-in
-// allowlist plus the names in extra.
 func FilterEnv(env, extra []string) []string {
 	kept, _ := splitEnv(env, extra)
 	return kept
 }
 
-// WithheldEnvNames returns the sorted names in env that FilterEnv drops.
 func WithheldEnvNames(env, extra []string) []string {
 	_, withheld := splitEnv(env, extra)
 	slices.Sort(withheld)
@@ -287,11 +262,8 @@ func envAllowed(name string, extra []string) bool {
 	return false
 }
 
-// shellEnvPolicyOverrides pins Codex's shell environment policy, which
-// decides what the commands it runs inherit from its own environment. Codex
-// keeps its default excludes (names containing KEY, SECRET, or TOKEN) and
-// additionally drops the two API keys it authenticates with by name, so
-// neither depends on Codex's defaults or on local configuration.
+// The two API keys are dropped by name too, so neither depends on Codex's
+// defaults or on local configuration.
 func shellEnvPolicyOverrides() []string {
 	excluded := make([]string, len(shellEnvExcluded))
 	for i, name := range shellEnvExcluded {
@@ -314,13 +286,10 @@ var noGitHubEnv = []string{
 
 var shellEnvExcluded = []string{"OPENAI_API_KEY", "CODEX_API_KEY"}
 
-// shellEnvDefaultExcludeMarkers are the substrings of Codex's default shell
-// environment excludes, which ignore_default_excludes=false keeps on. They
-// differ from envSecretMarkers, ebi-x's own rule for allowed prefixes.
+// Not envSecretMarkers: these are Codex's own default excludes, which
+// ignore_default_excludes=false keeps on.
 var shellEnvDefaultExcludeMarkers = []string{"KEY", "SECRET", "TOKEN"}
 
-// HiddenFromCommands reports whether Codex removes the variable from the
-// commands it runs although Codex itself inherits it.
 func HiddenFromCommands(name string) bool {
 	upper := strings.ToUpper(name)
 	for _, marker := range shellEnvDefaultExcludeMarkers {

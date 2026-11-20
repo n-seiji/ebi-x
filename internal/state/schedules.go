@@ -9,17 +9,10 @@ import (
 
 const schedulesFilename = "schedules.json"
 
-// Schedule is work a person asked to repeat: at each NextAt the bot starts
-// Task in a new thread of Channel, as a request from AuthorID.
 type Schedule struct {
-	Channel string `json:"channel"`
-	// ThreadTS is the thread where the schedule was set, and where it is
-	// stopped.
-	ThreadTS string `json:"thread_ts"`
-	// AuthorID runs every occurrence with that user's permissions, checked
-	// again each time.
-	AuthorID string `json:"author_id"`
-	// Spec is the recurrence as the bot reads it, such as "平日 09:00".
+	Channel   string    `json:"channel"`
+	ThreadTS  string    `json:"thread_ts"`
+	AuthorID  string    `json:"author_id"`
 	Spec      string    `json:"spec"`
 	Task      string    `json:"task"`
 	NextAt    time.Time `json:"next_at"`
@@ -27,7 +20,6 @@ type Schedule struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// GetSchedule returns the schedule set in threadKey.
 func (s *Store) GetSchedule(threadKey string) (Schedule, bool) {
 	s.schedulesMu.Lock()
 	defer s.schedulesMu.Unlock()
@@ -35,8 +27,6 @@ func (s *Store) GetSchedule(threadKey string) (Schedule, bool) {
 	return schedule, ok
 }
 
-// SetSchedule saves schedule for threadKey, replacing any earlier one: a
-// thread sets at most one schedule.
 func (s *Store) SetSchedule(threadKey string, schedule Schedule) error {
 	s.schedulesMu.Lock()
 	defer s.schedulesMu.Unlock()
@@ -53,8 +43,6 @@ func (s *Store) SetSchedule(threadKey string, schedule Schedule) error {
 	return nil
 }
 
-// DeleteSchedule removes the schedule set in threadKey and returns it,
-// reporting whether there was one.
 func (s *Store) DeleteSchedule(threadKey string) (Schedule, bool, error) {
 	s.schedulesMu.Lock()
 	defer s.schedulesMu.Unlock()
@@ -70,10 +58,8 @@ func (s *Store) DeleteSchedule(threadKey string) (Schedule, bool, error) {
 	return previous, true, nil
 }
 
-// TakeDueSchedules returns the schedules due at now, earliest first, and
-// moves each to the occurrence next returns. A schedule is advanced before
-// it runs, so a crash cannot run an occurrence twice, and occurrences missed
-// while the bot was down run once rather than once each.
+// Advanced before it runs, so a crash cannot run an occurrence twice, and
+// occurrences missed while the bot was down run once rather than once each.
 func (s *Store) TakeDueSchedules(now time.Time, next func(Schedule) time.Time) ([]Schedule, error) {
 	s.schedulesMu.Lock()
 	defer s.schedulesMu.Unlock()
@@ -102,7 +88,6 @@ func (s *Store) TakeDueSchedules(now time.Time, next func(Schedule) time.Time) (
 	return due, nil
 }
 
-// Schedules returns every schedule, soonest first.
 func (s *Store) Schedules() []Schedule {
 	s.schedulesMu.Lock()
 	defer s.schedulesMu.Unlock()

@@ -21,31 +21,24 @@ import (
 	"time"
 )
 
-// KeychainPrefix marks a private key location as a macOS Keychain item: the
-// rest is the item's service name.
 const KeychainPrefix = "keychain:"
 
-// AppTokens mints installation tokens of a GitHub App. Only the bot holds
-// the App's private key; work turns get the short-lived tokens.
+// Only the bot holds the App's private key; work turns get the short-lived
+// tokens.
 type AppTokens struct {
-	apiURL  string
-	webHost string
-	dir     string
-	appID   string
-	key     *rsa.PrivateKey
-	http    *http.Client
-	now     func() time.Time
-	// mintBackoff holds the waits between TurnEnv's mint attempts.
+	apiURL      string
+	webHost     string
+	dir         string
+	appID       string
+	key         *rsa.PrivateKey
+	http        *http.Client
+	now         func() time.Time
 	mintBackoff [mintAttempts - 1]time.Duration
 
 	mu             sync.Mutex
 	installationID int64
 }
 
-// NewAppTokens returns a token source for the App appID with the PEM private
-// key keyPEM, on apiURL or github.com when it is empty. installationID 0
-// means the App's only installation. Each turn's credentials are written
-// under turnDir, which PrepareTurnDir sets up.
 func NewAppTokens(apiURL, appID string, installationID int64, keyPEM []byte, turnDir string) (*AppTokens, error) {
 	client, err := NewClient(apiURL, "")
 	if err != nil {
@@ -68,13 +61,10 @@ func NewAppTokens(apiURL, appID string, installationID int64, keyPEM []byte, tur
 	}, nil
 }
 
-// WebHost is the GitHub host git and gh reach with the tokens.
 func (a *AppTokens) WebHost() string {
 	return a.webHost
 }
 
-// Mint returns a new installation token. GitHub keeps it valid for an hour
-// unless Revoke ends it sooner.
 func (a *AppTokens) Mint(ctx context.Context) (string, error) {
 	jwt, err := a.jwt()
 	if err != nil {
@@ -97,7 +87,6 @@ func (a *AppTokens) Mint(ctx context.Context) (string, error) {
 	return minted.Token, nil
 }
 
-// Revoke ends an installation token before it expires.
 func (a *AppTokens) Revoke(ctx context.Context, token string) error {
 	if err := a.call(ctx, http.MethodDelete, "/installation/token", token, nil); err != nil {
 		return fmt.Errorf("revoke GitHub App installation token: %w", err)
@@ -105,8 +94,6 @@ func (a *AppTokens) Revoke(ctx context.Context, token string) error {
 	return nil
 }
 
-// installation returns the configured installation, or looks up the App's
-// only one the first time.
 func (a *AppTokens) installation(ctx context.Context, jwt string) (int64, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -120,7 +107,6 @@ func (a *AppTokens) installation(ctx context.Context, jwt string) (int64, error)
 	return a.installationID, nil
 }
 
-// onlyInstallation returns the App's installation when it has exactly one.
 func (a *AppTokens) onlyInstallation(ctx context.Context, jwt string) (int64, error) {
 	var installations []struct {
 		ID      int64 `json:"id"`
@@ -144,8 +130,7 @@ func (a *AppTokens) onlyInstallation(ctx context.Context, jwt string) (int64, er
 	return installations[0].ID, nil
 }
 
-// jwt returns the App's JSON Web Token, which GitHub accepts for up to ten
-// minutes. iat is backdated to allow for clock drift.
+// iat is backdated to allow for clock drift.
 func (a *AppTokens) jwt() (string, error) {
 	now := a.now()
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
@@ -166,8 +151,6 @@ func (a *AppTokens) jwt() (string, error) {
 	return signed + "." + base64.RawURLEncoding.EncodeToString(signature), nil
 }
 
-// call sends a request authorized with bearer, the App JWT or an
-// installation token, and decodes the response into out unless it is nil.
 func (a *AppTokens) call(ctx context.Context, method, path, bearer string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, method, a.apiURL+path, nil)
 	if err != nil {
@@ -194,7 +177,6 @@ func (a *AppTokens) call(ctx context.Context, method, path, bearer string, out a
 	return json.Unmarshal(body, out)
 }
 
-// statusError is a non-2xx response from the GitHub API.
 type statusError struct {
 	method, path, status, body string
 	code                       int
@@ -204,7 +186,6 @@ func (e *statusError) Error() string {
 	return fmt.Sprintf("%s %s: %s: %s", e.method, e.path, e.status, e.body)
 }
 
-// transportError is a failure to send a request or read its response.
 type transportError struct {
 	err error
 }
@@ -213,10 +194,8 @@ func (e *transportError) Error() string { return e.err.Error() }
 
 func (e *transportError) Unwrap() error { return e.err }
 
-// isTransient reports whether retrying the call that failed with err may
-// succeed: a network failure, a server error, or a rate limit. Other client
-// errors, such as a bad key or a wrong installation, and local errors will
-// fail the same way again.
+// Client errors such as a bad key or a wrong installation fail the same way
+// again, so they are not retried.
 func isTransient(err error) bool {
 	var status *statusError
 	if errors.As(err, &status) {
@@ -253,8 +232,6 @@ func parsePrivateKey(keyPEM []byte) (*rsa.PrivateKey, error) {
 	return key, nil
 }
 
-// LoadPrivateKey reads the PEM private key at location: a file path, or
-// KeychainPrefix followed by a macOS Keychain service name.
 func LoadPrivateKey(location string) ([]byte, error) {
 	if service, keychain := strings.CutPrefix(location, KeychainPrefix); keychain {
 		return readKeychain(service)

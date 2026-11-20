@@ -1,4 +1,3 @@
-// Package playbook discovers the playbooks available to ebi-x.
 package playbook
 
 import (
@@ -14,20 +13,15 @@ import (
 
 const maxFileSize = 64 * 1024
 
-// Playbook describes a playbook that Codex may use.
 type Playbook struct {
 	Name        string
 	Description string
 	Path        string
-	// ModTime is when the playbook file last changed. Notes written before
-	// it are taken to be folded into the playbook.
+	// Notes written before it are taken to be folded into the playbook.
 	ModTime time.Time
-	// Notes are the playbook's notes newer than the file, filled in by
-	// AttachNotes.
-	Notes string
+	Notes   string
 }
 
-// List returns the valid Markdown playbooks directly contained in dir.
 func List(dir string) ([]Playbook, error) {
 	absoluteDir, err := filepath.Abs(dir)
 	if err != nil {

@@ -20,8 +20,6 @@ const (
 	approvalRequestedMessage = "🔒 %sには ebi-x を使う権限がまだないため、承認者に許可を依頼しました%s。\n許可されたら、このスレッドでお知らせします。そのあと、もう一度 mention してください。"
 	approvalQueuedMessage    = "🔒 %sには ebi-x を使う権限がまだないため、承認者に許可を依頼しました%s。\nそのままお待ちください！許可されたら、この依頼から自動で始めます。"
 
-	// approvalResumeWindow is how long a mention waits for approval before
-	// it is no longer started on its own.
 	approvalResumeWindow    = 24 * time.Hour
 	notApproverMessage      = "承認者（SLACK_APPROVER_USER_IDS）だけが操作できます。"
 	approvalUsageMessage    = "許可や拒否は、依頼のスレッドで「" + approveCommand + "」か「" + denyCommand + "」とだけ mention してください。"
@@ -34,7 +32,6 @@ var (
 	workflowIDPattern = regexp.MustCompile(`^Wf[A-Z0-9]+$`)
 )
 
-// Approvals records access decisions made in the approval channel.
 type Approvals interface {
 	ApprovalStatus(kind state.ApprovalKind, id string) state.ApprovalStatus
 	RequestApproval(kind state.ApprovalKind, id, requestedBy, requestChannel, requestThreadTS string, now time.Time) (bool, error)
@@ -46,14 +43,11 @@ type Approvals interface {
 	DeleteApproval(kind state.ApprovalKind, id string) (bool, error)
 }
 
-// approvalSubject is one user, channel, or workflow that needs approval.
 type approvalSubject struct {
 	kind state.ApprovalKind
 	id   string
 }
 
-// valid reports whether the subject has the ID shape of its kind. DMs and
-// malformed IDs are never offered for approval.
 func (s approvalSubject) valid() bool {
 	switch s.kind {
 	case state.ApprovalUser:
@@ -66,7 +60,6 @@ func (s approvalSubject) valid() bool {
 	return false
 }
 
-// label renders the subject for Slack mrkdwn and markdown alike.
 func (s approvalSubject) label() string {
 	switch s.kind {
 	case state.ApprovalUser:
@@ -78,7 +71,6 @@ func (s approvalSubject) label() string {
 	}
 }
 
-// subject names the subject from the mention author's point of view.
 func (s approvalSubject) subject() string {
 	switch s.kind {
 	case state.ApprovalUser:
@@ -90,8 +82,6 @@ func (s approvalSubject) subject() string {
 	}
 }
 
-// missingSubjects joins the subjects that lack access, such as
-// "あなたとこのチャンネル".
 func missingSubjects(missing []approvalSubject) string {
 	names := make([]string, 0, len(missing))
 	for _, subject := range missing {
@@ -124,31 +114,25 @@ func (b *Bot) approved(kind state.ApprovalKind, id string) bool {
 	return b.approvalsEnabled() && b.config.Approvals.ApprovalStatus(kind, id) == state.Approved
 }
 
-// userAllowed reports whether a human may use the bot: listed in .env or
-// approved in the approval channel.
 func (b *Bot) userAllowed(id string) bool {
 	_, ok := b.allowedUsers[id]
 	return ok || b.approved(state.ApprovalUser, id)
 }
 
-// channelAllowed reports whether the bot works in channel. The approval
-// channel is always allowed: its members request changes to playbooks and
-// global memory there.
+// The approval channel is always allowed: its members request changes to
+// playbooks and global memory there.
 func (b *Bot) channelAllowed(id string) bool {
 	_, ok := b.allowedChannels[id]
 	return ok || b.approved(state.ApprovalChannel, id) ||
 		(b.approvalsEnabled() && id == b.config.ApprovalChannelID)
 }
 
-// sharedWritable reports whether work turns in channel may change state every
-// channel reads: playbooks and global memory. Only the approval channel may,
-// so such changes happen where the people who approve use of the bot see them.
+// Only the approval channel, so changes to what every channel reads happen
+// where the people who approve use of the bot see them.
 func (b *Bot) sharedWritable(channel string) bool {
 	return b.config.ApprovalChannelID != "" && channel == b.config.ApprovalChannelID
 }
 
-// workflowAllowed reports whether a bot-authored mention comes from an
-// explicitly allowed Slack workflow.
 func (b *Bot) workflowAllowed(id string) bool {
 	if !b.config.AllowWorkflows {
 		return false
@@ -157,9 +141,6 @@ func (b *Bot) workflowAllowed(id string) bool {
 	return ok || b.approved(state.ApprovalWorkflow, id)
 }
 
-// rejectUnapproved answers a mention whose author, workflow, or channel is
-// not allowed. With approvals enabled it asks the approval channel about each
-// subject that has no decision yet; a denied subject is refused outright.
 func (b *Bot) rejectUnapproved(ctx context.Context, event *slackevents.AppMentionEvent, missing []approvalSubject) {
 	if !b.approvalsEnabled() {
 		b.forbidden(ctx, event, missing)
@@ -211,8 +192,6 @@ func (b *Bot) rejectUnapproved(ctx context.Context, event *slackevents.AppMentio
 	}
 }
 
-// approvalRequestLinks links the approval requests for missing so the author
-// can see that someone was asked. It is empty when no link can be made.
 func (b *Bot) approvalRequestLinks(ctx context.Context, missing []approvalSubject) string {
 	type request struct{ subject, link string }
 	var requests []request
@@ -241,8 +220,6 @@ func (b *Bot) approvalRequestLinks(ctx context.Context, missing []approvalSubjec
 	return "（" + strings.Join(links, "・") + "）"
 }
 
-// waitingMention returns the mention to start once it is approved. Workflow
-// mentions, empty mentions and stop commands are not kept.
 func waitingMention(event *slackevents.AppMentionEvent, botUserID string) (state.ApprovalMention, bool) {
 	text := stripBotMention(event.Text, botUserID)
 	if event.BotID != "" || text == "" || isStopCommand(text) {
@@ -265,8 +242,6 @@ func (b *Bot) recordWaitingMention(subject approvalSubject, mention state.Approv
 	return saved
 }
 
-// postApprovalRequest asks the approval channel about subject. Approvers
-// answer in the request's thread.
 func (b *Bot) postApprovalRequest(ctx context.Context, subject approvalSubject, event *slackevents.AppMentionEvent) error {
 	where := "<#" + event.Channel + "> で mention しました。"
 	if isDirectMessage(event.Channel) {
@@ -286,9 +261,6 @@ func (b *Bot) postApprovalRequest(ctx context.Context, subject approvalSubject, 
 	return nil
 }
 
-// isApprovalCommand reports whether a mention in the approval channel is
-// about approvals rather than work: any mention in an approval request's
-// thread, the approval words anywhere, and the usage question.
 func (b *Bot) isApprovalCommand(event *slackevents.AppMentionEvent) bool {
 	command := stripBotMention(event.Text, b.config.BotUserID)
 	if command == approveCommand || command == denyCommand || isUsageQuestion(command) {
@@ -301,8 +273,6 @@ func (b *Bot) isApprovalCommand(event *slackevents.AppMentionEvent) bool {
 	return inRequest
 }
 
-// handleApprovalCommand answers the approval channel's approval mentions.
-// Approvers decide a request by mentioning 許可 or 拒否 in its thread.
 func (b *Bot) handleApprovalCommand(ctx context.Context, event *slackevents.AppMentionEvent) {
 	command := stripBotMention(event.Text, b.config.BotUserID)
 	request, inRequest := b.config.Approvals.FindApprovalByRequestMessage(event.ThreadTimeStamp)
@@ -331,9 +301,7 @@ func (b *Bot) isApprover(user string) bool {
 	return ok
 }
 
-// decideApproval approves or denies request. The first decision wins. When
-// the approval lets the mention that waited for it run, it returns that
-// mention to start after the reply is posted.
+// The first decision wins.
 func (b *Bot) decideApproval(ctx context.Context, request state.Approval, approve bool, user string) (string, *processingTrigger) {
 	subject := approvalSubject{kind: request.Kind, id: request.ID}
 	approval, decided, err := b.config.Approvals.DecideApproval(subject.kind, subject.id, approve, user, b.now())
@@ -364,8 +332,6 @@ func (b *Bot) decideApproval(ctx context.Context, request state.Approval, approv
 	return statusIcon(approval.Status) + " " + subject.label() + ": " + decisionText(approval) + "。", resume
 }
 
-// waitingTrigger returns the mention that waited for approval, or nil when
-// there is none or it waited longer than approvalResumeWindow.
 func (b *Bot) waitingTrigger(approval state.Approval) *processingTrigger {
 	if approval.MentionText == "" || approval.RequestedBy == "" {
 		return nil

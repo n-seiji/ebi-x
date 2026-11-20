@@ -10,10 +10,8 @@ import (
 	"strings"
 )
 
-// PushToken returns the password git uses to push to remote, an https
-// remote on GitHub: the token the work turns already push with, read
-// through git's own credential helpers. It never prompts. An SSH remote has
-// no such token.
+// Reuses the token the work turns push with, read through git's own credential
+// helpers; it never prompts.
 func PushToken(ctx context.Context, remote string) (string, error) {
 	parsed, err := url.Parse(remote)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {

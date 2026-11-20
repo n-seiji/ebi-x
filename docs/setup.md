@@ -1,6 +1,6 @@
 # 導入と設定
 
-ebi-x を動かすまでの手順と、運用者が決める設定をまとめます。Slack での使い方は [usage.md](usage.md)、内部の仕組みは [design.md](design.md) を見てください。
+ebi-x を動かすまでの手順と、運用者が決める設定です。
 
 ## 1. Slack App
 
@@ -89,12 +89,11 @@ ebi-x を使えるかは、`.env` の固定の許可と、承認チャンネル�
   └ @ebi-x  ✅ チャンネル #sales が許可されました。依頼を始めます。
 ```
 
-- 依頼は相手ごとに決まるまで1件だけ出します。人とチャンネルの両方が未許可なら2件です。元のスレッドには依頼へのリンクを返します（承認チャンネルがプライベートだと、メンバー以外は開けません）。
 - 承認者は依頼のスレッドで `@ebi-x 許可` か `@ebi-x 拒否` と mention します。操作できるのは `SLACK_APPROVER_USER_IDS` の人だけで、最初の決定が優先されます。拒否した相手は次から確認せずに断ります。
-- 必要な許可が揃うと、待っていた依頼を自動で始めます。同じ相手の依頼が複数待っていれば最後の1件だけです。24時間より古い依頼、本文のない依頼、Workflow からの依頼は自動では始めず、もう一度 mention するよう伝えます。
+- 必要な許可が揃うと、待っていた依頼を自動で始めます。24時間より古い依頼は始めず、もう一度 mention するよう伝えます。
 - 承認チャンネルでは、依頼のスレッドでの mention と、スレッドの外での `@ebi-x 許可`・`@ebi-x 拒否`・`@ebi-x 残り` は承認の操作として扱います。それ以外の mention は、ebi-x の利用を許可された人からの作業の依頼として受けます。
 - playbook と全体メモリを書き換えられるのは承認チャンネルの依頼だけです。全チャンネルの依頼がこれらを読むので、承認者の目に入る場所に限っています。
-- 決定は誰がいつ決めたかと一緒に `data/state/approvals.json` に残ります。取り消すときは ebi-x を止めて、このファイルから該当する項目を消します。Codex はこのファイルを読み書きできません。
+- 決定は `data/state/approvals.json` に残ります。取り消すときは ebi-x を止めて、このファイルから該当する項目を消します。
 
 ### Workflow からの mention
 
@@ -108,7 +107,7 @@ Codex に書き込ませたいディレクトリを `EBIX_WRITABLE_ROOTS` に並
 
 - push 先が SSH なら `~/.ssh`、HTTPS なら git の credential helper に応じて `~/.git-credentials`（`store`）、`~/.config/gh`（`gh`）、helper なしなら `~/.netrc` を外します。`osxkeychain` などはパスが要らないので外しません。
 - `commit.gpgsign=true` なら、`gpg.format` に応じて `~/.ssh` か `~/.gnupg` を外します。
-- 調べるのはグローバルとシステムの git 設定だけです。元のリポジトリの `.git/config` にだけ書いた helper や `pushInsteadOf` は、スレッドのクローンに引き継がれないので見ません。git は Codex に渡すのと同じ環境変数で動かします。
+- 調べるのはグローバルとシステムの git 設定だけです。元のリポジトリの `.git/config` はスレッドのクローンに引き継がれないためです。
 - `EBIX_WRITABLE_ROOTS` にリポジトリの親ディレクトリを書いた場合、配下のリポジトリは調べません。そこから SSH で push するなら `EBIX_ALLOWED_READ_PATHS=~/.ssh` を書きます。
 - `gcloud`・`bq`・`kubectl`・プライベート npm registry などを作業で使うときは、`EBIX_ALLOWED_READ_PATHS=~/.config/gcloud,~/.kube,~/.npmrc` のように書きます。書けるのは既定の一覧にあるものだけで、それ以外は起動エラーです。
 
@@ -139,7 +138,10 @@ Codex がどの操作の前に依頼者へ確認するかは、既定で次の�
 | `repositories` | 読めるリポジトリ（ディレクトリ名かパス）。ほかのリポジトリと、そのクローンは読めない |
 | `mcp_servers` | 使える MCP サーバーの名前。`[]` で全部止める |
 
-依頼のたびに読み直します。書き換えられるのは承認チャンネルからの依頼だけです。
+- 依頼のたびに読み直すので、再起動は要りません。
+- 書き換えられるのは承認チャンネルからの依頼だけです。
+- ファイルが読めないとき（YAML の誤りや、知らない項目名）は、承認チャンネル以外の依頼を始めません（[design.md](design.md#チャンネルごとの設定)）。
+- プライベートチャンネルと Slack Connect チャンネルで Slack の MCP を止める制限は、`mcp_servers` に書いても外れません。
 
 ## 6. playbook
 
@@ -155,7 +157,6 @@ description: どんな依頼のときに使うかを具体的に書く
 ```
 
 - frontmatter の `name` と `description` が必要で、1ファイル 64KB までです。`README.md` は一覧に含めません。
-- 置き換えるときは一時ファイルを書き終えてから rename します。
 - `examples/playbooks/` に例があります。
 
 | 例 | 内容 |
@@ -166,7 +167,7 @@ description: どんな依頼のときに使うかを具体的に書く
 
 `slides.md` を使うには、slides を clone して `EBIX_WRITABLE_ROOTS` に加え、ビルドに必要な Node・pnpm・Python・Chrome・LibreOffice・日本語フォントを用意して `pnpm install` を済ませておきます。
 
-Slack から playbook を書き換えられるのは承認チャンネル（`SLACK_APPROVAL_CHANNEL_ID`）だけです。全チャンネルの依頼が playbook を読むためです。`data/` は Git の管理外なので、playbook は運用環境で保管します。
+Slack から playbook を書き換えられるのは承認チャンネルだけです。`data/` は Git の管理外なので、playbook は運用環境で保管します。
 
 ## 7. PR の見守り
 
@@ -183,8 +184,7 @@ Slack から playbook を書き換えられるのは承認チャンネル（`SLA
 
 - `EBIX_GITHUB_APP_PRIVATE_KEY`：PEM の秘密鍵のファイルパス（`~/` 可）か、`keychain:<サービス名>`（macOS の Keychain）。ファイルは自動で Codex から読めなくなります。
 - `EBIX_GITHUB_APP_INSTALLATION_ID`：App のインストールが1つなら不要です。複数あるときは起動ログに一覧が出るので、使うものを書きます。トークンが効くのはそのインストール（Organization）のリポジトリだけです。
-- 作業の中では、`GH_CONFIG_DIR` を作業専用の gh 設定に、`GIT_CONFIG_PARAMETERS` で git の credential helper を作業専用のものに差し替えます。ホストの helper は使いません。これらのファイルは `data/turn-credentials/` の下に作業ごとに置き（Codex は読むだけで書けません。`EBIX_WRITABLE_ROOTS` に含めると起動を拒否します）、作業が終わると消します。
-- 発行に失敗したときは、ネットワークエラー・5xx・レート制限なら1秒、2秒待って最大3回まで試し直します。それでも失敗するか、鍵の誤りなど試し直しても直らない失敗のときはログに出し、その作業はホストの設定で続けます。
+- 発行に失敗したときはログに出し、その作業はホストの git と gh の設定で続けます。
 - Keychain に入れるときは、読めるアプリを ebi-x だけにします：`security add-generic-password -s ebi-x-github-app -a ebi-x -T "$PWD/ebi-x" -w "$(cat app.pem)"`。ebi-x は `security` コマンドを使わず Security framework を直接呼ぶので、Codex の作業から `security find-generic-password` で読もうとしても拒否されます（手で `security` を叩いた場合も同じなので、確認はキーチェーンアクセス.app で行います）。
   - 作ったあとに `security find-generic-password -s ebi-x-github-app -w` が確認なしで鍵を出力しないことを確かめます。出力されたら、キーチェーンアクセス.app の「アクセス制御」から `security` を外します。
   - ビルドし直すと、Keychain からは別のアプリに見えます。そのため、reload 後の起動時に「ebi-x がキーチェーンの機密情報を使用しようとしています」と聞かれるので、「常に許可」を押します。鍵を読むのは起動時の1回だけで、それまで起動は待ちます（ログに出ます）。
@@ -209,7 +209,7 @@ Google Cloud のリモート BigQuery MCP（`https://bigquery.googleapis.com/mcp
 
 ### Slack の MCP
 
-名前・`url`・`command`・`args` に `slack` を含む MCP サーバーは、閉じたチャンネルでは止まります。起動ログの `MCP servers turned off for private and Slack Connect channels: [...]` に載らないときは、サーバー名に `slack` を含めます。
+名前・`url`・`command`・`args` に `slack` を含む MCP サーバーは、閉じたチャンネルでは止まります（[design.md](design.md#閉じたチャンネル)）。起動ログの `MCP servers turned off for private and Slack Connect channels: [...]` に載らないときは、サーバー名に `slack` を含めます。
 
 ### 環境変数
 
@@ -229,14 +229,13 @@ env = { EXAMPLE_REGION = "asia-northeast1" }
 
 ## 9. 運用
 
-- **1台1プロセス**：起動時に `data/state/ebi-x.lock` をロックし、同じ `data/` で2つ目を起動するとエラーにします。ロックはプロセスの終了で外れるので、ファイルが残っていても問題ありません。エラーが出たら、メッセージの pid のプロセスを止めてから起動します。ロックファイルは消さないでください。
+- **1台1プロセス**：同じ `data/` で2つ目を起動するとエラーにします。メッセージの pid のプロセスを止めてから起動します。ロックファイルは消さないでください。
 - **リロード**：`mise run reload`（ビルドしてから、動いている ebi-x に `SIGHUP` を送る）で、実行中の作業を止めずに新しいバイナリに入れ替えます。mise なしなら `go build -o ebi-x ./cmd/ebi-x && codesign --force --sign - --options runtime ebi-x && kill -HUP "$(cat data/state/ebi-x.lock)"` です（`codesign` は macOS のみ）。
   - 先に新しいバイナリを `-check-config` で起動してみて、失敗したら入れ替えずにそのまま動き続けます。`mise run reload` はビルドに失敗したら `SIGHUP` を送りません。
-  - 動いている作業はそのまま続け、その間に届いた依頼と順番待ちの依頼は `data/state/deferred.json` に保存して「🔄 ebi-x を更新しています」と返し、再起動後に届いた順で自動で始めます。取り出してから実行するので、直後に落ちた依頼は実行されません（二重には実行しません）。
-  - 作業がすべて終わると Slack から切断し、起動したときのバイナリを `exec` し直します（PID は同じ、`.env` も読み直す）。待ち時間は最長 `CODEX_TIMEOUT` で、1分ごとに残りの件数をログに出します。待っている間の2回目の `SIGHUP` は無視し、`SIGTERM` は通常の停止になります。
-  - 切り替えの数秒間に届いた mention は取りこぼすことがあります。ロックを外してから取り直すまでのごく短い間に、手で2つ目を起動しないでください。`go run` で起動している場合と Windows ではリロードできません。
+  - 動いている作業はそのまま続け、その間に届いた依頼は保存して、再起動後に自動で始めます。`.env` も読み直します。
+  - 切り替えの数秒間に届いた mention は取りこぼすことがあります。`go run` で起動している場合と Windows ではリロードできません。
   - systemd では `ExecReload=/bin/kill -HUP $MAINPID` を設定すると `systemctl reload ebi-x` で同じことができます。
 - **中断した依頼**：作業中に ebi-x が落ちた依頼は `interrupted` になり、自動ではやり直しません。作業は外部に副作用を残している可能性があるためです。状況を確かめてから、新しい mention で依頼し直します。
-- **ディスク**：スレッド専用クローンは `EBIX_CHECKOUT_IDLE_TTL` で自動で消えますが、`data/workspace/` のスレッドごとの作業ディレクトリは消えません。数千スレッドを超えると Codex への引数が上限（約120KB）を超えて作業を始められなくなるので、古いものを消します。
+- **ディスク**：スレッド専用クローンは `EBIX_CHECKOUT_IDLE_TTL` で自動で消えますが、`data/workspace/` のスレッドごとの作業ディレクトリは消えません。
 - **Codex のログイン**：ログインが切れると承認チャンネルに知らせが届きます。`codex login` でログインし直します。
 - **データの保管**：`data/` は `.gitignore` で除外しています。状態・メモリ・個人設定・playbook はここにあり、コミットされません。
