@@ -111,11 +111,12 @@ func (r *Runner) Run(
 	ctx context.Context,
 	threadID, sandbox, cwd string,
 	writableRoots, deniedPaths []string,
+	access Access,
 	prompt string,
 	onThreadStarted func(id string) error,
 	onActivity func(Activity),
 ) (*TurnResult, error) {
-	configOverrides, err := loadConfigOverrides(r.ConfigPath)
+	configOverrides, err := loadConfigOverrides(r.ConfigPath, access)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +125,14 @@ func (r *Runner) Run(
 		return nil, err
 	}
 	denied := append(append(append([]string(nil), r.DeniedReadPaths...), homeDenied...), deniedPaths...)
-	args := buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, denied, r.Model, r.DeveloperInstructions, configOverrides)
+	instructions := r.DeveloperInstructions
+	if extra := strings.TrimSpace(access.Instructions); extra != "" {
+		if instructions != "" {
+			instructions += "\n\n"
+		}
+		instructions += extra
+	}
+	args := buildArgsWithOverrides(threadID, sandbox, cwd, writableRoots, denied, r.Model, instructions, configOverrides)
 	for _, arg := range args {
 		if len(arg) > maxArgBytes {
 			// Running with a truncated deny list would expose protected paths.
@@ -136,7 +144,12 @@ func (r *Runner) Run(
 
 	cmd := exec.CommandContext(runCtx, r.Command, args...)
 	cmd.Env = FilterEnv(os.Environ(), r.PassEnv)
-	if r.GitHub != nil {
+	// Not just withheld: gh and git would fall back to the host's own. A
+	// read-only turn gets none either, since with no network it could only
+	// be read out into an answer.
+	if access.NoGitHub {
+		cmd.Env = append(cmd.Env, noGitHubEnv...)
+	} else if r.GitHub != nil && sandbox != "read-only" {
 		// TurnEnv has already retried transient failures. Without the turn
 		// credential, git and gh fall back to the host's configuration,
 		// so a failure does not stop the turn.
@@ -288,6 +301,15 @@ func shellEnvPolicyOverrides() []string {
 		"-c", "shell_environment_policy.ignore_default_excludes=false",
 		"-c", "shell_environment_policy.exclude=[" + strings.Join(excluded, ",") + "]",
 	}
+}
+
+// An empty credential.helper clears the host's helpers.
+var noGitHubEnv = []string{
+	"GH_CONFIG_DIR=" + filepath.Join(os.TempDir(), "ebi-x-no-github"),
+	"GH_TOKEN=",
+	"GITHUB_TOKEN=",
+	"GIT_TERMINAL_PROMPT=0",
+	"GIT_CONFIG_PARAMETERS='credential.helper='",
 }
 
 var shellEnvExcluded = []string{"OPENAI_API_KEY", "CODEX_API_KEY"}

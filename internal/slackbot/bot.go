@@ -58,6 +58,7 @@ type SlackAPI interface {
 	// GetMessage reads one message of a thread (the root when timestamp is
 	// threadTS), with its files.
 	GetMessage(ctx context.Context, channel, threadTS, timestamp string) (ThreadMessage, error)
+	ChannelInfo(ctx context.Context, channel string) (ChannelInfo, error)
 	// DownloadFile writes a file shared in Slack, given its private URL.
 	DownloadFile(ctx context.Context, url string, w io.Writer) error
 	SetStatus(ctx context.Context, channel, threadTS, status string) error
@@ -142,16 +143,13 @@ type Store interface {
 // addition to the runner's own protected paths. onActivity, when set,
 // receives the turn's steps while it runs.
 type Runner interface {
-	Run(ctx context.Context, threadID, sandbox, cwd string, writableRoots, deniedPaths []string, text string, onThreadStarted func(string) error, onActivity func(codex.Activity)) (*codex.TurnResult, error)
+	Run(ctx context.Context, threadID, sandbox, cwd string, writableRoots, deniedPaths []string, access codex.Access, text string, onThreadStarted func(string) error, onActivity func(codex.Activity)) (*codex.TurnResult, error)
 }
 
 // Workspaces provides per-thread working directories and git checkouts.
 type Workspaces interface {
-	ThreadDir(threadID string) (string, error)
-	// Acquire leases the thread's workspace. Missing checkouts are created
-	// only when createCheckouts is set; otherwise they are reported in
-	// Lease.PendingRepos.
-	Acquire(ctx context.Context, threadID string, createCheckouts bool) (*workspace.Lease, error)
+	Acquire(ctx context.Context, threadID string, area workspace.Area, createCheckouts bool) (*workspace.Lease, error)
+	Denied(area workspace.Area) ([]string, error)
 }
 
 // Config contains paths, allowlists, and timeout settings needed by Bot.
@@ -173,10 +171,11 @@ type Config struct {
 	AdminUserID        string
 	// EBIXHome is ebi-x's own directory. Paths under it are shown relative
 	// to it in Slack.
-	EBIXHome     string
-	WorkspaceDir string
-	MemoryDir    string
-	PlaybooksDir string
+	EBIXHome         string
+	WorkspaceDir     string
+	MemoryDir        string
+	PlaybooksDir     string
+	ChannelRulesFile string
 	// ActionRulesFile holds the operator's rules on which actions need the
 	// requester's confirmation. Built-in rules apply when it is missing.
 	ActionRulesFile            string
@@ -242,9 +241,11 @@ type Bot struct {
 	recentFailures []time.Time
 	// drain defers new requests while the running ones finish before a
 	// restart.
-	drain *drainer
-	now   func() time.Time
-	sleep func(context.Context, time.Duration) error
+	drain   *drainer
+	scopeMu sync.Mutex
+	scopes  map[string]cachedScope
+	now     func() time.Time
+	sleep   func(context.Context, time.Duration) error
 }
 
 type triggerSource uint8
@@ -380,15 +381,15 @@ func (b *Bot) handleMention(ctx context.Context, event *slackevents.AppMentionEv
 }
 
 // HandleMessage filters and processes one already-acknowledged ordinary
-// message event: a direct message to the bot, or a public-channel message
-// from an active subscribed thread.
+// message event: a direct message to the bot, or a channel message from an
+// active subscribed thread.
 func (b *Bot) HandleMessage(ctx context.Context, event *slackevents.MessageEvent) {
 	if event != nil && event.ChannelType == "im" {
 		b.handleDirectMessage(ctx, event)
 		return
 	}
 	if event == nil ||
-		event.ChannelType != "channel" ||
+		(event.ChannelType != "channel" && event.ChannelType != "group") ||
 		event.ThreadTimeStamp == "" ||
 		event.User == "" ||
 		event.User == b.config.BotUserID ||
@@ -483,7 +484,7 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 	}
 	b.addReaction(ctx, channel, timestamp, "eyes")
 
-	workspaceID, _, err := b.threadWorkspace(channel, threadTS)
+	workspaceID, err := workspace.ThreadID(channel, threadTS)
 	if err != nil {
 		log.Printf("slackbot: prepare thread workspace %q: %v", eventKey, err)
 		b.fail(ctx, eventKey, state.Received, state.Failed, channel, threadTS, timestamp, workStartFailureMessage)
@@ -517,7 +518,8 @@ func (b *Bot) processTrigger(ctx context.Context, trigger processingTrigger) {
 		slackThread = formatThreadContext(threadMessages, timestamp)
 	}
 	files := b.sharedFiles(ctx, trigger, threadMessages)
-	output, started, workErr := b.work(ctx, stopCtx, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread, files, trigger)
+	scope := b.channelScope(ctx, channel)
+	output, started, workErr := b.work(ctx, stopCtx, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread, files, scope, trigger)
 	if !started && errors.Is(workErr, errDraining) && stopCtx.Err() == nil {
 		b.deferRequest(ctx, trigger)
 		return
@@ -661,12 +663,17 @@ func (o workOutput) attachmentNotice() string {
 // work runs one complete request in the Slack thread's Codex session. started reports whether the event
 // reached the working state; when it did not, nothing was run and the event
 // may be retried. stopCtx bounds the waiting and the turn; ctx the rest.
-func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread string, files []ThreadMessage, trigger processingTrigger) (output workOutput, started bool, err error) {
+func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, threadKey, workspaceID, threadID, slackThread string, files []ThreadMessage, scope channelScope, trigger processingTrigger) (output workOutput, started bool, err error) {
 	// Work still waiting for its turn when a restart begins is deferred
 	// rather than started, so the restart only waits for running turns.
 	if b.draining() {
 		return workOutput{}, false, errDraining
 	}
+	rule, err := b.channelRule(channel)
+	if err != nil {
+		return workOutput{}, false, err
+	}
+	scope.rule = rule
 	waitCtx, stopWaiting := b.untilDrain(stopCtx)
 	release, err := b.acquireWork(waitCtx, threadKey, channel, threadTS)
 	if err != nil {
@@ -682,17 +689,19 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 
 	// Checkouts are cloned only when the turn asks for them, so a request
 	// that only reads code or answers a question does not create any.
-	lease, err := b.config.Workspaces.Acquire(stopCtx, workspaceID, false)
+	lease, err := b.config.Workspaces.Acquire(stopCtx, workspaceID, scope.area, false)
 	if err != nil {
 		return workOutput{}, false, fmt.Errorf("prepare workspace: %w", err)
 	}
 	defer func() { lease.Release() }()
+	scope.hidden = rule.limitLease(lease)
 	// Playbooks and global memory reach every channel, so only the approval
 	// channel may change them.
 	sharedWritable := b.sharedWritable(channel)
 	// Files people shared are saved in the thread's workspace so the turn
 	// can open them; the list follows the request.
 	trigger.message += b.saveSharedFiles(ctx, lease, files)
+	trigger.message += scope.note()
 
 	// A new session receives the memory, playbook catalog, and rules once;
 	// a resumed session already holds them, so only the request is sent.
@@ -743,7 +752,7 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		}
 		return nil
 	}
-	finalText, err := b.runWorkTurn(stopCtx, threadID, lease, sharedWritable, turnPrompt, persistThread, onActivity)
+	finalText, err := b.runWorkTurn(stopCtx, threadID, lease, scope, sharedWritable, turnPrompt, persistThread, onActivity)
 	if err != nil {
 		return workOutput{}, true, err
 	}
@@ -755,12 +764,13 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 		// Release is idempotent, so the deferred call is a no-op for this
 		// lease if acquiring the next one fails.
 		lease.Release()
-		next, err := b.config.Workspaces.Acquire(stopCtx, workspaceID, true)
+		next, err := b.config.Workspaces.Acquire(stopCtx, workspaceID, scope.area, true)
 		if err != nil {
 			return workOutput{}, true, fmt.Errorf("prepare requested checkouts: %w", err)
 		}
 		lease = next
-		finalText, err = b.runWorkTurn(stopCtx, sessionID, lease, sharedWritable, prompt.BuildCheckoutsReadyPrompt(lease.Checkouts), persistThread, onActivity)
+		scope.hidden = rule.limitLease(lease)
+		finalText, err = b.runWorkTurn(stopCtx, sessionID, lease, scope, sharedWritable, prompt.BuildCheckoutsReadyPrompt(lease.Checkouts), persistThread, onActivity)
 		if err != nil {
 			return workOutput{}, true, err
 		}
@@ -798,6 +808,11 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	resultText, playbookNote, playbookNoteInvalid := codex.SplitPlaybookNote(resultText)
 	resultText, memoryAppends, memoryOutputValid := codex.SplitMemoryAppends(resultText)
 	output.text = codex.SanitizeSlackOutput(resultText)
+	if sharedWritable {
+		if notice := b.channelRulesNotice(); notice != "" {
+			output.text += "\n\n" + notice
+		}
+	}
 	if !memoryOutputValid {
 		log.Printf("slackbot: ignore malformed scoped memory output %q", eventKey)
 	}
@@ -818,7 +833,7 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	var foldTarget *playbook.Playbook
 	output.playbookNoteNotice, foldTarget = b.savePlaybookNote(eventKey, playbookNote, playbookNoteInvalid, sharedWritable)
 	if foldTarget != nil && sessionID != "" {
-		output.playbookFold = b.foldPlaybookNotes(stopCtx, sessionID, lease, *foldTarget, onActivity)
+		output.playbookFold = b.foldPlaybookNotes(stopCtx, sessionID, lease, scope, *foldTarget, onActivity)
 	}
 	// Upload while the thread's work lock and lease are held, so a later
 	// turn in the same thread cannot replace the files mid-upload.
@@ -828,14 +843,33 @@ func (b *Bot) work(ctx, stopCtx context.Context, eventKey, channel, threadTS, th
 	return output, true, nil
 }
 
-// runWorkTurn runs one workspace-write turn in lease and returns its final
-// message.
-func (b *Bot) runWorkTurn(ctx context.Context, threadID string, lease *workspace.Lease, sharedWritable bool, text string, onThreadStarted func(string) error, onActivity func(codex.Activity)) (string, error) {
+// runWorkTurn runs one turn in lease and returns its final message.
+func (b *Bot) runWorkTurn(ctx context.Context, threadID string, lease *workspace.Lease, scope channelScope, sharedWritable bool, text string, onThreadStarted func(string) error, onActivity func(codex.Activity)) (string, error) {
 	roots := append([]string(nil), lease.WritableRoots...)
 	if b.config.PlaybooksDir != "" && sharedWritable {
 		roots = append(roots, b.config.PlaybooksDir)
 	}
-	result, err := b.runTurn(ctx, threadID, "workspace-write", lease.Dir, roots, nil, text, onThreadStarted, onActivity)
+	denied, err := b.config.Workspaces.Denied(lease.Area)
+	if err != nil {
+		// Running without the list would expose closed channels' files.
+		return "", fmt.Errorf("list paths hidden from the turn: %w", err)
+	}
+	denied = append(denied, scope.hidden...)
+	// Hidden, not just read-only, elsewhere: the rules name channels and
+	// hold instructions meant for one.
+	if rulesDir := b.channelRulesDir(); rulesDir != "" {
+		if sharedWritable {
+			roots = append(roots, rulesDir)
+		} else {
+			denied = append(denied, rulesDir)
+		}
+	}
+	sandbox := "workspace-write"
+	if scope.rule.ReadOnly {
+		sandbox = "read-only"
+	}
+	access := scope.rule.access(scope.slackLimited)
+	result, err := b.runTurn(ctx, threadID, sandbox, lease.Dir, roots, denied, access, text, onThreadStarted, onActivity)
 	if err != nil {
 		return "", err
 	}
@@ -923,20 +957,6 @@ func (b *Bot) acquireWork(ctx context.Context, threadKey, channel, threadTS stri
 	}
 }
 
-// threadWorkspace returns the workspace identifier and cwd for a Slack
-// thread.
-func (b *Bot) threadWorkspace(channel, threadTS string) (string, string, error) {
-	id, err := workspace.ThreadID(channel, threadTS)
-	if err != nil {
-		return "", "", err
-	}
-	dir, err := b.config.Workspaces.ThreadDir(id)
-	if err != nil {
-		return "", "", err
-	}
-	return id, dir, nil
-}
-
 // sharedWorkspaces runs every thread in one directory with the same writable
 // roots. It is the default when Config.Workspaces is not set.
 type sharedWorkspaces struct {
@@ -944,13 +964,13 @@ type sharedWorkspaces struct {
 	roots []string
 }
 
-func (w sharedWorkspaces) ThreadDir(string) (string, error) { return w.dir, nil }
-
-func (w sharedWorkspaces) Acquire(context.Context, string, bool) (*workspace.Lease, error) {
+func (w sharedWorkspaces) Acquire(context.Context, string, workspace.Area, bool) (*workspace.Lease, error) {
 	lease := workspace.NewLease(w.dir, w.roots, nil, func() {})
 	lease.Shared = true
 	return lease, nil
 }
+
+func (w sharedWorkspaces) Denied(workspace.Area) ([]string, error) { return nil, nil }
 
 // forbidden tells the author that the mention is refused, naming who lacks
 // access so they know to ask the admin rather than retry.
@@ -1004,10 +1024,10 @@ func (b *Bot) startThreadSubscription(ctx context.Context, channel, threadTS str
 	}
 }
 
-func (b *Bot) runTurn(ctx context.Context, threadID, sandbox, cwd string, roots, denied []string, text string, callback func(string) error, onActivity func(codex.Activity)) (*codex.TurnResult, error) {
+func (b *Bot) runTurn(ctx context.Context, threadID, sandbox, cwd string, roots, denied []string, access codex.Access, text string, callback func(string) error, onActivity func(codex.Activity)) (*codex.TurnResult, error) {
 	turnCtx, cancel := context.WithTimeout(ctx, b.config.CodexTimeout)
 	defer cancel()
-	return b.runner.Run(turnCtx, threadID, sandbox, cwd, roots, denied, text, callback, onActivity)
+	return b.runner.Run(turnCtx, threadID, sandbox, cwd, roots, denied, access, text, callback, onActivity)
 }
 
 func (b *Bot) fail(ctx context.Context, eventKey string, from, to state.State, channel, threadTS, timestamp, message string) {
@@ -1254,6 +1274,17 @@ func (w *webAPI) GetMessage(ctx context.Context, channel, threadTS, timestamp st
 		}
 	}
 	return ThreadMessage{}, fmt.Errorf("get Slack message: %s not found", timestamp)
+}
+
+func (w *webAPI) ChannelInfo(ctx context.Context, channel string) (ChannelInfo, error) {
+	info, err := w.client.GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{ChannelID: channel})
+	if err != nil {
+		return ChannelInfo{}, fmt.Errorf("get Slack channel info: %w", err)
+	}
+	return ChannelInfo{
+		Private:  info.IsPrivate || info.IsMpIM || info.IsGroup,
+		External: info.IsExtShared || info.IsPendingExtShared,
+	}, nil
 }
 
 func (w *webAPI) DownloadFile(ctx context.Context, url string, out io.Writer) error {

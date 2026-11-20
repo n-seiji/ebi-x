@@ -60,6 +60,7 @@ type Lease struct {
 	// Shared reports that Dir is used by every thread, so it does not belong
 	// to this thread alone.
 	Shared bool
+	Area   Area
 
 	once    sync.Once
 	release func()
@@ -105,6 +106,7 @@ type root struct {
 type Manager struct {
 	workspaceDir string
 	checkoutsDir string
+	closedDir    string
 	roots        []root
 
 	mu sync.Mutex
@@ -116,10 +118,11 @@ type Manager struct {
 // New returns a Manager. Every writable root that is the top level of a git
 // repository is worked on through per-thread checkouts; other roots stay
 // shared by all threads.
-func New(ctx context.Context, workspaceDir, checkoutsDir string, writableRoots []string) (*Manager, error) {
+func New(ctx context.Context, workspaceDir, checkoutsDir, closedDir string, writableRoots []string) (*Manager, error) {
 	m := &Manager{
 		workspaceDir: workspaceDir,
 		checkoutsDir: checkoutsDir,
+		closedDir:    closedDir,
 		idLocks:      make(map[string]*sync.Mutex),
 	}
 	for _, path := range writableRoots {
@@ -172,9 +175,30 @@ func ThreadID(channel, threadTS string) (string, error) {
 	return channel + "-" + threadTS, nil
 }
 
+type Area string
+
+const Open Area = ""
+
+func Closed(channel string) Area { return Area(channel) }
+
+func (m *Manager) dirs(area Area) (string, string, error) {
+	if area == Open {
+		return m.workspaceDir, m.checkoutsDir, nil
+	}
+	if m.closedDir == "" || !memory.ValidChannelID(string(area)) {
+		return "", "", fmt.Errorf("invalid closed area %q", area)
+	}
+	base := filepath.Join(m.closedDir, string(area))
+	return filepath.Join(base, "workspace"), filepath.Join(base, "checkouts"), nil
+}
+
 // ThreadDir returns the thread's workspace directory, creating it if needed.
-func (m *Manager) ThreadDir(threadID string) (string, error) {
-	dir, err := threadPath(m.workspaceDir, threadID)
+func (m *Manager) ThreadDir(threadID string, area Area) (string, error) {
+	workspaceDir, _, err := m.dirs(area)
+	if err != nil {
+		return "", err
+	}
+	dir, err := threadPath(workspaceDir, threadID)
 	if err != nil {
 		return "", err
 	}
@@ -189,23 +213,29 @@ func (m *Manager) ThreadDir(threadID string) (string, error) {
 // same branch. Missing checkouts are cloned only when createCheckouts is set;
 // otherwise their repositories are listed in Lease.PendingRepos, so a request
 // that only reads code does not pay for clones.
-func (m *Manager) Acquire(ctx context.Context, threadID string, createCheckouts bool) (*Lease, error) {
-	dir, err := m.ThreadDir(threadID)
+func (m *Manager) Acquire(ctx context.Context, threadID string, area Area, createCheckouts bool) (*Lease, error) {
+	area = m.settledArea(threadID, area)
+	dir, err := m.ThreadDir(threadID, area)
 	if err != nil {
 		return nil, err
 	}
-	threadCheckouts, err := threadPath(m.checkoutsDir, threadID)
+	_, checkoutsDir, err := m.dirs(area)
+	if err != nil {
+		return nil, err
+	}
+	threadCheckouts, err := threadPath(checkoutsDir, threadID)
 	if err != nil {
 		return nil, err
 	}
 
 	idLock := m.idLock(threadID)
 	idLock.Lock()
-	lease, err := m.prepare(ctx, threadID, dir, threadCheckouts, createCheckouts)
+	lease, err := m.prepare(ctx, threadID, dir, threadCheckouts, area != Open, createCheckouts)
 	if err != nil {
 		idLock.Unlock()
 		return nil, err
 	}
+	lease.Area = area
 	lease.release = func() {
 		if len(lease.Checkouts) > 0 {
 			// Idle time counts from the end of the work turn.
@@ -216,11 +246,59 @@ func (m *Manager) Acquire(ctx context.Context, threadID string, createCheckouts 
 	return lease, nil
 }
 
-func (m *Manager) prepare(ctx context.Context, threadID, dir, threadCheckouts string, createCheckouts bool) (*Lease, error) {
+// Not moved when the channel's kind changes: the session and checkouts point
+// at these paths, and moving a checkout breaks its git directory.
+func (m *Manager) settledArea(threadID string, area Area) Area {
+	channel, _, _ := strings.Cut(threadID, "-")
+	closedWorkspace, _, err := m.dirs(Closed(channel))
+	if err != nil {
+		return area
+	}
+	if _, err := os.Stat(filepath.Join(closedWorkspace, threadID)); err == nil {
+		return Closed(channel)
+	}
+	if area == Open {
+		return area
+	}
+	if _, err := os.Stat(filepath.Join(m.workspaceDir, threadID)); err == nil {
+		return Open
+	}
+	return area
+}
+
+// Per closed channel, not per thread, so the list does not grow with threads.
+func (m *Manager) Denied(area Area) ([]string, error) {
+	if area == Open {
+		if m.closedDir == "" {
+			return nil, nil
+		}
+		return []string{m.closedDir}, nil
+	}
+	denied := []string{m.workspaceDir, m.checkoutsDir}
+	for _, r := range m.roots {
+		if r.name == "" {
+			denied = append(denied, r.path)
+		}
+	}
+	entries, err := os.ReadDir(m.closedDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("list closed channels: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != string(area) {
+			denied = append(denied, filepath.Join(m.closedDir, entry.Name()))
+		}
+	}
+	return denied, nil
+}
+
+func (m *Manager) prepare(ctx context.Context, threadID, dir, threadCheckouts string, closed, createCheckouts bool) (*Lease, error) {
 	lease := &Lease{Dir: dir}
 	for _, r := range m.roots {
 		if r.name == "" {
-			lease.WritableRoots = append(lease.WritableRoots, r.path)
+			if !closed {
+				lease.WritableRoots = append(lease.WritableRoots, r.path)
+			}
 			continue
 		}
 		checkout := Checkout{
@@ -252,32 +330,47 @@ func (m *Manager) prepare(ctx context.Context, threadID, dir, threadCheckouts st
 // have been pushed or merged by then. Original repositories are never
 // touched. It returns the thread IDs whose checkouts were removed.
 func (m *Manager) GC(now time.Time, idle time.Duration) ([]string, error) {
-	entries, err := os.ReadDir(m.checkoutsDir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("list checkouts: %w", err)
+	dirs := []string{m.checkoutsDir}
+	if m.closedDir != "" {
+		channels, err := os.ReadDir(m.closedDir)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("list closed channels: %w", err)
+		}
+		for _, channel := range channels {
+			if channel.IsDir() && memory.ValidChannelID(channel.Name()) {
+				dirs = append(dirs, filepath.Join(m.closedDir, channel.Name(), "checkouts"))
+			}
+		}
 	}
 	var removed []string
 	var errs []error
-	for _, entry := range entries {
-		threadID := entry.Name()
-		if !entry.IsDir() || !validThreadID(threadID) {
+	for _, checkoutsDir := range dirs {
+		entries, err := os.ReadDir(checkoutsDir)
+		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		ok, err := m.removeIfIdle(threadID, now, idle)
 		if err != nil {
-			errs = append(errs, err)
+			errs = append(errs, fmt.Errorf("list checkouts: %w", err))
+			continue
 		}
-		if ok {
-			removed = append(removed, threadID)
+		for _, entry := range entries {
+			threadID := entry.Name()
+			if !entry.IsDir() || !validThreadID(threadID) {
+				continue
+			}
+			ok, err := m.removeIfIdle(checkoutsDir, threadID, now, idle)
+			if err != nil {
+				errs = append(errs, err)
+			}
+			if ok {
+				removed = append(removed, threadID)
+			}
 		}
 	}
 	return removed, errors.Join(errs...)
 }
 
-func (m *Manager) removeIfIdle(threadID string, now time.Time, idle time.Duration) (bool, error) {
+func (m *Manager) removeIfIdle(checkoutsDir, threadID string, now time.Time, idle time.Duration) (bool, error) {
 	// A leased thread holds its lock, so it is skipped here.
 	idLock := m.idLock(threadID)
 	if !idLock.TryLock() {
@@ -285,7 +378,7 @@ func (m *Manager) removeIfIdle(threadID string, now time.Time, idle time.Duratio
 	}
 	defer idLock.Unlock()
 
-	dir := filepath.Join(m.checkoutsDir, threadID)
+	dir := filepath.Join(checkoutsDir, threadID)
 	lastUsed := time.Time{}
 	if info, err := os.Stat(filepath.Join(dir, lastUsedFile)); err == nil {
 		lastUsed = info.ModTime()

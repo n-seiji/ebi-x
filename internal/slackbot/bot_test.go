@@ -401,12 +401,15 @@ func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error)
 }
 
 type fakeSlack struct {
-	mu             sync.Mutex
-	calls          []slackCall
-	postErrs       []error
-	postTexts      []string
-	threadMessages []ThreadMessage
-	threadErr      error
+	mu               sync.Mutex
+	channelInfos     map[string]ChannelInfo
+	channelInfoErr   error
+	channelInfoCalls int
+	calls            []slackCall
+	postErrs         []error
+	postTexts        []string
+	threadMessages   []ThreadMessage
+	threadErr        error
 	// message is what GetMessage returns; downloads maps file URLs to
 	// their content.
 	message           ThreadMessage
@@ -503,6 +506,13 @@ func (s *fakeSlack) GetThreadMessages(_ context.Context, _, _, latest string) ([
 	s.threadCalls++
 	s.threadLatest = latest
 	return append([]ThreadMessage(nil), s.threadMessages...), s.threadErr
+}
+
+func (s *fakeSlack) ChannelInfo(_ context.Context, channel string) (ChannelInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.channelInfoCalls++
+	return s.channelInfos[channel], s.channelInfoErr
 }
 
 func (s *fakeSlack) GetMessage(_ context.Context, _, _, timestamp string) (ThreadMessage, error) {
@@ -636,11 +646,12 @@ type fakeRunner struct {
 	cwds      []string
 	roots     [][]string
 	denied    [][]string
+	access    []codex.Access
 	prompts   []string
 	onRun     func(call int)
 }
 
-func (r *fakeRunner) Run(_ context.Context, threadID, sandbox, cwd string, roots, denied []string, prompt string, callback func(string) error, onActivity func(codex.Activity)) (*codex.TurnResult, error) {
+func (r *fakeRunner) Run(_ context.Context, threadID, sandbox, cwd string, roots, denied []string, access codex.Access, prompt string, callback func(string) error, onActivity func(codex.Activity)) (*codex.TurnResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
@@ -652,6 +663,7 @@ func (r *fakeRunner) Run(_ context.Context, threadID, sandbox, cwd string, roots
 	r.cwds = append(r.cwds, cwd)
 	r.roots = append(r.roots, roots)
 	r.denied = append(r.denied, denied)
+	r.access = append(r.access, access)
 	r.prompts = append(r.prompts, prompt)
 	if callback != nil {
 		if err := callback("codex-thread"); err != nil {
@@ -2183,7 +2195,7 @@ func newParallelRunner() *parallelRunner {
 	return &parallelRunner{started: make(chan struct{}, 16), release: make(chan struct{})}
 }
 
-func (r *parallelRunner) Run(ctx context.Context, _, _, cwd string, roots, _ []string, prompt string, callback func(string) error, onActivity func(codex.Activity)) (*codex.TurnResult, error) {
+func (r *parallelRunner) Run(ctx context.Context, _, _, cwd string, roots, _ []string, _ codex.Access, prompt string, callback func(string) error, onActivity func(codex.Activity)) (*codex.TurnResult, error) {
 	if callback != nil {
 		if err := callback("codex-thread"); err != nil {
 			return nil, err
@@ -2353,32 +2365,41 @@ func TestCancelledWaitForWorkFailsWithoutRunningWork(t *testing.T) {
 }
 
 type fakeWorkspaces struct {
-	mu        sync.Mutex
-	threadIDs []string
-	acquired  []string
-	creates   []bool
-	released  int
-	err       error
+	mu       sync.Mutex
+	acquired []string
+	areas    []workspace.Area
+	creates  []bool
+	released int
+	err      error
 	// lazy makes the thread's checkout exist only after an Acquire that
 	// creates it, like workspace.Manager.
 	lazy   bool
 	cloned map[string]bool
 }
 
-func (w *fakeWorkspaces) ThreadDir(threadID string) (string, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.threadIDs = append(w.threadIDs, threadID)
-	return "/home/workspace/" + threadID, nil
+func (w *fakeWorkspaces) Denied(area workspace.Area) ([]string, error) {
+	if area == workspace.Open {
+		return []string{"/home/closed"}, nil
+	}
+	return []string{"/home/workspace", "/home/checkouts", "/shared/plain"}, nil
 }
 
-func (w *fakeWorkspaces) Acquire(_ context.Context, threadID string, createCheckouts bool) (*workspace.Lease, error) {
+func (w *fakeWorkspaces) Acquire(_ context.Context, threadID string, area workspace.Area, createCheckouts bool) (*workspace.Lease, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.err != nil {
 		return nil, w.err
 	}
 	w.acquired = append(w.acquired, threadID)
+	w.areas = append(w.areas, area)
+	lease, err := w.lease(threadID, createCheckouts)
+	if lease != nil {
+		lease.Area = area
+	}
+	return lease, err
+}
+
+func (w *fakeWorkspaces) lease(threadID string, createCheckouts bool) (*workspace.Lease, error) {
 	w.creates = append(w.creates, createCheckouts)
 	release := func() {
 		w.mu.Lock()
@@ -2555,8 +2576,11 @@ func TestTurnsDoNotAddOtherThreadDenyPaths(t *testing.T) {
 
 			bot.HandleMention(context.Background(), mention())
 
-			if len(runner.denied) != 1 || len(runner.denied[0]) != 0 {
-				t.Fatalf("denied paths = %v, want no per-thread deny paths", runner.denied)
+			if len(runner.denied) != 1 || !reflect.DeepEqual(runner.denied[0], []string{"/home/closed"}) {
+				t.Fatalf("denied paths = %v, want only the closed channels' directory", runner.denied)
+			}
+			if !reflect.DeepEqual(runner.access, []codex.Access{{}}) {
+				t.Fatalf("access = %+v, want no limits in an open channel", runner.access)
 			}
 			if !reflect.DeepEqual(runner.threadIDs, []string{threadID}) {
 				t.Fatalf("thread IDs = %v, want %q", runner.threadIDs, threadID)
@@ -2605,7 +2629,9 @@ func (w dirWorkspaces) ThreadDir(threadID string) (string, error) {
 	return dir, os.MkdirAll(dir, 0o700)
 }
 
-func (w dirWorkspaces) Acquire(_ context.Context, threadID string, _ bool) (*workspace.Lease, error) {
+func (w dirWorkspaces) Denied(workspace.Area) ([]string, error) { return nil, nil }
+
+func (w dirWorkspaces) Acquire(_ context.Context, threadID string, _ workspace.Area, _ bool) (*workspace.Lease, error) {
 	dir, err := w.ThreadDir(threadID)
 	if err != nil {
 		return nil, err

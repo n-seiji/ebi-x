@@ -1,0 +1,10 @@
+channels:
+  C0000000001:
+    system_prompt: |
+      回答は画面・操作・仕様の言葉で書き、コードや内部の名前は出さないでください。
+    read_only: true
+    github: false
+    repositories: [docs]
+    mcp_servers: []
+  C0000000002:
+    system_prompt: 回答は英語で書いてください。

@@ -91,7 +91,7 @@ type blockingRunner struct {
 	started chan struct{}
 }
 
-func (r *blockingRunner) Run(ctx context.Context, _, _, _ string, _, _ []string, _ string, callback func(string) error, onActivity func(codex.Activity)) (*codex.TurnResult, error) {
+func (r *blockingRunner) Run(ctx context.Context, _, _, _ string, _, _ []string, _ codex.Access, _ string, callback func(string) error, onActivity func(codex.Activity)) (*codex.TurnResult, error) {
 	if callback != nil {
 		if err := callback("codex-thread"); err != nil {
 			return nil, err

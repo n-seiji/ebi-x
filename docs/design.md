@@ -125,7 +125,30 @@ Codex のコマンドは、禁止しなければファイルシステム全体�
 - `EBIX_DENIED_READ_PATHS`
 - 既知の認証情報の置き場（既定）：`~/.ssh` `~/.aws` `~/.azure` `~/.config/gcloud` `~/.config/gh` `~/.docker/config.json` `~/.kube` `~/.gnupg` `~/.netrc` `~/.git-credentials` `~/.config/git/credentials` `~/.npmrc` `~/.pypirc` `~/.config/op` `~/.vault-token` `~/.terraform.d/credentials.tfrc.json` `~/.cargo/credentials.toml` `~/.gem/credentials` `~/.pgpass` `~/.my.cnf` `~/.s3cfg` `~/.boto` `~/.oci` `~/.config/rclone` `~/.claude` `~/.config/github-copilot`。push と署名に要るものと `EBIX_ALLOWED_READ_PATHS` のものは外します（[setup.md](setup.md#4-作業対象のリポジトリ)）。検出は `data/checkouts` に作る使い捨てのリポジトリで、スレッドのクローンと同じ git 設定と、Codex と同じ環境変数で行います
 
-`data/workspace` と `data/checkouts` は、他スレッドのパスを列挙して禁止しません。スレッドが増えても禁止ルールは増えません。他スレッドの成果物も読み取り可能ですが、添付は依頼されたスレッドのファイルに限定します。
+`data/workspace` と `data/checkouts` は、他スレッドのパスを列挙して禁止しません。スレッドが増えても禁止ルールは増えません。他スレッドの成果物も読み取り可能ですが、添付は依頼されたスレッドのファイルに限定します。閉じたチャンネルのスレッドだけは、次の節のとおり置き場所ごと分けます。
+
+### 閉じたチャンネル
+
+プライベートチャンネル（グループ DM を含む）と Slack Connect チャンネルは、ほかのチャンネルから読めず、Slack もそのチャンネルの中しか調べられません。
+
+```text
+data/closed/{channel}/workspace/{channel}-{thread ts}/     閉じたチャンネルのスレッドの cwd
+data/closed/{channel}/checkouts/{channel}-{thread ts}/     そのスレッド専用クローン
+```
+
+- 種類を確かめられなかったチャンネルは閉じたものとして扱います。開いていると誤るほうが危ないためです。
+- Slack の MCP は止めます。MCP の検索範囲をチャンネルで絞る手段がないためです。スレッドの中身は、これまでどおり bot が依頼に添えます。
+- 禁止ルールはスレッドではなく、閉じたチャンネルごとに作ります。スレッドの数だけ増えないようにするためです。
+- 閉じる前に始まったスレッドは、元の置き場所のまま続けます。クローンを動かすと git ディレクトリが壊れるためです。
+- 残るリスク：`/tmp` はスレッドごとに分けていません。
+
+### チャンネルごとの設定
+
+`data/channel-rules/channels.yaml` で、チャンネルごとに system prompt と制限を足せます（[setup.md](setup.md#チャンネルごとの設定)）。
+
+- ファイルが読めないときは、承認チャンネル以外の依頼を始めません。制限が外れたまま動かないためです。承認チャンネルだけはファイルなしで動くので、そこで直せます。
+- ほかのチャンネルの作業からは、ファイルを読めないようにします。チャンネル ID や、そのチャンネル向けの指示が書かれるためです。
+- `github: false` だけでは、ホストの `~/.ssh` を使った push は止まりません。確実に止めるなら `read_only` と組み合わせます。
 
 Codex は `--ignore-user-config` と専用の permission profile で起動し、MCP の設定は `EBIX_HOME/.codex/config.toml` から渡します。
 

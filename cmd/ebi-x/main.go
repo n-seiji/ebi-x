@@ -72,13 +72,19 @@ func main() {
 	if err := store.GC(time.Now(), 7*24*time.Hour); err != nil {
 		log.Printf("garbage collect state: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Dir(cfg.ChannelRulesFile), 0o700); err != nil {
+		log.Fatalf("create channel rules directory: %v", err)
+	}
+	if err := slackbot.ValidateChannelRules(cfg.ChannelRulesFile); err != nil {
+		log.Printf("channel rules: %v; requests fail until the file is fixed", err)
+	}
 	playbooks, err := playbook.List(cfg.PlaybooksDir)
 	if err != nil {
 		log.Printf("list playbooks: %v", err)
 		playbooks = nil
 	}
 
-	workspaces, err := workspace.New(context.Background(), cfg.WorkspaceDir, cfg.CheckoutsDir, cfg.WritableRoots)
+	workspaces, err := workspace.New(context.Background(), cfg.WorkspaceDir, cfg.CheckoutsDir, cfg.ClosedDir, cfg.WritableRoots)
 	if err != nil {
 		log.Fatalf("prepare workspaces: %v", err)
 	}
@@ -86,10 +92,16 @@ func main() {
 		log.Printf("work turns use per-thread checkouts of %s", repo)
 	}
 
+	codexConfig := filepath.Join(cfg.EBIXHome, ".codex", "config.toml")
+	if servers, err := codex.LocalSlackServers(codexConfig); err != nil {
+		log.Printf("find Slack MCP servers: %v", err)
+	} else {
+		log.Printf("MCP servers turned off for private and Slack Connect channels: %v", servers)
+	}
 	runner := &codex.Runner{
 		Command:               cfg.CodexCommand,
 		Model:                 cfg.CodexModel,
-		ConfigPath:            filepath.Join(cfg.EBIXHome, ".codex", "config.toml"),
+		ConfigPath:            codexConfig,
 		DeniedReadPaths:       append(slices.Clone(cfg.ProtectedPaths), cfg.CredentialPaths...),
 		PassEnv:               cfg.CodexEnv,
 		CodexHome:             cfg.CodexHome,
@@ -148,6 +160,7 @@ func main() {
 		MemoryDir:                  cfg.MemoryDir,
 		PlaybooksDir:               cfg.PlaybooksDir,
 		ActionRulesFile:            cfg.ActionRulesFile,
+		ChannelRulesFile:           cfg.ChannelRulesFile,
 		CodexTimeout:               cfg.CodexTimeout,
 		ThreadSubscriptionReaction: cfg.ThreadSubscriptionReaction,
 		ThreadSubscriptionTTL:      cfg.ThreadSubscriptionTTL,
