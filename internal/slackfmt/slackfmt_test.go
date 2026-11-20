@@ -145,7 +145,7 @@ func TestPlainTextRemovesMarkdownSyntax(t *testing.T) {
 }
 
 func TestHideLocalPaths(t *testing.T) {
-	const home = "/Users/pc-001/ghq/github.com/n-seiji/ebiii"
+	const home = "/Users/example/ebi-x"
 	tests := []struct {
 		name string
 		text string
@@ -153,7 +153,7 @@ func TestHideLocalPaths(t *testing.T) {
 	}{
 		{
 			name: "markdown link to a local file keeps its label",
-			text: "根拠：[問い合わせ調査手順](/Users/pc-001/ghq/github.com/n-seiji/ebiii/data/playbooks/miive-inquiry-answer.md)",
+			text: "根拠：[問い合わせ調査手順](/Users/example/ebi-x/data/playbooks/inquiry.md)",
 			want: "根拠：問い合わせ調査手順",
 		},
 		{
@@ -168,8 +168,8 @@ func TestHideLocalPaths(t *testing.T) {
 		},
 		{
 			name: "bare path under home becomes relative",
-			text: "作業コピーを保持しています：\n" + home + "/data/workspace/C09-1.2/.codex-worktrees/alert/miive-server",
-			want: "作業コピーを保持しています：\ndata/workspace/C09-1.2/.codex-worktrees/alert/miive-server",
+			text: "作業コピーを保持しています：\n" + home + "/data/workspace/C1-1.2/.codex-worktrees/alert/app",
+			want: "作業コピーを保持しています：\ndata/workspace/C1-1.2/.codex-worktrees/alert/app",
 		},
 		{
 			name: "urls are kept",

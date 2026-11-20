@@ -146,7 +146,7 @@ description: どんな依頼のときに使うかを具体的に書く
 
 | 例 | 内容 |
 | --- | --- |
-| `slides.md` | [miive-project/slides](https://github.com/miive-project/slides) でスライドを作成・修正・納品する |
+| `slides.md` | Markdown の原稿から画像・PDF・pptx を作る slides リポジトリで、スライドを作成・修正・納品する |
 | `playbook-from-thread.md` | スレッドの対応を playbook にする、既存の playbook を直す |
 | `request-discovery.md` | 改善要望を1問ずつ聞き取ってまとめる |
 
