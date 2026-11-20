@@ -6,6 +6,7 @@ require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/ebitengine/purego v0.11.2
 	github.com/slack-go/slack v0.17.3
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

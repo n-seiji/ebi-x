@@ -15,11 +15,13 @@ import (
 // can look at what a turn saved.
 type threadWorkspaces struct{ dir string }
 
-func (w threadWorkspaces) ThreadDir(string) (string, error) { return w.dir, nil }
-
-func (w threadWorkspaces) Acquire(context.Context, string, bool) (*workspace.Lease, error) {
-	return workspace.NewLease(w.dir, nil, nil, func() {}), nil
+func (w threadWorkspaces) Acquire(_ context.Context, _ string, area workspace.Area, _ bool) (*workspace.Lease, error) {
+	lease := workspace.NewLease(w.dir, nil, nil, func() {})
+	lease.Area = area
+	return lease, nil
 }
+
+func (w threadWorkspaces) Denied(workspace.Area) ([]string, error) { return nil, nil }
 
 func newFilesTestBot(t *testing.T, api *fakeSlack, runner *fakeRunner) (*Bot, string) {
 	t.Helper()

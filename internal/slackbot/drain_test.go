@@ -21,7 +21,7 @@ type gatedRunner struct {
 	prompts []string
 }
 
-func (r *gatedRunner) Run(_ context.Context, _, _, _ string, _, _ []string, text string, callback func(string) error, _ func(codex.Activity)) (*codex.TurnResult, error) {
+func (r *gatedRunner) Run(_ context.Context, _, _, _ string, _, _ []string, _ codex.Access, text string, callback func(string) error, _ func(codex.Activity)) (*codex.TurnResult, error) {
 	r.mu.Lock()
 	r.prompts = append(r.prompts, text)
 	first := len(r.prompts) == 1

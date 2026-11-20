@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -45,7 +46,7 @@ func newManager(t *testing.T, roots ...string) (*Manager, string, string) {
 	home := t.TempDir()
 	workspaceDir := filepath.Join(home, "workspace")
 	checkoutsDir := filepath.Join(home, "checkouts")
-	m, err := New(context.Background(), workspaceDir, checkoutsDir, roots)
+	m, err := New(context.Background(), workspaceDir, checkoutsDir, filepath.Join(home, "closed"), roots)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -55,7 +56,7 @@ func newManager(t *testing.T, roots ...string) (*Manager, string, string) {
 func TestCheckoutSharesNoObjectFilesWithRepository(t *testing.T) {
 	repo := newRepo(t)
 	m, _, _ := newManager(t, repo)
-	lease, err := m.Acquire(context.Background(), "C1-100.1", true)
+	lease, err := m.Acquire(context.Background(), "C1-100.1", Open, true)
 	if err != nil {
 		t.Fatalf("Acquire() error = %v", err)
 	}
@@ -120,7 +121,7 @@ func TestAcquireCreatesThreadCheckoutAndKeepsPlainRootsShared(t *testing.T) {
 		t.Fatalf("Repositories() = %v, want [%s]", got, repo)
 	}
 
-	lease, err := m.Acquire(context.Background(), "C1-100.1", true)
+	lease, err := m.Acquire(context.Background(), "C1-100.1", Open, true)
 	if err != nil {
 		t.Fatalf("Acquire() error = %v", err)
 	}
@@ -158,12 +159,12 @@ func TestAcquireCreatesThreadCheckoutAndKeepsPlainRootsShared(t *testing.T) {
 func TestThreadsGetSeparateCheckouts(t *testing.T) {
 	repo := newRepo(t)
 	m, _, _ := newManager(t, repo)
-	first, err := m.Acquire(context.Background(), "C1-100.1", true)
+	first, err := m.Acquire(context.Background(), "C1-100.1", Open, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.Release()
-	second, err := m.Acquire(context.Background(), "C1-200.2", true)
+	second, err := m.Acquire(context.Background(), "C1-200.2", Open, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +185,7 @@ func TestAcquireReusesCheckoutWithCommits(t *testing.T) {
 	repo := newRepo(t)
 	m, _, _ := newManager(t, repo)
 	ctx := context.Background()
-	lease, err := m.Acquire(ctx, "C1-100.1", true)
+	lease, err := m.Acquire(ctx, "C1-100.1", Open, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +197,7 @@ func TestAcquireReusesCheckoutWithCommits(t *testing.T) {
 	runGit(t, path, "commit", "-q", "-m", "work")
 	lease.Release()
 
-	lease, err = m.Acquire(ctx, "C1-100.1", true)
+	lease, err = m.Acquire(ctx, "C1-100.1", Open, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +212,7 @@ func TestGCRemovesIdleCheckoutsAndTheirBranches(t *testing.T) {
 	m, workspaceDir, checkoutsDir := newManager(t, repo)
 	ctx := context.Background()
 
-	lease, err := m.Acquire(ctx, "C1-100.1", true)
+	lease, err := m.Acquire(ctx, "C1-100.1", Open, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +246,7 @@ func TestGCRemovesIdleCheckoutsAndTheirBranches(t *testing.T) {
 	}
 
 	// Asking the thread for more work starts again from the repository HEAD.
-	lease, err = m.Acquire(ctx, "C1-100.1", true)
+	lease, err = m.Acquire(ctx, "C1-100.1", Open, true)
 	if err != nil {
 		t.Fatalf("Acquire() after GC error = %v", err)
 	}
@@ -258,7 +259,7 @@ func TestGCRemovesIdleCheckoutsAndTheirBranches(t *testing.T) {
 func TestGCSkipsLeasedThreads(t *testing.T) {
 	repo := newRepo(t)
 	m, _, checkoutsDir := newManager(t, repo)
-	lease, err := m.Acquire(context.Background(), "C1-100.1", true)
+	lease, err := m.Acquire(context.Background(), "C1-100.1", Open, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +280,7 @@ func TestAcquireRecreatesPartiallyRemovedCheckout(t *testing.T) {
 	repo := newRepo(t)
 	m, _, _ := newManager(t, repo)
 	ctx := context.Background()
-	lease, err := m.Acquire(ctx, "C1-100.1", true)
+	lease, err := m.Acquire(ctx, "C1-100.1", Open, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +289,7 @@ func TestAcquireRecreatesPartiallyRemovedCheckout(t *testing.T) {
 	if err := os.RemoveAll(path + gitDirSuffix); err != nil {
 		t.Fatal(err)
 	}
-	lease, err = m.Acquire(ctx, "C1-100.1", true)
+	lease, err = m.Acquire(ctx, "C1-100.1", Open, true)
 	if err != nil {
 		t.Fatalf("Acquire() error = %v", err)
 	}
@@ -308,7 +309,7 @@ func TestSubdirectoryOfRepositoryIsAPlainRoot(t *testing.T) {
 	if got := m.Repositories(); len(got) != 0 {
 		t.Fatalf("Repositories() = %v, want none", got)
 	}
-	lease, err := m.Acquire(context.Background(), "C1-100.1", true)
+	lease, err := m.Acquire(context.Background(), "C1-100.1", Open, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +325,7 @@ func TestAcquireWithoutCreatingListsPendingRepositories(t *testing.T) {
 	m, _, checkoutsDir := newManager(t, plain, repo)
 	ctx := context.Background()
 
-	lease, err := m.Acquire(ctx, "C1-100.1", false)
+	lease, err := m.Acquire(ctx, "C1-100.1", Open, false)
 	if err != nil {
 		t.Fatalf("Acquire() error = %v", err)
 	}
@@ -339,7 +340,7 @@ func TestAcquireWithoutCreatingListsPendingRepositories(t *testing.T) {
 		t.Fatalf("thread checkouts directory exists without a request: %v", err)
 	}
 
-	lease, err = m.Acquire(ctx, "C1-100.1", true)
+	lease, err = m.Acquire(ctx, "C1-100.1", Open, true)
 	if err != nil {
 		t.Fatalf("Acquire() creating error = %v", err)
 	}
@@ -349,12 +350,117 @@ func TestAcquireWithoutCreatingListsPendingRepositories(t *testing.T) {
 	lease.Release()
 
 	// Once cloned, later turns reuse the checkout without asking again.
-	lease, err = m.Acquire(ctx, "C1-100.1", false)
+	lease, err = m.Acquire(ctx, "C1-100.1", Open, false)
 	if err != nil {
 		t.Fatalf("Acquire() reuse error = %v", err)
 	}
 	defer lease.Release()
 	if len(lease.Checkouts) != 1 || len(lease.PendingRepos) != 0 {
 		t.Fatalf("Checkouts = %v, PendingRepos = %v, want the existing checkout", lease.Checkouts, lease.PendingRepos)
+	}
+}
+
+func TestClosedChannelThreadsLiveApart(t *testing.T) {
+	repo := newRepo(t)
+	shared := t.TempDir()
+	m, workspaceDir, checkoutsDir := newManager(t, repo, shared)
+	closedDir := filepath.Join(filepath.Dir(workspaceDir), "closed")
+	ctx := context.Background()
+
+	lease, err := m.Acquire(ctx, "G1-100.1", Closed("G1"), true)
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	if want := filepath.Join(closedDir, "G1", "workspace", "G1-100.1"); lease.Dir != want {
+		t.Fatalf("closed Dir = %q, want %q", lease.Dir, want)
+	}
+	if want := filepath.Join(closedDir, "G1", "checkouts", "G1-100.1"); !strings.HasPrefix(lease.Checkouts[0].Path, want+string(filepath.Separator)) {
+		t.Fatalf("closed checkout = %q, want under %q", lease.Checkouts[0].Path, want)
+	}
+	for _, root := range lease.WritableRoots {
+		if root == shared {
+			t.Fatalf("closed lease writable roots %v include the shared root", lease.WritableRoots)
+		}
+	}
+	lease.Release()
+	if _, err := m.ThreadDir("C2-300.3", Closed("C2")); err != nil {
+		t.Fatal(err)
+	}
+
+	open, err := m.Acquire(ctx, "C1-200.2", Open, false)
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	if !slices.Contains(open.WritableRoots, shared) {
+		t.Fatalf("open lease writable roots %v lack the shared root", open.WritableRoots)
+	}
+	open.Release()
+
+	if got, err := m.Denied(Open); err != nil || !slices.Equal(got, []string{closedDir}) {
+		t.Fatalf("Denied(Open) = %v, %v, want only %q", got, err, closedDir)
+	}
+	got, err := m.Denied(Closed("G1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{workspaceDir, checkoutsDir, shared, filepath.Join(closedDir, "C2")}
+	if !slices.Equal(got, want) {
+		t.Fatalf("Denied(G1) = %v, want %v", got, want)
+	}
+	if _, err := m.Acquire(ctx, "G2-100.1", Closed("../x"), false); err == nil {
+		t.Fatal("Acquire() with an invalid closed area succeeded")
+	}
+
+	removed, err := m.GC(time.Now().Add(time.Hour), time.Minute)
+	if err != nil || !slices.Contains(removed, "G1-100.1") {
+		t.Fatalf("GC() = %v, %v, want G1-100.1 removed", removed, err)
+	}
+}
+
+func TestThreadStartedBeforeItsChannelClosedStaysOpen(t *testing.T) {
+	m, workspaceDir, _ := newManager(t)
+	ctx := context.Background()
+	if _, err := m.ThreadDir("D1-100.1", Open); err != nil {
+		t.Fatal(err)
+	}
+
+	lease, err := m.Acquire(ctx, "D1-100.1", Closed("D1"), false)
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	lease.Release()
+	if lease.Area != Open || lease.Dir != filepath.Join(workspaceDir, "D1-100.1") {
+		t.Fatalf("legacy lease = %q in %q, want the open workspace", lease.Dir, lease.Area)
+	}
+
+	fresh, err := m.Acquire(ctx, "D1-200.2", Closed("D1"), false)
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	fresh.Release()
+	if fresh.Area != Closed("D1") {
+		t.Fatalf("new thread area = %q, want closed", fresh.Area)
+	}
+	if _, err := os.Stat(filepath.Join(workspaceDir, "D1-200.2")); !os.IsNotExist(err) {
+		t.Fatalf("new closed thread created an open workspace: %v", err)
+	}
+}
+
+func TestThreadStartedClosedStaysClosed(t *testing.T) {
+	m, _, _ := newManager(t)
+	ctx := context.Background()
+	first, err := m.Acquire(ctx, "C1-100.1", Closed("C1"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Release()
+
+	again, err := m.Acquire(ctx, "C1-100.1", Open, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again.Release()
+	if again.Area != Closed("C1") || again.Dir != first.Dir {
+		t.Fatalf("lease = %q in %q, want the closed workspace %q kept", again.Dir, again.Area, first.Dir)
 	}
 }

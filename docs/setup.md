@@ -10,13 +10,13 @@ Slack App の作成画面で「From a manifest」を選び、`examples/slack-app
 | --- | --- | --- |
 | Socket Mode | 有効 | 公開 URL なしでイベントを受ける |
 | Bot Token Scopes | `app_mentions:read` `chat:write` `reactions:read` `reactions:write` `channels:history` `files:read` `files:write` `im:history` `assistant:write` `commands` | mention・投稿・リアクション、依頼に添付された画像などの取得、成果物の添付、DM とエージェント表示、ショートカット |
-| Event Subscriptions | `app_mention` `message.channels` `message.im` `app_home_opened` | mention、購読スレッドの返信、DM、Home タブ |
+| Event Subscriptions | `app_mention` `message.channels` `message.groups` `message.im` `app_home_opened` | mention、購読スレッドの返信（プライベートチャンネルを含む）、DM、Home タブ |
 | App Home | Home Tab と Messages Tab を有効、「Allow users to send Slash commands and messages from the messages tab」をオン | Home タブと DM |
 | Interactivity & Shortcuts | Interactivity をオン、Message Shortcut「ebi-x に頼む」（Callback ID `ebix_request`） | メッセージから依頼する |
 | Agents & AI Apps | Agent App に切り替え（manifest では `features.agent_view`） | サイドバーと Messages タブでのエージェント表示 |
 
 - `:done:` の監視（[usage.md](usage.md#done-の監視)）で `@channel` を使うときは `channels:read` と `users:read`（プライベートチャンネルでは `groups:read` も）を、`@dev_team` のようなユーザーグループを使うときはさらに `usergroups:read` を追加します。manifest には入っています。
-- プライベートチャンネルで使う場合は `groups:history` も追加します（スレッドを読むため）。`message.groups` は購読しません。mention なしの返信を処理する購読スレッドは、パブリックチャンネルだけが対象です。
+- プライベートチャンネルと Slack Connect チャンネルには `groups:read`・`groups:history`・`message.groups` が要ります（manifest に入っています）。
 - Agent App への切り替えは元に戻せません。Slack の有料プランが必要です。
 - scope を変えたらワークスペースへ再インストールします。Bot Token が変わった場合は `.env` も更新します。
 
@@ -127,6 +127,20 @@ Codex がどの操作の前に依頼者へ確認するかは、既定で次の�
 
 ルールはモデルへの指示です。書き込める範囲や読めないパスは、サンドボックスで別に強制しています。
 
+### チャンネルごとの設定
+
+`$EBIX_HOME/data/channel-rules/channels.yaml` に、チャンネル ID ごとに書きます（例は `examples/channels.yaml`）。
+
+| 項目 | 内容 |
+| --- | --- |
+| `system_prompt` | Codex の developer instructions に足す指示 |
+| `read_only` | `true` でファイルを書けず、ネットワークにも出られなくする |
+| `github` | `false` で GitHub の認証情報を渡さない（push・PR の作成ができない） |
+| `repositories` | 読めるリポジトリ（ディレクトリ名かパス）。ほかのリポジトリと、そのクローンは読めない |
+| `mcp_servers` | 使える MCP サーバーの名前。`[]` で全部止める |
+
+依頼のたびに読み直します。書き換えられるのは承認チャンネルからの依頼だけです。
+
 ## 6. playbook
 
 playbook は、特定の作業の手順を書いた Markdown です。`data/playbooks/` の直下に置くと、スレッドの最初の依頼で一覧が Codex に渡り、該当する作業のときに読まれます。
@@ -192,6 +206,10 @@ Toolbox の `execute_sql` はどんな文でも実行できるため、ebi-x は
 Google Cloud のリモート BigQuery MCP（`https://bigquery.googleapis.com/mcp`）では、`disabled_tools = ["execute_sql"]` で更新できるツールを外し、`execute_sql_readonly` を使います。
 
 必要なツールが公開されていないとき、Codex は「接続できない」ではなく「公開されていない」と依頼者に伝えます。
+
+### Slack の MCP
+
+名前・`url`・`command`・`args` に `slack` を含む MCP サーバーは、閉じたチャンネルでは止まります。起動ログの `MCP servers turned off for private and Slack Connect channels: [...]` に載らないときは、サーバー名に `slack` を含めます。
 
 ### 環境変数
 
